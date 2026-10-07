@@ -115,7 +115,7 @@ class SynapseAPI(PlatformAPI):
             - SYNAPSE_SPARK_POOL_NAME
             - AZURE_STORAGE_ACCOUNT (for file uploads)
             - AZURE_CONTAINER (default: "artifacts")
-            - AZURE_BASE_PATH (default: "system-tests")
+            - AZURE_BASE_PATH (default: "", the container root -- same as the CLI)
 
         Returns:
             SynapseAPI client instance
@@ -135,7 +135,7 @@ class SynapseAPI(PlatformAPI):
             spark_pool_name=os.getenv("SYNAPSE_SPARK_POOL_NAME"),
             storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
             container=os.getenv("AZURE_CONTAINER", "artifacts"),
-            base_path=os.getenv("AZURE_BASE_PATH", "system-tests"),
+            base_path=os.getenv("AZURE_BASE_PATH", ""),
         )
 
     def get_platform_name(self) -> str:
@@ -299,8 +299,10 @@ class SynapseAPI(PlatformAPI):
         app_name: str,
         environment: Optional[str] = None,
         parameters: Optional[Dict[str, Any]] = None,
+        compute: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Submit a one-time app run via the Livy batch API (no stored definition)."""
+        self._reject_compute(compute)
         config_overrides: Dict[str, Any] = dict(parameters or {})
         if environment:
             config_overrides["environment"] = environment
@@ -314,8 +316,10 @@ class SynapseAPI(PlatformAPI):
         self,
         app_name: str,
         config_overrides: Optional[Dict[str, Any]] = None,
+        compute: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Create or update a named SparkJobDefinition for use in Synapse Pipelines."""
+        self._reject_compute(compute)
         job_config: Dict[str, Any] = {
             "app_name": app_name,
             "config_overrides": config_overrides or {},

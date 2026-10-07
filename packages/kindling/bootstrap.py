@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from urllib.parse import urlparse
 
 from kindling.features import get_feature_bool
 from kindling.injection import *
@@ -20,6 +21,11 @@ from kindling.spark_session import *
 
 from .data_apps import *
 from .notebook_framework import *
+from .package_registrations import (
+    REGISTRATION_NAMESPACES,
+    import_package_registrations,
+    import_registration_namespace,
+)
 
 # Platform modules are imported dynamically based on detected platform
 # Don't import them all at module level since platform wheels only include one
@@ -42,7 +48,8 @@ _BOOTSTRAP_LOGGER = logging.getLogger("kindling.bootstrap")
 _CONFIG_FILES_SOURCE_METADATA_KEY = "_kindling_config_files_source_key"
 _SPARK_CONFIG_FILES_KEY = "spark.kindling.bootstrap.config_files"
 _LOCAL_PACKAGE_MODULES_ENV = "KINDLING_LOCAL_PACKAGE_MODULES"
-_LOCAL_PACKAGE_REGISTRATION_NAMESPACES = ("entities", "pipes", "ingestion")
+_LOCAL_PACKAGE_REGISTRATION_NAMESPACES = REGISTRATION_NAMESPACES
+_import_registration_namespace = import_registration_namespace
 
 
 class _BootstrapPhaseRecorder:
@@ -333,47 +340,10 @@ def _load_local_package_module_roots(explicit_roots: Optional[List[str]] = None)
     return roots
 
 
-def _import_registration_namespace(module_name: str) -> int:
-    imported_count = 0
-    package = importlib.import_module(module_name)
-    imported_count += 1
-
-    package_path = getattr(package, "__path__", None)
-    if package_path is None:
-        return imported_count
-
-    for module_info in pkgutil.walk_packages(package_path, prefix=f"{module_name}."):
-        importlib.import_module(module_info.name)
-        imported_count += 1
-    return imported_count
-
-
 def _import_local_package_registrations(
     logger, registration_packages: Optional[List[str]] = None
 ) -> None:
-    module_roots = _load_local_package_module_roots(registration_packages)
-    if not module_roots:
-        return
-
-    total_imported = 0
-    for module_root in module_roots:
-        imported_for_root = 0
-        for namespace in _LOCAL_PACKAGE_REGISTRATION_NAMESPACES:
-            module_name = f"{module_root}.{namespace}"
-            try:
-                imported_for_root += _import_registration_namespace(module_name)
-            except ModuleNotFoundError as error:
-                if error.name in {module_root, module_name}:
-                    continue
-                raise
-        total_imported += imported_for_root
-        if imported_for_root == 0:
-            logger.debug(f"No local package registration modules found under {module_root}")
-
-    logger.info(
-        f"Imported {total_imported} local package registration "
-        f"module{'' if total_imported == 1 else 's'} from {', '.join(module_roots)}"
-    )
+    import_package_registrations(logger, _load_local_package_module_roots(registration_packages))
 
 
 def pending_declaration_derivations() -> Dict[str, str]:
@@ -961,6 +931,23 @@ def _get_workspace_id_for_platform(platform: str) -> Optional[str]:
         _BOOTSTRAP_LOGGER.warning("Error getting workspace ID for %s: %s", platform, e)
 
     return None
+
+
+def _overlay_workspace_id(workspace_id: Optional[str], platform: Optional[str]) -> Optional[str]:
+    """The id that names the workspace_<id>.yaml overlay.
+
+    On Databricks the ``workspace_id`` setting doubles as the REST API host,
+    so it may be a URL (the SDK passes the workspace URL). A URL never names
+    an overlay file: use the detected workspace id instead, else the host
+    with dots replaced by underscores (the same fallback detection uses).
+    """
+    if not workspace_id or not str(workspace_id).startswith(("http://", "https://")):
+        return workspace_id
+    detected = _get_workspace_id_for_platform(platform) if platform else None
+    if detected and not str(detected).startswith(("http://", "https://")):
+        return str(detected)
+    host = urlparse(str(workspace_id)).netloc
+    return host.replace(".", "_") if host else None
 
 
 def _get_minimal_default_config() -> str:
@@ -2161,7 +2148,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                     artifacts_storage_path=artifacts_storage_path,
                     environment=environment,
                     platform=platform,
-                    workspace_id=workspace_id,
+                    workspace_id=_overlay_workspace_id(workspace_id, platform),
                     app_name=app_name,
                     temp_path=initial_temp_path,
                 )
@@ -2178,7 +2165,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             settings_app_dir,
             environment,
             platform=platform,
-            workspace_id=workspace_id,
+            workspace_id=_overlay_workspace_id(workspace_id, platform),
         )
         explicit_files = [str(path) for path in (config.get("config_files") or [])]
         if isinstance(config.get("config_files"), (str, Path)):
@@ -2213,7 +2200,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                     environment=environment,
                     artifacts_storage_path=artifacts_storage_path,
                     platform=platform,
-                    workspace_id=workspace_id,
+                    workspace_id=_overlay_workspace_id(workspace_id, platform),
                     app_name=app_name,
                 )
                 config_service = get_kindling_service(ConfigService)
@@ -2225,7 +2212,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                 environment=environment,
                 artifacts_storage_path=artifacts_storage_path,
                 platform=platform,
-                workspace_id=workspace_id,
+                workspace_id=_overlay_workspace_id(workspace_id, platform),
                 app_name=app_name,
             )
             config_service = get_kindling_service(ConfigService)

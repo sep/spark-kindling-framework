@@ -93,6 +93,7 @@ metadata and are never passed to the connector.
 | `eventhub` | streaming/batch source, read-only | `provider.eventhub.connectionString` (use `@secret:`), `provider.eventhub.name`; `provider.startingPosition`, `provider.eventhub.consumerGroup`, `provider.transport`, `provider.preprocess` |
 | `adx-api` | Azure Data Explorer via Kusto SDK | `provider.cluster`, `provider.database`, `provider.table` or `provider.query`; `provider.auth`, windowing `provider.time_column`/`provider.lookback` |
 | `current_view` | auto-registered SCD2 `.current` companion | none: don't declare it yourself |
+| `view` | auto-set by `DataEntities.sql_entity`; read-only, reads run the SQL | `provider.table_name` (the catalog view name `migrate apply` creates) |
 
 Extensions add more types (`kindling_ext_adx` adds `adx`, `kindling_ext_cosmos`
 adds cosmos). An unregistered `provider_type` fails when the entity is read or
@@ -189,9 +190,11 @@ DataEntities.sql_entity(
 - The entity gets `provider_type: "view"`, has no schema or keys, and is
   read-only. `kindling migrate apply` creates or replaces the view, and
   `migrate plan` notices SQL changes by hash.
-- The core runner has no `view` provider. Reading a SQL entity as a pipe input
-  fails with `Unknown provider type: 'view'`. Use it as a published view, or
-  express the logic as a pipe instead (see [pipes.md](pipes.md)).
+- A SQL entity can be a pipe input: the `view` provider reads it by running its
+  SQL (batch only), so it works before `migrate apply` and in standalone.
+  Qualify table names in the SQL; unqualified names resolve against the
+  session's current schema. A pipe that writes to a SQL entity fails with a
+  read-only error.
 
 ## 6. Clone and extend
 
@@ -251,8 +254,13 @@ directory** before it asks the provider. The rules:
 - The id's dots become directories. The last segment is the file name.
 - The CSV is read with `header=true, inferSchema=true`. The declared schema is
   not applied.
-- A fixture with headers only, or the stub `kindling package add entity`
-  writes, raises `ValueError ... has no data rows`. Fill it in or delete it.
+- A fixture with no data rows (empty, headers only, or only `#` comment lines)
+  is ignored with a warning naming the file, and the entity's provider is read
+  instead. The stubs `kindling package add entity` (a header row) and
+  `package add pipe --inputs` (a comment line) write are like that until you
+  add rows. `app validate` warns and `app inspect --entities` marks them
+  "ignored".
+- Lines starting with `#` are comments in a fixture.
 - Fixtures only replace **reads**. Writes still go to the entity's provider.
 - `kindling entity show` and `kindling entity validate` use the same lookup.
 

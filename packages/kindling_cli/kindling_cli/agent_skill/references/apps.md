@@ -30,7 +30,8 @@ the packages it runs in `lake-reqs.txt`.
   .devcontainer/  .github/workflows/ci.yml  scripts/setup-local-dev.sh
   packages/
     <pkg>/                # workspace member (distribution name <pkg-kebab>)
-      pyproject.toml      # pins spark-kindling[standalone] via [tool.uv.sources] wheel URLs; poe tasks
+      pyproject.toml      # runtime dep: plain spark-kindling, pinned via [tool.uv.sources] wheel URLs;
+                          # dev group: pytest, poe, SDK/CLI + pyspark/delta-spark/pandas/pyarrow; poe tasks
       settings.yaml  settings.local.yaml  .env.example
       src/<pkg>/
         entities/         # @DataEntities.entity declarations   -> auto-registered
@@ -102,7 +103,7 @@ Rules for app.py:
 **app.yaml** is the manifest:
 
 ```yaml
-name: daily-orders        # kebab-case display/remote name; directory is apps/daily_orders
+name: daily-orders        # display name; deploy and run use the folder name, daily_orders
 entry_point: app.py       # default app.py
 # optional, read when packaging: description, version, dependencies, environment, metadata
 ```
@@ -201,11 +202,16 @@ kindling app run daily_orders --env local  # full app in a subprocess (standalon
 kindling app run daily_orders --param report_date=2024-01-15 --trace
 ```
 
-- `app run <app>` takes an app **name**, not a path. It is normalized to snake_case
-  and resolved by walking up from the current directory to `apps/<app>/`. Use
-  `--local-folder <dir>` for other layouts. `kindling app run .` **fails**
-  ("'.' cannot be converted to a valid Python identifier"), even though the
-  scaffolded app.py docstring and some docs suggest it.
+- `app run <app>` takes an app **name** or a **path** to an app directory (one
+  containing `app.py`): `kindling app run .` from inside the app directory,
+  `kindling app run apps/<app>`, or an absolute path. A name is normalized to
+  snake_case and resolved by walking up from the current directory to
+  `apps/<app>/`. Use `--local-folder <dir>` for other layouts.
+- With `--platform`, APP resolves to the name `app deploy` deploys under: the
+  app folder's name (`daily-orders` and `daily_orders` both submit
+  `daily_orders`; a path uses its directory name). Use the folder name in
+  commands. Nothing is uploaded, so deploy first; `--app-name` targets a custom
+  deployed name.
 - The `APP_NAME` argument to `app inspect` is only a display label. The app
   itself is still found through `--app` or the current directory.
 - Fixture CSVs at `tests/entities/<ns>/<name>.csv` are resolved **relative to the
@@ -222,16 +228,26 @@ Each command gets one line here. Run `--help` or see
 `docs/reference/cli_reference.md` for details.
 
 ```bash
+kindling runtime deploy --source github:0.13.2 --dest /Volumes/main/kindling/artifacts --extension spark-kindling-ext-databricks-autoloader   # Kindling + extension wheels -> <artifacts>/packages/
 kindling package check sales-core              # metadata, src layout, wheel builds
 kindling package deploy sales-core --artifacts-path /Volumes/main/kindling/artifacts   # build wheel -> <artifacts>/packages/
-kindling app package daily-orders --platform databricks --env prod   # -> dist/<app-dir>.kda
-kindling app deploy daily-orders --platform databricks --env prod    # upload app to <artifacts>/data-apps/<name>/
-kindling app run daily-orders --platform databricks --env prod       # run the deployed app remotely
+kindling app package daily_orders --platform databricks --env prod   # -> dist/<app-dir>.kda
+kindling app deploy daily_orders --platform databricks --env prod    # upload app to <artifacts>/data-apps/<name>/
+kindling app run daily_orders --platform databricks --env prod       # run the deployed app remotely
+kindling app run daily_orders --platform databricks --new-cluster --node-type Standard_DS4_v2 --num-workers 4   # size the job cluster
 kindling runner register --app daily-orders --platform databricks    # named job for external orchestrators
 kindling bundle build --name sales --target dev --app daily-orders   # Databricks Lakeflow bundle (deploy with databricks CLI)
 ```
 
 - Deploy the packages listed in `lake-reqs.txt` **before** the app that needs them.
+- Cloud bootstrap installs the extensions named in `kindling.extensions` from
+  `<artifacts>/packages/`; `kindling runtime deploy --extension NAME`
+  (repeatable) or `--all-extensions` puts their wheels there.
+- Remote `app run` and `app deploy` both default `--env` to `KINDLING_ENV`.
+- Databricks job compute: `--cluster-id ID` (existing cluster), or
+  `--new-cluster` with `--spark-version`, `--node-type`, `--num-workers`, on
+  `app run --platform databricks` and `runner register`. Serverless jobs are
+  not supported.
 - A `.kda` archive contains only `*.py`, `*.yaml`/`*.yml`, `*.sql`,
   `requirements.txt` and `lake-reqs.txt`. `settings.local.yaml` is never
   included, `settings.<platform>.yaml`/`settings.<env>.yaml` are included only
@@ -256,11 +272,16 @@ kindling bundle build --name sales --target dev --app daily-orders   # Databrick
   Never hand-edit one package's `[tool.uv.sources]` URL.
 - Kindling extensions are added with `kindling env add spark-kindling-ext-databricks`,
   never with `uv add` and a version you guessed.
+- A package's runtime `dependencies` take plain `spark-kindling`. Never put
+  `spark-kindling[standalone]`, `pyspark` or `delta-spark` there: lake wheels
+  are pip-installed with their dependencies on clusters that already supply
+  Spark and Delta. Local Spark comes from the root's `[standalone]` pin and
+  each package's `dev` group.
 - Run `kindling` from the repo `.venv/` (or `uv run kindling ...`).
 
 ```bash
 kindling env bootstrap
-kindling env update --version 0.13.1
+kindling env update --version 0.13.2
 (cd packages/sales_core && uv run poe test)
 ```
 

@@ -123,7 +123,7 @@ cd my_app
 kindling package init my-app
 kindling app init my-app --package my-app
 kindling env bootstrap      # pins Kindling at the root and syncs one repo-wide .venv/
-uv run kindling app run my-app --env local
+uv run kindling app run my_app --env local
 ```
 
 Or open the generated repo in its devcontainer (`.devcontainer/devcontainer.json`), which runs `kindling env bootstrap` for you.

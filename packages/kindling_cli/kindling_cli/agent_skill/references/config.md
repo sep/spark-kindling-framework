@@ -47,7 +47,8 @@ in `packages/kindling/bootstrap.py`), lowest precedence first:
 
 - `<platform>` is `standalone`, `databricks`, `fabric` or `synapse`;
   `<environment>` is the bootstrap `environment` (default `development`;
-  `kindling app run` defaults to `KINDLING_ENV` or `local`).
+  `kindling app run` defaults to `KINDLING_ENV` or `local`; a remote run
+  and `app deploy` default to `KINDLING_ENV`).
 - Deployed jobs download the same table from artifacts storage
   (`config/` then `data-apps/<app>/`); local `config_dir`/`app_dir` files
   layer on top of downloaded ones.
@@ -128,7 +129,8 @@ kindling:
           attempts: 5
   bootstrap:
     load_workspace_packages: false
-  extensions: [spark-kindling-ext-sdp]   # installed at cloud bootstrap
+  extensions: [spark-kindling-ext-sdp]   # installed at cloud bootstrap from <artifacts>/packages/
+                                         # (upload: kindling runtime deploy --extension NAME)
   secrets:
     secret_scope: my-scope  # Databricks; Fabric/Synapse use key_vault_url or linked_service
   lakeflow:

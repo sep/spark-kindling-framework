@@ -216,10 +216,10 @@ kindling package add entity bronze.orders --package packages/orders
 Generated:
 ```
 packages/orders/src/orders/entities/bronze.py   # entity definition appended or created (one module per namespace)
-packages/orders/tests/entities/bronze/orders.csv  # CSV fixture stub (placeholder header line)
+packages/orders/tests/entities/bronze/orders.csv  # CSV fixture stub (header row, no data rows)
 ```
 
-The generated CSV is a stub with a placeholder line to replace with the column headers, so unit and integration tests have a file to populate rather than having to create it from scratch.
+The generated CSV is a header row of the scaffolded schema's columns (`id`) with no data rows, so unit and integration tests have a file to populate rather than having to create it from scratch. Until it has data rows, local runs ignore it (with a warning) and read the entity's real provider.
 
 **As a developer, I want to add a new data pipe to a package**
 so that the pipe is registered, a transform function skeleton exists, and all three test tiers have scaffolding.
@@ -279,7 +279,7 @@ The base storage path (ABFSS URL) is set in `settings.yaml` per environment and 
 Generated:
 ```
 packages/myproject/src/myproject/pipes/bronze_myproject_raw_ingestion.py   # FileIngestionEntries entry with filename regex
-packages/myproject/src/myproject/entities/bronze.py                         # bronze.myproject_raw entity definition with CSV provider
+packages/myproject/src/myproject/entities/bronze.py                         # bronze.myproject_raw destination entity (default Delta provider)
 packages/myproject/tests/unit/test_bronze_myproject_raw_ingestion.py              # unit test placeholder (skipped)
 packages/myproject/tests/integration/test_bronze_myproject_raw_ingestion.py       # integration test placeholder (skipped)
 packages/myproject/tests/entities/bronze/myproject_raw/                     # folder for sample CSV files matching the ingestion pattern

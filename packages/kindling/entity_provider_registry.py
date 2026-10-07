@@ -161,7 +161,9 @@ class EntityProviderRegistry:
         Get appropriate provider for an entity based on its metadata.
 
         Reads provider_type from entity tags. Falls back to 'delta' provider if not specified
-        (backward compatibility).
+        (backward compatibility). A SQL entity (``DataEntities.sql_entity``) always gets
+        the read-only 'view' provider, whatever its tags say, so a tag override (from
+        the declaration or a config overlay) cannot make it writable.
 
         Args:
             entity_metadata: Entity metadata
@@ -172,7 +174,10 @@ class EntityProviderRegistry:
         Raises:
             ValueError: If specified provider type is not registered
         """
-        provider_type = entity_metadata.tags.get("provider_type", "delta")
+        if getattr(entity_metadata, "is_sql_entity", False) is True:
+            provider_type = "view"
+        else:
+            provider_type = (entity_metadata.tags or {}).get("provider_type", "delta")
 
         self.logger.debug(
             f"Resolving provider for entity '{entity_metadata.entityid}': type={provider_type}"
@@ -238,6 +243,16 @@ class EntityProviderRegistry:
             self.register_provider("current_view", CurrentViewEntityProvider)
         except ImportError:
             self.logger.debug("Current view provider not available")
+
+        # SQL entities (DataEntities.sql_entity) carry provider_type "view".
+        # Read-only: reads evaluate the declared SQL; the catalog view itself
+        # is created by `kindling migrate apply`, not by this provider.
+        try:
+            from .entity_provider_sql import SqlEntityProvider
+
+            self.register_provider("view", SqlEntityProvider)
+        except ImportError:
+            self.logger.debug("SQL entity provider not available")
 
         # API-based ADX provider (azure-kusto SDKs; the Spark-connector
         # variant lives in kindling_ext_adx under provider_type "adx")

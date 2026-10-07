@@ -169,7 +169,7 @@ def test_import_local_package_registrations_loads_entities_pipes_and_ingestion(
     assert os.environ["DEMO_INGESTION_IMPORTED"] == "1"
     assert logger.info_messages == [
         (
-            "Imported 6 local package registration modules from demo_domain",
+            "Imported 6 package registration modules from demo_domain",
             None,
         )
     ]
@@ -185,7 +185,7 @@ def test_import_local_package_registrations_ignores_missing_namespaces(monkeypat
 
     assert logger.debug_messages == [
         (
-            "No local package registration modules found under missing_domain",
+            "No package registration modules found under missing_domain",
             None,
         )
     ]
@@ -233,7 +233,7 @@ def test_import_local_package_registrations_accepts_explicit_registration_packag
     assert os.environ["EXPLICIT_DOMAIN_PIPES_IMPORTED"] == "1"
     assert logger.info_messages == [
         (
-            "Imported 4 local package registration modules from explicit_domain",
+            "Imported 4 package registration modules from explicit_domain",
             None,
         )
     ]
@@ -256,7 +256,7 @@ def test_import_local_package_registrations_merges_explicit_and_env_roots(tmp_pa
     assert os.environ["ENV_PKG_ENTITIES_IMPORTED"] == "1"
     assert logger.info_messages == [
         (
-            "Imported 8 local package registration modules from explicit_pkg, env_pkg",
+            "Imported 8 package registration modules from explicit_pkg, env_pkg",
             None,
         )
     ]

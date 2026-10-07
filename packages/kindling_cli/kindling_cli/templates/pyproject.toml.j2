@@ -4,8 +4,12 @@ version = "0.1.0"
 description = "Kindling data pipeline project — {{ kebab_name }}"
 authors = []
 requires-python = ">=3.10"
+# Plain spark-kindling: this package's wheel is installed on managed Spark
+# runtimes (Databricks, Fabric, Synapse) that provide their own Spark and
+# Delta, so it must not pull pyspark/delta-spark in. The local Spark stack
+# lives in the `dev` group below.
 dependencies = [
-    "spark-kindling[standalone]",
+    "spark-kindling",
 ]
 
 [build-system]
@@ -33,7 +37,10 @@ dev = [
     "poethepoet>=0.24.0",
     "spark-kindling-sdk",
     "spark-kindling-cli",
-]
+    # Local Spark for tests and `kindling app run` (spark-kindling's
+    # `standalone` extra, as plain requirements).
+{% for requirement in local_spark_requirements %}    "{{ requirement }}",
+{% endfor %}]
 
 [tool.poe.tasks]
 test-unit = "pytest tests/unit -v"

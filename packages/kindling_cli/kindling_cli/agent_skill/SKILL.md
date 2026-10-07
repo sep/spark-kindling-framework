@@ -1,6 +1,6 @@
 ---
 name: kindling
-description: Defines and changes Kindling data entities, data pipes (transforms, file ingestion, streaming, SCD merges), apps and settings.yaml configuration in a Kindling domain project, using the kindling CLI to scaffold, validate and run them locally. Use when a task touches packages/*/src/*/entities or pipes, apps/*, settings*.yaml, DataEntities, DataPipes, or any `kindling` command.
+description: Defines and changes Kindling data entities, data pipes (transforms, file ingestion, streaming, SCD merges), apps and settings.yaml configuration in a Kindling domain project, using the kindling CLI to scaffold, validate and run them locally. Also covers getting a project running on Databricks (setup, extensions, config, jobs and Lakeflow bundles). Use when a task touches packages/*/src/*/entities or pipes, apps/*, settings*.yaml, DataEntities, DataPipes, Databricks deployment, or any `kindling` command.
 ---
 
 # Kindling domain projects
@@ -67,6 +67,7 @@ Read the one that matches the task:
 | Write a pipe or transform, ingestion, streaming, watermarks, SCD merges | [references/pipes.md](references/pipes.md) |
 | Create an app, project layout, lake-reqs, packaging, deploy, environment setup | [references/apps.md](references/apps.md) |
 | Settings, environment overlays, entity_tags, env vars, secrets | [references/config.md](references/config.md) |
+| Getting started on Databricks: setup, extensions, config, jobs, Lakeflow bundles | [references/databricks.md](references/databricks.md) |
 
 ## Rules
 

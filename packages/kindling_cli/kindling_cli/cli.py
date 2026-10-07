@@ -16,7 +16,7 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 from urllib.parse import quote, urlparse
 
 import click
@@ -1349,11 +1349,20 @@ def _warn_missing_entity_fixtures(entity_registry: Any, pipe_registry: Any) -> N
             continue
         entity = entity_registry.get_entity_definition(entity_id)
         is_delta = entity.tags.get("provider_type", "delta") == "delta"
-        if is_delta and _fixture_csv_path(entity_id, cwd) is None:
-            parts = entity_id.replace(".", "/")
+        if not is_delta:
+            continue
+        parts = entity_id.replace(".", "/")
+        fixture_path = _fixture_csv_path(entity_id, cwd)
+        if fixture_path is None:
             click.echo(
                 f"[WARN] entity.{entity_id}.fixture: no fixture CSV at"
                 f" tests/entities/{parts}.csv — local runs will require cloud storage"
+            )
+        elif not _fixture_csv_has_data_rows(fixture_path):
+            click.echo(
+                f"[WARN] entity.{entity_id}.fixture: fixture CSV at"
+                f" tests/entities/{parts}.csv has no data rows and is ignored"
+                " — local runs will require cloud storage"
             )
 
 
@@ -2824,6 +2833,13 @@ def _reconcile_root_kindling_dependencies(
     the root is a single install, not a per-app one -- so this raises if they
     disagree rather than silently preferring one.
 
+    The root's spark-kindling always gets the `standalone` extra: packages
+    declare plain spark-kindling (their wheels go onto managed Spark
+    runtimes) and keep the local Spark stack in their `dev` group, while the
+    root is the repo's local dev environment (in the `kindling repo init`
+    layout a `package = false` workspace root, never built into a wheel
+    whose Requires-Dist could carry the extra).
+
     Returns {distribution: (group, extras, raw_entry)} to add at the root,
     or {} if no nested project declares Kindling either.
     """
@@ -2866,6 +2882,11 @@ def _reconcile_root_kindling_dependencies(
     merged: Dict[str, Tuple[Optional[str], List[str], Any]] = {}
     for entries in by_project.values():
         for name, (group, extras, entry) in entries.items():
+            if (
+                _canonical_distribution_name(name) == _KINDLING_DISTRIBUTION_PREFIX
+                and "standalone" not in extras
+            ):
+                extras = [*extras, "standalone"]
             merged.setdefault(name, (group, extras, entry))
     return merged
 
@@ -3513,6 +3534,9 @@ def env_add(
     click.echo(f"\nAdded {package} {match['version']}{location} to {pyproject_path}.")
 
 
+# The root keeps spark-kindling[standalone] (unlike a package, which declares
+# plain spark-kindling): it is the repo's local dev environment and is never
+# built into a wheel. See _reconcile_root_kindling_dependencies.
 _BOOTSTRAP_PACKAGES: Tuple[Tuple[str, Optional[str], List[str]], ...] = (
     ("spark-kindling", None, ["standalone"]),
     ("spark-kindling-sdk", "dev", []),
@@ -3903,6 +3927,74 @@ def _deploy_wheels(store: ArtifactStore, wheels: List[Path], quiet: bool = False
     return count
 
 
+_EXTENSION_DIST_PREFIX = "spark-kindling-ext-"
+_LEGACY_EXTENSION_DIST_PREFIX = "kindling-ext-"
+
+
+def _normalize_extension_name(name: str) -> str:
+    """Canonical distribution name of a Kindling extension.
+
+    Accepts the distribution name (``spark-kindling-ext-sdp``), its wheel /
+    underscore form (``spark_kindling_ext_sdp``) and the pre-rename alias
+    (``kindling-ext-sdp``) -- the same equivalences bootstrap's
+    ``dist_name_candidates`` applies when it looks for the wheel in
+    ``packages/``.
+    """
+    normalized = re.sub(r"[-_.]+", "-", name.strip()).lower()
+    if normalized.startswith(_LEGACY_EXTENSION_DIST_PREFIX):
+        normalized = _EXTENSION_DIST_PREFIX + normalized[len(_LEGACY_EXTENSION_DIST_PREFIX) :]
+    return normalized
+
+
+def _available_extension_wheels(source_dir: Path) -> Dict[str, List[Path]]:
+    """Extension wheels in a directory, keyed by canonical distribution name."""
+    available: Dict[str, List[Path]] = {}
+    wheels = set(source_dir.glob("spark_kindling_ext_*.whl")) | set(
+        source_dir.glob("kindling_ext_*.whl")
+    )
+    for wheel in sorted(wheels):
+        # Wheel filenames escape dashes in the distribution name, so the
+        # distribution is everything before the first dash.
+        dist = _normalize_extension_name(wheel.name.split("-", 1)[0])
+        available.setdefault(dist, []).append(wheel)
+    return available
+
+
+def _select_extension_wheels(
+    source_dir: Path,
+    names: Sequence[str],
+    all_extensions: bool,
+    source_label: str,
+) -> List[Path]:
+    """Pick the extension wheels requested by --extension / --all-extensions."""
+    if not names and not all_extensions:
+        return []
+
+    available = _available_extension_wheels(source_dir)
+    available_text = ", ".join(sorted(available)) or "none"
+
+    missing = [name for name in names if _normalize_extension_name(name) not in available]
+    if missing:
+        raise click.ClickException(
+            f"Extension(s) not found in {source_label}: {', '.join(missing)}. "
+            f"Available extensions: {available_text}."
+        )
+    if all_extensions and not available:
+        raise click.ClickException(
+            f"--all-extensions: no spark_kindling_ext_*.whl wheels found in {source_label}."
+        )
+
+    if all_extensions:
+        selected = sorted(available)
+    else:
+        selected = []
+        for name in names:
+            dist = _normalize_extension_name(name)
+            if dist not in selected:
+                selected.append(dist)
+    return [wheel for dist in selected for wheel in available[dist]]
+
+
 def _load_package_metadata(package_root: Path) -> Tuple[str, str]:
     """Read package name and version from PEP 621 or legacy Poetry metadata."""
     pyproject_path = package_root / "pyproject.toml"
@@ -3994,17 +4086,21 @@ def _deploy_bootstrap_script(
     store: ArtifactStore,
     repo_root: Path,
     overwrite: bool = True,
+    err: bool = False,
 ) -> bool:
-    """Upload kindling_bootstrap.py to scripts/. Returns True if found and uploaded."""
+    """Upload kindling_bootstrap.py to scripts/. Returns True if found and uploaded.
+
+    ``err`` routes progress to stderr (keeps --json stdout parseable).
+    """
     bootstrap = repo_root / "runtime" / "scripts" / "kindling_bootstrap.py"
     if not bootstrap.exists():
         return False
     if store.upload_file(
         "scripts/kindling_bootstrap.py", bootstrap.read_bytes(), overwrite=overwrite
     ):
-        click.echo("  kindling_bootstrap.py")
+        click.echo("  kindling_bootstrap.py", err=err)
     else:
-        click.echo("  kindling_bootstrap.py (exists, skipped)")
+        click.echo("  kindling_bootstrap.py (exists, skipped)", err=err)
     return True
 
 
@@ -4896,6 +4992,82 @@ def _resolve_by_convention(name: str, root_dir: str, label: str) -> Path:
     )
 
 
+def _looks_like_app_path(app: str) -> bool:
+    """True when `app run`'s APP argument is a filesystem path rather than a name.
+
+    `.`/`..`, anything containing a path separator, `~`-prefixed and absolute
+    paths, and `*.py` files are paths; anything else is an app name.
+    """
+    if app in (".", "..") or app.startswith("~") or app.endswith(".py"):
+        return True
+    if any(sep and sep in app for sep in (os.sep, os.altsep)):
+        return True
+    return Path(app).is_absolute()
+
+
+def _resolve_app_dir_from_path(app: str) -> Path:
+    """Resolve a path argument (an app directory or its app.py) to the app directory."""
+    candidate = Path(app).expanduser()
+    if not candidate.exists():
+        raise click.ClickException(
+            f"App path '{app}' does not exist. Pass an app directory containing app.py "
+            "(e.g. `.` or `apps/<app>`) or an app name."
+        )
+    resolved = candidate.resolve()
+    if resolved.is_file():
+        if resolved.name != "app.py":
+            raise click.ClickException(
+                f"'{app}' is not an app: expected an app directory or its app.py."
+            )
+        return resolved.parent
+    if not (resolved / "app.py").is_file():
+        raise click.ClickException(
+            f"'{app}' is not an app directory: no app.py in {resolved}. "
+            "Pass an app directory containing app.py, an app name (looked up as "
+            "apps/<app>/), or use --local-folder for other layouts."
+        )
+    return resolved
+
+
+def _remote_app_name(app: str) -> str:
+    """The deployed name for `app run --platform`'s APP argument, resolved the
+    way `app deploy` names an app: by its folder name. A path names its
+    folder; a name finds apps/<snake_name>/ by convention, and when that
+    folder isn't available locally (e.g. running outside the repo) falls back
+    to the snake_case form `app deploy` would have used. So `my-app` and
+    `my_app` both submit `my_app`."""
+    from kindling_cli.scaffold import validate_name
+
+    if _looks_like_app_path(app):
+        return _default_app_name(_resolve_app_dir_from_path(app))
+    try:
+        return _default_app_name(_resolve_by_convention(app, "apps", "app"))
+    except click.ClickException:
+        try:
+            return validate_name(app)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+
+def _resolve_app_run_dir(app: str) -> Path:
+    """Resolve `app run`'s APP argument to a local app directory.
+
+    A path (`.`, `apps/foo`, an absolute path) must be a directory containing
+    app.py. A name is looked up by convention as apps/<snake_name>/ walking up
+    from the current directory; failing that, a directory of that name in the
+    current directory that contains app.py is accepted.
+    """
+    if _looks_like_app_path(app):
+        return _resolve_app_dir_from_path(app)
+    try:
+        return _resolve_by_convention(app, "apps", "app")
+    except click.ClickException:
+        local_dir = Path(app)
+        if (local_dir / "app.py").is_file():
+            return local_dir.resolve()
+        raise
+
+
 @app_group.command("init")
 @click.argument("app_name")
 @click.option(
@@ -5215,6 +5387,108 @@ def _resolve_runtime_parameters(
     return parameters
 
 
+def _job_compute_options(func):
+    """Add the Databricks job compute options shared by `app run` and `runner register`."""
+    options = [
+        click.option(
+            "--cluster-id",
+            default=None,
+            help="Databricks only: run on this existing cluster (overrides DATABRICKS_CLUSTER_ID).",
+        ),
+        click.option(
+            "--new-cluster",
+            is_flag=True,
+            default=False,
+            help=(
+                "Databricks only: run on a new job cluster even if DATABRICKS_CLUSTER_ID is set."
+            ),
+        ),
+        click.option(
+            "--spark-version",
+            default=None,
+            help="Databricks only: runtime version for a new job cluster (e.g. 15.4.x-scala2.12).",
+        ),
+        click.option(
+            "--node-type",
+            default=None,
+            help="Databricks only: node type for a new job cluster (e.g. Standard_DS3_v2).",
+        ),
+        click.option(
+            "--num-workers",
+            default=None,
+            type=click.IntRange(min=1),
+            help="Databricks only: worker count for a new job cluster.",
+        ),
+    ]
+    for option in reversed(options):
+        func = option(func)
+    return func
+
+
+def _job_compute_flags(
+    cluster_id: Optional[str],
+    new_cluster: bool,
+    spark_version: Optional[str],
+    node_type: Optional[str],
+    num_workers: Optional[int],
+) -> List[str]:
+    """Names of the job compute options that were given."""
+    given = {
+        "--cluster-id": cluster_id is not None,
+        "--new-cluster": new_cluster,
+        "--spark-version": spark_version is not None,
+        "--node-type": node_type is not None,
+        "--num-workers": num_workers is not None,
+    }
+    return [flag for flag, present in given.items() if present]
+
+
+def _resolve_job_compute(
+    platform: str,
+    cluster_id: Optional[str],
+    new_cluster: bool,
+    spark_version: Optional[str],
+    node_type: Optional[str],
+    num_workers: Optional[int],
+) -> Optional[Dict[str, Any]]:
+    """Map the job compute options to the SDK's ``compute`` dict.
+
+    Returns None when no option was given, so the SDK keeps its defaults
+    (including DATABRICKS_CLUSTER_ID).
+    """
+    flags = _job_compute_flags(cluster_id, new_cluster, spark_version, node_type, num_workers)
+    if not flags:
+        return None
+    if platform != "databricks":
+        raise click.ClickException(
+            f"{', '.join(flags)} {'is' if len(flags) == 1 else 'are'} only supported on "
+            f"Databricks, not {platform}."
+        )
+    if cluster_id is not None and not cluster_id.strip():
+        raise click.ClickException("--cluster-id must not be empty.")
+    sizing = [flag for flag in flags if flag in ("--spark-version", "--node-type", "--num-workers")]
+    if cluster_id is not None and new_cluster:
+        raise click.ClickException("--cluster-id and --new-cluster are mutually exclusive.")
+    if cluster_id is not None and sizing:
+        raise click.ClickException(
+            f"{', '.join(sizing)} only apply to a new job cluster and cannot be combined "
+            "with --cluster-id."
+        )
+
+    compute: Dict[str, Any] = {}
+    if cluster_id is not None:
+        compute["existing_cluster_id"] = cluster_id.strip()
+    if new_cluster:
+        compute["force_new_cluster"] = True
+    if spark_version is not None:
+        compute["spark_version"] = spark_version
+    if node_type is not None:
+        compute["node_type_id"] = node_type
+    if num_workers is not None:
+        compute["num_workers"] = num_workers
+    return compute
+
+
 def _run_remote_app(
     app_ref: str,
     app_name: Optional[str],
@@ -5228,8 +5502,12 @@ def _run_remote_app(
     timeout: float,
     fail_on_error: bool,
     json_output: bool,
+    compute_options: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Submit a run of an already-deployed app on a remote platform."""
+    """Submit a run of an already-deployed app on a remote platform.
+
+    ``compute_options`` holds the raw `--cluster-id/--new-cluster/...` values.
+    """
     if poll_interval <= 0:
         raise click.ClickException("--poll-interval must be greater than 0.")
     if timeout <= 0:
@@ -5239,6 +5517,7 @@ def _run_remote_app(
     resolved_name = (app_name or app_ref).strip()
     if not resolved_name:
         raise click.ClickException("App name resolved to an empty string.")
+    compute = _resolve_job_compute(resolved_platform, **(compute_options or {}))
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     parameters = _resolve_runtime_parameters(parameters_path, param_overrides, resolved_platform)
@@ -5249,17 +5528,32 @@ def _run_remote_app(
         pass
 
     _emit_progress(f"Submitting app run `{resolved_name}` on {resolved_platform}...", json_output)
+    # compute is passed only when given, so SDK clients that predate it still work.
+    submit_kwargs: Dict[str, Any] = {"compute": compute} if compute else {}
     try:
         run_id = api_client.submit_app_run(
             resolved_name,
-            environment=env or None,
+            # Same default as `app deploy`, so a run reads the overlay it deployed.
+            environment=env or os.getenv("KINDLING_ENV") or None,
             parameters=parameters or None,
+            **submit_kwargs,
         )
     except NotImplementedError:
         raise click.ClickException(
             f"Direct app submission is not yet supported on {resolved_platform}. "
             "Upgrade spark-kindling-sdk when platform support is available."
         )
+    except ValueError as exc:
+        if not compute:
+            raise
+        raise click.ClickException(str(exc)) from exc
+    except TypeError as exc:
+        if not compute or "compute" not in str(exc):
+            raise
+        raise click.ClickException(
+            "This spark-kindling-sdk does not support job compute options; "
+            "upgrade spark-kindling-sdk."
+        ) from exc
     _emit_progress(f"Run ID: {run_id}", json_output)
 
     payload: Dict[str, Any] = {
@@ -5416,7 +5710,14 @@ def _run_standalone_app(
 @app_group.command("run")
 @click.argument("app", required=True)
 @click.option("--app-name", default=None, help="Remote app name override for remote runs.")
-@click.option("--env", default=None, help="Runtime environment to pass to the app run.")
+@click.option(
+    "--env",
+    default=None,
+    help=(
+        "Environment overlay for the run (default: KINDLING_ENV; for standalone "
+        "runs, KINDLING_ENV or 'local')."
+    ),
+)
 @click.option(
     "--local-folder",
     "local_folder",
@@ -5514,6 +5815,7 @@ def _run_standalone_app(
         "locally. By default, locally installed packages are used without contacting the lake."
     ),
 )
+@_job_compute_options
 @traced_command("app.run")
 def app_run(
     app: str,
@@ -5537,14 +5839,30 @@ def app_run(
     dotenv_paths: Tuple[Path, ...],
     no_dotenv: bool,
     load_lake: bool = False,
+    cluster_id: Optional[str] = None,
+    new_cluster: bool = False,
+    spark_version: Optional[str] = None,
+    node_type: Optional[str] = None,
+    num_workers: Optional[int] = None,
 ) -> None:
     """Run an app locally or remotely on a managed platform.
 
-    For standalone runs, APP is the app name and kindling looks up apps/<app>/ by
-    convention. Use --local-folder to override for non-standard layouts.
+    APP is an app name or a path to an app directory (one containing app.py),
+    e.g. `.` from inside the app directory, `apps/my_app`, or an absolute path.
 
-    For remote runs (--platform), APP is the deployed app name. The app must already
-    be deployed; use 'kindling app deploy APP --platform PLATFORM' first.
+    For standalone runs, a name is looked up as apps/<app>/ by convention
+    (walking up from the current directory). Use --local-folder to override for
+    non-standard layouts.
+
+    For remote runs (--platform), a name is the deployed app name; a path runs
+    the app deployed under that directory's name (the name `kindling app deploy`
+    gives it by default). Nothing is uploaded: deploy first with
+    'kindling app deploy APP --platform PLATFORM'. --app-name overrides the name.
+
+    For Databricks runs, --cluster-id, --new-cluster, --spark-version,
+    --node-type and --num-workers choose the job compute. Without them the run
+    uses DATABRICKS_CLUSTER_ID if set, else a new job cluster with the SDK
+    defaults.
 
     \b
     --trace/--trace-level are documented sugar for
@@ -5552,14 +5870,27 @@ def app_run(
     an explicit --param for the same key still wins.
     """
     param_overrides = _prepend_trace_param_overrides(trace, trace_level, param_overrides)
+    compute_options = {
+        "cluster_id": cluster_id,
+        "new_cluster": new_cluster,
+        "spark_version": spark_version,
+        "node_type": node_type,
+        "num_workers": num_workers,
+    }
 
     if platform == "standalone":
         if app_name:
             raise click.ClickException("--app-name is only valid for remote app runs.")
+        compute_flags = _job_compute_flags(**compute_options)
+        if compute_flags:
+            raise click.ClickException(
+                f"{', '.join(compute_flags)} {'is' if len(compute_flags) == 1 else 'are'} "
+                "only valid for remote app runs (--platform databricks)."
+            )
         if local_folder:
             resolved_app_ref = str(local_folder.expanduser().resolve())
         else:
-            resolved_app_ref = str(_resolve_by_convention(app, "apps", "app"))
+            resolved_app_ref = str(_resolve_app_run_dir(app))
         resolved_dotenvs: Tuple[Path, ...]
         if no_dotenv:
             resolved_dotenvs = ()
@@ -5598,8 +5929,12 @@ def app_run(
     if load_lake:
         raise click.ClickException("--load-lake is only valid for standalone app runs.")
 
+    # Remote runs submit an already-deployed app by name (nothing is uploaded),
+    # so APP must resolve to the name `app deploy` deployed it under: the app
+    # folder's name. --app-name, when given, wins either way.
+    remote_app_ref = app if app_name else _remote_app_name(app)
     _run_remote_app(
-        app,
+        remote_app_ref,
         app_name,
         env,
         parameters_path,
@@ -5611,6 +5946,7 @@ def app_run(
         timeout,
         fail_on_error,
         json_output,
+        compute_options=compute_options,
     )
 
 
@@ -5776,12 +6112,27 @@ def _csv_stub_exists(app_path: Path, namespace: str, name: str) -> bool:
     return (app_path / "tests" / "entities" / namespace / f"{name}.csv").exists()
 
 
-def _create_csv_stub(app_path: Path, namespace: str, name: str) -> Path:
-    """Create an empty CSV stub (headers only) if it does not already exist."""
+def _create_csv_stub(
+    app_path: Path, namespace: str, name: str, columns: Optional[Sequence[str]] = None
+) -> Path:
+    """Create a CSV fixture stub with no data rows if it does not already exist.
+
+    With *columns* the stub is a header row of those columns; without them
+    (schema unknown) it is a single comment line. Either way it has no data
+    rows, so local runs ignore it and read the entity's provider until rows
+    are added.
+    """
     csv_path = app_path / "tests" / "entities" / namespace / f"{name}.csv"
     if not csv_path.exists():
         _ensure_dir(csv_path.parent)
-        csv_path.write_text("# add CSV headers here\n", encoding="utf-8")
+        if columns:
+            content = ",".join(columns) + "\n"
+        else:
+            content = (
+                f"# Fixture for {namespace}.{name}: replace this line with a CSV header row "
+                "and add data rows (ignored until it has data rows)\n"
+            )
+        csv_path.write_text(content, encoding="utf-8")
     return csv_path
 
 
@@ -6197,11 +6548,20 @@ def _entity_declared_in(module_dir: Path, entity_id: str) -> bool:
     )
 
 
+# Columns of the schema _scaffold_entity_definition generates; the fixture
+# stub `package add entity` writes uses them as its header row.
+_SCAFFOLD_ENTITY_COLUMNS = ("id",)
+
+
 def _scaffold_entity_definition(module_dir: Path, entity_id: str) -> Path:
     """Append a DataEntities.entity() skeleton for entity_id to the package's
     entities module for its namespace; returns that module."""
     namespace, name = _parse_entity_id(entity_id)
     schema_var = f"{namespace}_{name}_schema"
+    schema_fields = "".join(
+        f'        StructField("{column}", StringType(), False),\n'
+        for column in _SCAFFOLD_ENTITY_COLUMNS
+    )
 
     entity_block = f"""
 # --- {entity_id} ---
@@ -6209,8 +6569,7 @@ from pyspark.sql.types import StringType, StructField, StructType
 
 {schema_var} = StructType(
     [
-        StructField("id", StringType(), False),
-        # TODO: add fields for {entity_id}
+{schema_fields}        # TODO: add fields for {entity_id}
     ]
 )
 
@@ -6274,8 +6633,13 @@ def package_add_entity(entity_id: str, package_path: Path) -> None:
     module_dir, project_dir = _package_add_targets(package_path)
     _scaffold_entity_definition(module_dir, entity_id)
 
-    csv_path = _create_csv_stub(project_dir, namespace, name)
-    click.echo(f"Created fixture stub {csv_path}")
+    if _csv_stub_exists(project_dir, namespace, name):
+        click.echo(f"Kept existing fixture tests/entities/{namespace}/{name}.csv")
+        return
+    csv_path = _create_csv_stub(project_dir, namespace, name, columns=_SCAFFOLD_ENTITY_COLUMNS)
+    click.echo(
+        f"Created fixture stub {csv_path} (header only; local runs ignore it until it has data rows)"
+    )
 
 
 # ---- package add pipe ----
@@ -6458,7 +6822,7 @@ def package_add_ingestion(
     Creates:
       <module>/pipes/<ns>_<name>_ingestion.py     — FileIngestionEntries skeleton
                                                     (pipes/ is created if missing)
-      <module>/entities/<ns>.py                   — entity definition with CSV provider
+      <module>/entities/<ns>.py                   — destination entity (default Delta provider)
                                                     (<module>/entities.py without entities/)
       tests/unit/test_<ns>_<name>_ingestion.py        — pytest skip stub
       tests/integration/test_<ns>_<name>_ingestion.py — pytest skip stub
@@ -6501,7 +6865,6 @@ FileIngestionEntries.entry(
     patterns=[r"{pattern}"],
     dest_entity_id="{entity_id}",
     tags={{
-        "provider_type": "csv",
         "layer": "{namespace}",
     }},
     infer_schema=False,
@@ -6515,7 +6878,10 @@ FileIngestionEntries.entry(
 
     # --- entity definition in entities.py ---
     entity_block = f"""
-# --- {entity_id} (CSV ingestion) ---
+# --- {entity_id} (file ingestion destination) ---
+# Matched source files are appended through this entity's own provider. No
+# provider_type tag means the default Delta provider; set one (plus its
+# provider.* tags) to land the data somewhere else.
 from pyspark.sql.types import StringType, StructField, StructType
 
 {schema_var} = StructType(
@@ -6531,7 +6897,6 @@ DataEntities.entity(
     partition_columns=[],
     merge_columns=["id"],
     tags={{
-        "provider_type": "csv",
         "layer": "{namespace}",
     }},
     schema={schema_var},
@@ -6616,6 +6981,14 @@ def _fixture_csv_path(entity_id: str, cwd: Path) -> Optional[Path]:
     return candidate if candidate.is_file() else None
 
 
+def _fixture_csv_has_data_rows(csv_path: Path) -> bool:
+    """Whether local runs use this fixture: one with no data rows (empty,
+    header-only or comment-only) is ignored in favour of the entity's provider."""
+    from kindling.entity_provider_csv import fixture_csv_has_data_rows
+
+    return fixture_csv_has_data_rows(csv_path)
+
+
 def _read_csv_rows(csv_path: Path) -> Tuple[List[str], List[List[str]]]:
     """Read a CSV file and return (headers, rows).
 
@@ -6625,15 +6998,16 @@ def _read_csv_rows(csv_path: Path) -> Tuple[List[str], List[List[str]]]:
     Returns:
         Tuple of column headers list and list of row value lists.
     """
+    # Lines starting with "#" and blank records are skipped, as the runtime's
+    # fixture reader does (Spark comment="#"), so show/validate see the same
+    # header and rows a local run reads.
     text = csv_path.read_text(encoding="utf-8")
-    reader = csv.reader(io.StringIO(text))
-    rows_iter = iter(reader)
-    try:
-        headers = next(rows_iter)
-    except StopIteration:
+    lines = [line for line in text.splitlines(keepends=True) if not line.startswith("#")]
+    # Skip blank lines only: a delimiter-only line (",") is a row of nulls.
+    records = [r for r in csv.reader(lines) if r]
+    if not records:
         return [], []
-    rows = list(rows_iter)
-    return headers, rows
+    return records[0], records[1:]
 
 
 def _resolve_entity_info(entity_id: str, entity_def: Any) -> Tuple[str, str]:
@@ -7240,6 +7614,8 @@ def app_inspect(
         fixture_path = _fixture_csv_path(eid, cwd)
         if fixture_path is not None:
             fixture_label = str(fixture_path.relative_to(cwd))
+            if not _fixture_csv_has_data_rows(fixture_path):
+                fixture_label += " (no data rows; ignored)"
         else:
             fixture_label = "-"
         table_rows.append([eid, provider_type, provider_path, fixture_label])
@@ -7518,11 +7894,17 @@ def runner_group() -> None:
     help="Target platform.  Auto-detected from environment if omitted.",
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+@_job_compute_options
 def runner_register(
     app_name: str,
     config_overrides: tuple,
     platform: Optional[str],
     json_output: bool,
+    cluster_id: Optional[str] = None,
+    new_cluster: bool = False,
+    spark_version: Optional[str] = None,
+    node_type: Optional[str] = None,
+    num_workers: Optional[int] = None,
 ) -> None:
     """Register an app as a named job definition for pipeline/workflow integration.
 
@@ -7537,12 +7919,22 @@ def runner_register(
     Config overrides supplied here are baked into the definition as config:k=v
     bootstrap args. Re-running ``register`` updates the definition in place (idempotent).
 
+    On Databricks, --cluster-id, --new-cluster, --spark-version, --node-type and
+    --num-workers choose the job's compute. Without them the job uses
+    DATABRICKS_CLUSTER_ID if set, else a new job cluster with the SDK defaults.
+
     Examples::
 
+    \b
         kindling runner register --app my-app --platform synapse
-        kindling runner register --app my-app --config env=prod --config region=eastus
+        kindling runner register --app my-app --config environment=prod --config region=eastus
+        kindling runner register --app my-app --platform databricks \\
+            --new-cluster --node-type Standard_DS4_v2 --num-workers 4
     """
     resolved_platform = _resolve_remote_platform(platform)
+    compute = _resolve_job_compute(
+        resolved_platform, cluster_id, new_cluster, spark_version, node_type, num_workers
+    )
     api_client, resolved_platform = _create_platform_api(resolved_platform)
 
     overrides: Dict[str, Any] = {}
@@ -7555,13 +7947,28 @@ def runner_register(
             raise click.ClickException("--config keys must not be empty.")
         _set_nested_key(overrides, k, _coerce_value(v))
 
+    # compute is passed only when given, so SDK clients that predate it still work.
+    register_kwargs: Dict[str, Any] = {"compute": compute} if compute else {}
     try:
-        result = api_client.register_app_job(app_name, config_overrides=overrides or None)
+        result = api_client.register_app_job(
+            app_name, config_overrides=overrides or None, **register_kwargs
+        )
     except (AttributeError, NotImplementedError):
         raise click.ClickException(
             f"Job definition registration is not yet supported on {resolved_platform}. "
             "Upgrade spark-kindling-sdk when platform support is available."
         )
+    except ValueError as exc:
+        if not compute:
+            raise
+        raise click.ClickException(str(exc)) from exc
+    except TypeError as exc:
+        if not compute or "compute" not in str(exc):
+            raise
+        raise click.ClickException(
+            "This spark-kindling-sdk does not support job compute options; "
+            "upgrade spark-kindling-sdk."
+        ) from exc
 
     _emit_result(
         {"platform": resolved_platform, **result},
@@ -8493,13 +8900,14 @@ def _copy_between_stores(
     dest_store: ArtifactStore,
     dest_prefix: str,
     overwrite: bool = True,
-) -> int:
+    err: bool = False,
+) -> List[str]:
     """Copy files under a source prefix to a dest prefix, across any backends.
 
     Each file is buffered in memory (fine at wheel/config sizes). Returns the
-    count of files copied.
+    copied paths, relative to the prefix. ``err`` routes progress to stderr.
     """
-    count = 0
+    copied: List[str] = []
     for file_path in src_store.list_files(src_prefix):
         rel = (
             file_path[len(src_prefix) + 1 :]
@@ -8508,9 +8916,9 @@ def _copy_between_stores(
         )
         dest_path = f"{dest_prefix}/{rel}" if dest_prefix else rel
         dest_store.upload_file(dest_path, src_store.download_file(file_path), overwrite=overwrite)
-        click.echo(f"  {rel}")
-        count += 1
-    return count
+        click.echo(f"  {rel}", err=err)
+        copied.append(rel)
+    return copied
 
 
 @cli.group("runtime")
@@ -8547,6 +8955,26 @@ def runtime_group() -> None:
     help="Release version for github source (overrides VERSION in --source github:VERSION).",
 )
 @click.option(
+    "--extension",
+    "extensions",
+    multiple=True,
+    metavar="NAME",
+    help=(
+        "Also upload this Kindling extension's wheel from the source "
+        "(distribution name, e.g. spark-kindling-ext-sdp; spark_kindling_ext_sdp "
+        "also accepted). Repeatable. github: and local: sources only."
+    ),
+)
+@click.option(
+    "--all-extensions",
+    "all_extensions",
+    is_flag=True,
+    help=(
+        "Also upload every spark_kindling_ext_*.whl wheel in the source. "
+        "github: and local: sources only."
+    ),
+)
+@click.option(
     "--skip-bootstrap",
     "skip_bootstrap",
     is_flag=True,
@@ -8562,13 +8990,17 @@ def runtime_group() -> None:
         "scripts are skipped if already present."
     ),
 )
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 @traced_command("runtime.deploy")
 def runtime_deploy(
     source: str,
     dest: str,
     version: Optional[str],
+    extensions: Tuple[str, ...],
+    all_extensions: bool,
     skip_bootstrap: bool,
     overwrite: bool,
+    json_output: bool,
 ) -> None:
     """Deploy kindling runtime artifacts (wheels + bootstrap script) to artifact storage.
 
@@ -8582,16 +9014,27 @@ def runtime_deploy(
 
     \b
     Destination layout under --dest:
-      {dest}/packages/  — spark_kindling-*.whl wheel files
+      {dest}/packages/  — spark_kindling-*.whl (+ spark_kindling_ext_*.whl
+                          selected with --extension / --all-extensions)
       {dest}/scripts/   — kindling_bootstrap.py
+
+    Extension wheels uploaded here are what bootstrap installs for the
+    distributions listed in kindling.extensions.
 
     \b
     Examples:
       kindling runtime deploy --source github:latest --dest abfss://artifacts@myprod.dfs.core.windows.net/kindling
-      kindling runtime deploy --source local:./dist --dest /Volumes/main/kindling/artifacts
+      kindling runtime deploy --source github:latest --dest /Volumes/main/kindling/artifacts --extension spark-kindling-ext-sdp
+      kindling runtime deploy --source local:./dist --dest /Volumes/main/kindling/artifacts --all-extensions
       kindling runtime deploy --source abfss://artifacts@staging.dfs.core.windows.net/k --dest /Volumes/main/kindling/artifacts
     """
     import tempfile
+
+    def say(message: str = "") -> None:
+        _emit_progress(message, json_output)
+
+    def is_extension_wheel(name: str) -> bool:
+        return name.startswith(("spark_kindling_ext_", "kindling_ext_"))
 
     # ---- Validate dest and open its store ----------------------------------------
     try:
@@ -8602,6 +9045,30 @@ def runtime_deploy(
             message = f"Invalid destination URI `{dest}`. {message}"
         raise click.ClickException(message) from exc
 
+    is_store_source = not source.startswith(("github:", "local:"))
+    if is_store_source and (extensions or all_extensions):
+        raise click.ClickException(
+            "--extension / --all-extensions apply to github: and local: sources. "
+            "A store-to-store copy already copies every wheel under packages/, "
+            "extensions included."
+        )
+
+    resolved_version: Optional[str] = None
+    runtime_wheels: List[str] = []
+    extension_wheels: List[str] = []
+    scripts: List[str] = []
+
+    def upload_wheels(source_dir: Path, wheels: List[Path], source_label: str) -> None:
+        selected_extensions = _select_extension_wheels(
+            source_dir, extensions, all_extensions, source_label
+        )
+        say("Packages → packages/")
+        count = _deploy_wheels(dest_store, wheels + selected_extensions, quiet=json_output)
+        say(f"  ({count} wheel(s) uploaded)")
+        say()
+        runtime_wheels.extend(wheel.name for wheel in wheels)
+        extension_wheels.extend(wheel.name for wheel in selected_extensions)
+
     # ---- Determine source type --------------------------------------------------
     if source.startswith("github:"):
         # github:VERSION or github:latest
@@ -8609,8 +9076,8 @@ def runtime_deploy(
         resolved_version = version or embedded_version
         resolved_version = _resolve_github_version(resolved_version)
 
-        click.echo(f"Publishing from GitHub release v{resolved_version} → {dest}")
-        click.echo()
+        say(f"Publishing from GitHub release v{resolved_version} → {dest}")
+        say()
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -8623,27 +9090,25 @@ def runtime_deploy(
                     "Expected spark_kindling-*.whl attachments."
                 )
 
-            click.echo("Packages → packages/")
-            count = _deploy_wheels(dest_store, wheels)
-            click.echo(f"  ({count} wheel(s) uploaded)")
-            click.echo()
+            upload_wheels(tmp_path, wheels, f"GitHub release v{resolved_version}")
 
             if not skip_bootstrap:
                 bootstrap_in_release = tmp_path / "kindling_bootstrap.py"
                 if bootstrap_in_release.exists():
-                    click.echo("Scripts → scripts/")
+                    say("Scripts → scripts/")
                     if dest_store.upload_file(
                         "scripts/kindling_bootstrap.py",
                         bootstrap_in_release.read_bytes(),
                         overwrite=overwrite,
                     ):
-                        click.echo("  kindling_bootstrap.py")
+                        say("  kindling_bootstrap.py")
+                        scripts.append("kindling_bootstrap.py")
                     else:
-                        click.echo("  kindling_bootstrap.py (exists, skipped)")
-                    click.echo()
+                        say("  kindling_bootstrap.py (exists, skipped)")
+                    say()
                 else:
-                    click.echo("  kindling_bootstrap.py not in release assets — skipping.")
-                    click.echo()
+                    say("  kindling_bootstrap.py not in release assets — skipping.")
+                    say()
 
     elif source.startswith("local:"):
         # local:PATH
@@ -8656,8 +9121,8 @@ def runtime_deploy(
         if not local_dir.is_dir():
             raise click.ClickException(f"Local source path is not a directory: {local_dir}")
 
-        click.echo(f"Publishing from local directory {local_dir} → {dest}")
-        click.echo()
+        say(f"Publishing from local directory {local_dir} → {dest}")
+        say()
 
         wheels = _find_wheels(local_dir)
         if not wheels:
@@ -8666,14 +9131,11 @@ def runtime_deploy(
                 "Expected spark_kindling-*.whl or kindling_<platform>-*.whl."
             )
 
-        click.echo("Packages → packages/")
-        count = _deploy_wheels(dest_store, wheels)
-        click.echo(f"  ({count} wheel(s) uploaded)")
-        click.echo()
+        upload_wheels(local_dir, wheels, str(local_dir))
 
         if not skip_bootstrap:
             # Look for bootstrap in runtime/scripts/ relative to local_dir or its parents
-            click.echo("Scripts → scripts/")
+            say("Scripts → scripts/")
             repo_root = local_dir
             bootstrap_found = False
             for candidate in (repo_root, repo_root.parent, repo_root.parent.parent):
@@ -8682,11 +9144,14 @@ def runtime_deploy(
                     bootstrap_found = True
                     break
             if bootstrap_found:
-                if _deploy_bootstrap_script(dest_store, repo_root, overwrite=overwrite):
-                    click.echo()
+                if _deploy_bootstrap_script(
+                    dest_store, repo_root, overwrite=overwrite, err=json_output
+                ):
+                    scripts.append("kindling_bootstrap.py")
+                    say()
             else:
-                click.echo("  kindling_bootstrap.py not found in runtime/scripts/ — skipping.")
-                click.echo()
+                say("  kindling_bootstrap.py not found in runtime/scripts/ — skipping.")
+                say()
 
     else:
         # Store-to-store copy (abfss://, /Volumes/, file://, local directory)
@@ -8702,40 +9167,57 @@ def runtime_deploy(
                 f"({exc.message})"
             ) from exc
 
-        click.echo(f"Publishing from {src_store.describe()} → {dest_store.describe()}")
-        click.echo()
+        say(f"Publishing from {src_store.describe()} → {dest_store.describe()}")
+        say()
 
         # Copy packages
-        click.echo("Packages → packages/")
-        pkg_count = _copy_between_stores(
+        say("Packages → packages/")
+        copied_packages = _copy_between_stores(
             src_store,
             "packages",
             dest_store,
             "packages",
             overwrite=True,  # wheels always overwrite
+            err=json_output,
         )
-        if pkg_count == 0:
-            click.echo("  (no wheel files found at source packages path)")
+        if not copied_packages:
+            say("  (no wheel files found at source packages path)")
         else:
-            click.echo(f"  ({pkg_count} file(s) copied)")
-        click.echo()
+            say(f"  ({len(copied_packages)} file(s) copied)")
+        say()
+        for rel in copied_packages:
+            name = PurePosixPath(rel).name
+            (extension_wheels if is_extension_wheel(name) else runtime_wheels).append(rel)
 
         if not skip_bootstrap:
-            click.echo("Scripts → scripts/")
-            script_count = _copy_between_stores(
+            say("Scripts → scripts/")
+            scripts = _copy_between_stores(
                 src_store,
                 "scripts",
                 dest_store,
                 "scripts",
                 overwrite=overwrite,
+                err=json_output,
             )
-            if script_count == 0:
-                click.echo("  (no script files found at source scripts path)")
+            if not scripts:
+                say("  (no script files found at source scripts path)")
             else:
-                click.echo(f"  ({script_count} file(s) copied)")
-            click.echo()
+                say(f"  ({len(scripts)} file(s) copied)")
+            say()
 
-    click.echo("Deploy complete.")
+    _emit_result(
+        {
+            "source": source,
+            "dest": dest_store.root,
+            "version": resolved_version,
+            "packages_path": "packages",
+            "wheels": runtime_wheels,
+            "extension_wheels": extension_wheels,
+            "scripts": scripts,
+        },
+        json_output,
+        "Deploy complete.",
+    )
 
 
 def main() -> None:

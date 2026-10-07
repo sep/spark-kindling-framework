@@ -9,6 +9,7 @@ from kindling.data_entities import *
 from kindling.data_pipes import *
 from kindling.entity_provider_csv import (
     FixtureCSVEntityProvider,
+    fixture_csv_has_data_rows,
     resolve_fixture_csv_path,
 )
 from kindling.entity_provider_registry import EntityProviderRegistry
@@ -42,6 +43,25 @@ def _is_local_execution() -> bool:
         # Best-effort: if we cannot determine the platform, assume non-local
         # to avoid silently skipping registered providers on real platforms.
         return False
+
+
+def _read_only_output_error(output_entity) -> ValueError:
+    """Error for a pipe whose output entity's provider cannot write."""
+    is_sql_entity = getattr(output_entity, "is_sql_entity", False) is True
+    # A SQL entity always resolves to the read-only view provider, whatever its tags say.
+    provider_type = (
+        "view" if is_sql_entity else (output_entity.tags or {}).get("provider_type", "unknown")
+    )
+    message = (
+        f"Entity '{output_entity.entityid}' is read-only: provider "
+        f"'{provider_type}' does not support write operations"
+    )
+    if is_sql_entity:
+        message += (
+            ". It is a SQL entity (DataEntities.sql_entity), defined by its SQL; "
+            "write to a table-backed entity and select from that in the SQL instead"
+        )
+    return ValueError(message)
 
 
 def _apply_df_transforms(results, df):
@@ -158,6 +178,15 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
             # Fixture discovery applies only when running locally (standalone platform).
             cwd = Path(os.getcwd())
             fixture_path = resolve_fixture_csv_path(entity.entityid, cwd)
+            if fixture_path is not None and not fixture_csv_has_data_rows(fixture_path):
+                # An empty, header-only or comment-only file (e.g. a freshly
+                # scaffolded stub) is not a fixture: don't let it hijack the read.
+                self.logger.warning(
+                    f"Ignoring fixture CSV for entity '{entity.entityid}' at {fixture_path}: "
+                    "it has no data rows. Reading from the entity's provider instead; "
+                    "add data rows to use the fixture."
+                )
+                fixture_path = None
             if fixture_path is not None:
                 self.logger.info(
                     f"Using fixture CSV for entity '{entity.entityid}': {fixture_path}"
@@ -278,6 +307,11 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
             )
             df = _apply_df_transforms(results, df)
 
+            # SQL entities are read-only views, whatever provider their tags
+            # name; reject before any write branch (derived replace included).
+            if getattr(output_entity, "is_sql_entity", False) is True:
+                raise _read_only_output_error(output_entity)
+
             # Derived datasets (dataset.kind='derived') are replaced,
             # not evolved: the provider swaps the whole table — or
             # only the batch's slices when derived.replace_keys is
@@ -353,6 +387,14 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
 
             from kindling.entity_provider import WritableEntityProvider
 
+            # A provider with no write capability at all (SQL entities,
+            # csv, eventhub, ...) cannot take a pipe output. Reject before
+            # probing the destination.
+            if not isinstance(output_provider, WritableEntityProvider) and not hasattr(
+                output_provider, "merge_to_entity"
+            ):
+                raise _read_only_output_error(output_entity)
+
             if output_provider.check_entity_exists(output_entity):
                 # Merge (Delta-specific), fall back to append for other providers
                 if write_mode != "append" and hasattr(output_provider, "merge_to_entity"):
@@ -371,18 +413,12 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                         )
                     output_provider.append_to_entity(df, output_entity)
                 else:
-                    provider_type = (output_entity.tags or {}).get("provider_type", "unknown")
-                    raise ValueError(
-                        f"Provider '{provider_type}' does not support write operations"
-                    )
+                    raise _read_only_output_error(output_entity)
             else:
                 if isinstance(output_provider, WritableEntityProvider):
                     output_provider.write_to_entity(df, output_entity)
                 else:
-                    provider_type = (output_entity.tags or {}).get("provider_type", "unknown")
-                    raise ValueError(
-                        f"Provider '{provider_type}' does not support write operations"
-                    )
+                    raise _read_only_output_error(output_entity)
 
             duration = time.time() - start_time
             self.emit(

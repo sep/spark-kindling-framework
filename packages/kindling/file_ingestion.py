@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
 from kindling.data_entities import *
+from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.file_ingestion import *
 from kindling.injection import *
 from kindling.platform_provider import *
@@ -33,7 +34,12 @@ class FileIngestionMetadata:
     patterns: List[str]
     dest_entity_id: str
     tags: Dict[str, str]
-    infer_schema: bool = True
+    # Batch path only: passed to the Spark reader as inferSchema. Defaults to
+    # False -- every column arrives as a string -- which is what ingestion has
+    # always done at runtime; set True to opt into Spark schema inference.
+    infer_schema: bool = False
+    # Spark read format. A `filetype` named group in the matching pattern
+    # overrides this per file (see _resolve_read_format).
     filetype: str = "csv"
     static_values: Optional[Dict[str, Any]] = None
     discovery: str = "batch"
@@ -51,12 +57,7 @@ class FileIngestionEntries:
         # Check all required fields are provided
         required_fields = {field.name for field in fields(FileIngestionMetadata)}
 
-        decorator_params["infer_schema"] = (
-            decorator_params["infer_schema"]
-            if ("infer_schema" in decorator_params.keys())
-            else True
-        )
-
+        decorator_params.setdefault("infer_schema", False)
         decorator_params.setdefault("static_values", None)
         decorator_params.setdefault("discovery", "batch")
         decorator_params.setdefault("source_glob", None)
@@ -68,6 +69,8 @@ class FileIngestionEntries:
             raise ValueError(
                 f"Missing required fields in file ingestion decorator: {missing_fields}"
             )
+
+        _validate_patterns(decorator_params.get("entry_id"), decorator_params["patterns"])
 
         if decorator_params["discovery"] not in ("batch", "autoloader"):
             raise ValueError(
@@ -90,6 +93,50 @@ class FileIngestionEntries:
         cls.deregistry.register_entry(destEntityId, **decorator_params)
 
         return None
+
+
+def _validate_patterns(entry_id, patterns) -> None:
+    """Reject a `patterns` value the processor cannot match files with.
+
+    Every pattern is tried in order (first match wins), so `patterns` must be
+    a non-empty list of valid regexes. A bare string is rejected rather than
+    silently iterated character by character.
+    """
+    if isinstance(patterns, str) or not isinstance(patterns, (list, tuple)) or not patterns:
+        raise ValueError(
+            f"File ingestion entry '{entry_id}': patterns must be a non-empty list "
+            f"of regex strings, got {patterns!r}"
+        )
+    for pattern in patterns:
+        try:
+            re.compile(pattern)
+        except (re.error, TypeError) as e:
+            raise ValueError(
+                f"File ingestion entry '{entry_id}': invalid pattern {pattern!r}: {e}"
+            ) from e
+
+
+def match_file_patterns(patterns: List[str], filename: str) -> Optional["re.Match"]:
+    """Match `filename` against each pattern in order; the first match wins.
+
+    Patterns are applied with ``re.match`` (anchored at the start) against the
+    file name only, never the full path. Returns ``None`` when nothing matches.
+    """
+    for pattern in patterns:
+        match = re.match(pattern, filename)
+        if match:
+            return match
+    return None
+
+
+def _resolve_read_format(entry: "FileIngestionMetadata", named_groups: Dict[str, str]) -> str:
+    """Spark format for one matched file.
+
+    A non-empty `filetype` named group in the matching pattern wins per file
+    (the documented way to route several formats through one entry); otherwise
+    the entry's own `filetype` argument is used, then ``"csv"``.
+    """
+    return named_groups.get("filetype") or entry.filetype or "csv"
 
 
 class FileIngestionRegistry(ABC):
@@ -236,7 +283,7 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
         self,
         config: ConfigService,
         fir: FileIngestionRegistry,
-        ep: EntityProvider,
+        provider_registry: EntityProviderRegistry,
         der: DataEntityRegistry,
         tp: SparkTraceProvider,
         lp: PythonLoggerProvider,
@@ -246,7 +293,7 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
         self._init_signal_emitter(signal_provider)
         self.config = config
         self.fir = fir
-        self.ep = ep
+        self.provider_registry = provider_registry
         self.der = der
         self.tp = tp
         self.logger = lp.get_logger("SimpleFileIngestionProcessor")
@@ -274,21 +321,20 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
                 # (_process_autoloader_entries), not by matching listed
                 # filenames here.
                 continue
-            pattern = re.compile(fe.patterns[0])
-            match = re.match(pattern, fn)
+            match = match_file_patterns(fe.patterns, fn)
 
             if match:
                 named_groups = match.groupdict()
                 dest_entity_id = fe.dest_entity_id.format(**named_groups)
                 self.logger.debug(f"Matched {fn} to {dest_entity_id}")
 
-                filetype = named_groups.get("filetype", "csv")
+                filetype = _resolve_read_format(fe, named_groups)
 
                 # Build lazy DataFrame plan - NO execution!
                 df = (
                     self.spark.read.format(filetype)
                     .option("header", "true")
-                    .option("inferSchema", "false")
+                    .option("inferSchema", "true" if fe.infer_schema else "false")
                     .load(f"{path}/{fn}")
                 )
 
@@ -338,7 +384,17 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
         # No dedicated span here: the provider-op tracer (trace_ops) supplies
         # the append_to_entity child span.
         try:
-            self.ep.append_to_entity(combined_df, de)
+            # Persist through the destination entity's own provider
+            # (provider_type tag, default delta) -- the same resolution pipes
+            # use -- always with append semantics.
+            provider = self.provider_registry.get_provider_for_entity(de)
+            if not callable(getattr(provider, "append_to_entity", None)):
+                provider_type = (getattr(de, "tags", None) or {}).get("provider_type", "delta")
+                raise ValueError(
+                    f"File ingestion destination '{dest_entity_id}' uses provider "
+                    f"'{provider_type}', which does not support append writes"
+                )
+            provider.append_to_entity(combined_df, de)
 
             self.logger.info(f"Successfully wrote {len(df_list)} files to {dest_entity_id}")
 
@@ -366,7 +422,6 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
 
         except Exception as e:
             self.logger.error(f"Failed to write {dest_entity_id}: {e}")
-            raise
             raise
 
     def _has_batch_entries(self) -> bool:
@@ -515,12 +570,24 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
                                 for dest_entity_id, df_list in df_plans.items()
                             }
 
+                            failures = []
                             for future in as_completed(futures):
                                 dest_entity_id = futures[future]
                                 try:
                                     future.result()
                                 except Exception as e:
                                     self.logger.error(f"Failed to write {dest_entity_id}: {e}")
+                                    failures.append((dest_entity_id, e))
+
+                        # Like the sequential path, a failed table write fails
+                        # the run (after the other tables in flight finish)
+                        # instead of reporting success.
+                        if failures:
+                            names = ", ".join(sorted(name for name, _ in failures))
+                            raise RuntimeError(
+                                f"File ingestion failed to write {len(failures)} of "
+                                f"{len(df_plans)} tables: {names}"
+                            ) from failures[0][1]
 
                     tables_written = len(df_plans)
 
@@ -641,15 +708,14 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
     ) -> Tuple[int, int, int]:
         """Enrich and write one Auto Loader microbatch for a single entry.
 
-        Mirrors _build_df_plan's per-file matching against
-        `entry.patterns[0]`, but files are enumerated via the standard
+        Mirrors _build_df_plan's per-file matching against `entry.patterns`
+        (in order, first match wins), but files are enumerated via the standard
         Spark ``_metadata.file_path`` column (already delivered by
         cloudFiles) instead of a fresh spark.read.load() per filename --
         the microbatch has already been read.
         """
         success_files = 0
         failed_files = 0
-        pattern = re.compile(entry.patterns[0])
 
         file_paths = [
             row["file_path"]
@@ -663,7 +729,7 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
             fn = file_path.rsplit("/", 1)[-1]
             self.emit("file_ingestion.before_file", filename=fn, batch_id=micro_batch_id)
             try:
-                match = re.match(pattern, fn)
+                match = match_file_patterns(entry.patterns, fn)
                 if not match:
                     # source_glob scopes discovery per entry, but glob and
                     # regex are different languages -- a file can pass the

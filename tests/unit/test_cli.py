@@ -446,6 +446,53 @@ def test_env_update_propagates_to_nested_project_with_its_own_pin(monkeypatch, t
     assert (expected_cmd, resolved_member) in commands
 
 
+def test_env_update_keeps_plain_member_pin_and_root_standalone_extra(monkeypatch, tmp_path):
+    """A generated package declares plain spark-kindling (its wheel goes onto
+    managed Spark runtimes); updating must not add the standalone extra to
+    it, while the root keeps its own spark-kindling[standalone]."""
+    old_url = (
+        "https://github.com/sep/spark-kindling-framework/"
+        "releases/download/v1.0.0/spark_kindling-1.0.0-py3-none-any.whl"
+    )
+    root_dir = tmp_path / "root"
+    _write_pyproject(
+        root_dir,
+        "[project]\nname = 'root'\nversion = '0.1.0'\n"
+        'dependencies = ["spark-kindling[standalone]"]\n\n'
+        f'[tool.uv.sources]\nspark-kindling = {{ url = "{old_url}" }}\n\n'
+        "[tool.uv.workspace]\nmembers = ['packages/*']\n",
+    )
+    _write_pyproject(
+        root_dir / "packages" / "member",
+        "[project]\nname = 'member'\nversion = '0.1.0'\n"
+        'dependencies = ["spark-kindling"]\n\n'
+        f'[tool.uv.sources]\nspark-kindling = {{ url = "{old_url}" }}\n',
+    )
+    commands = []
+
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets("spark_kindling-1.2.3-py3-none-any.whl"),
+    )
+    monkeypatch.setattr(
+        "kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append((cmd, cwd))
+    )
+
+    result = CliRunner().invoke(cli, ["env", "update", "--project", str(root_dir)])
+
+    assert result.exit_code == 0, result.output
+    url = _wheel_url("spark_kindling-1.2.3-py3-none-any.whl")
+    assert (
+        ["uv", "add", url, "--extra", "standalone", "--frozen"],
+        root_dir.resolve(),
+    ) in commands
+    assert (
+        ["uv", "add", url, "--frozen"],
+        (root_dir / "packages" / "member").resolve(),
+    ) in commands
+
+
 def test_env_update_fails_when_nested_projects_disagree_on_version(tmp_path):
     root_dir = tmp_path / "root"
     _write_pyproject(root_dir, "[project]\nname = 'root'\nversion = '0.1.0'\ndependencies = []\n")
@@ -802,6 +849,49 @@ def test_env_bootstrap_copies_kindling_dependency_from_nested_project(monkeypatc
         ],
         resolved,
     ) in commands
+
+
+def test_env_bootstrap_adds_standalone_extra_when_adopting_plain_package_pin(monkeypatch, tmp_path):
+    """`kindling package init` declares plain spark-kindling; the root that
+    adopts it is the repo's local dev environment (never built into a wheel),
+    so it gets spark-kindling[standalone] to keep local Spark installed."""
+    url = (
+        "https://github.com/sep/spark-kindling-framework/releases/download/"
+        "v1.2.3/spark_kindling-1.2.3-py3-none-any.whl"
+    )
+    cli_url = url.replace("spark_kindling-", "spark_kindling_cli-")
+    root_dir = tmp_path / "root"
+    _write_pyproject(
+        root_dir,
+        "[project]\nname = 'root-workspace'\nversion = '0.1.0'\ndependencies = []\n\n"
+        "[tool.uv]\npackage = false\n\n[tool.uv.workspace]\nmembers = ['packages/*']\n",
+    )
+    _write_pyproject(
+        root_dir / "packages" / "orders",
+        "[project]\nname = 'orders'\nversion = '0.1.0'\n"
+        'dependencies = ["spark-kindling"]\n\n'
+        "[tool.uv.sources]\n"
+        f'spark-kindling = {{ url = "{url}" }}\n'
+        f'spark-kindling-cli = {{ url = "{cli_url}" }}\n\n'
+        "[dependency-groups]\n"
+        'dev = ["spark-kindling-cli", "pyspark>=3.4.0,<4.0.0"]\n',
+    )
+    commands = []
+
+    monkeypatch.setattr(
+        "kindling_cli.cli._resolve_github_version",
+        lambda version, repo: (_ for _ in ()).throw(AssertionError("should not resolve latest")),
+    )
+    monkeypatch.setattr(
+        "kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append((cmd, cwd))
+    )
+
+    result = CliRunner().invoke(cli, ["env", "bootstrap", "--project", str(root_dir)])
+
+    assert result.exit_code == 0, result.output
+    resolved = root_dir.resolve()
+    assert (["uv", "add", url, "--extra", "standalone"], resolved) in commands
+    assert (["uv", "add", cli_url, "--group", "dev"], resolved) in commands
 
 
 def test_env_bootstrap_leaves_existing_kindling_declaration_untouched(monkeypatch, tmp_path):
@@ -1790,6 +1880,7 @@ def test_app_run_deployed_name_creates_and_runs_job(monkeypatch):
 
     fake_api = FakeAPI()
 
+    monkeypatch.delenv("KINDLING_ENV", raising=False)
     monkeypatch.setattr(
         "kindling_cli.cli._create_platform_api",
         lambda platform: (fake_api, platform),
@@ -1799,6 +1890,37 @@ def test_app_run_deployed_name_creates_and_runs_job(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "run-1" in result.output
     assert fake_api.submitted == [("orders", None, None)]
+
+
+@pytest.mark.parametrize(
+    "args, expected",
+    [
+        ([], "prod"),
+        (["--env", "dev"], "dev"),
+    ],
+)
+def test_app_run_remote_environment_defaults_to_kindling_env(monkeypatch, args, expected):
+    """A remote run uses KINDLING_ENV like `app deploy`, so it reads the deployed overlay."""
+
+    class FakeAPI:
+        def __init__(self):
+            self.submitted = []
+
+        def submit_app_run(self, app_name, environment=None, parameters=None):
+            self.submitted.append((app_name, environment, parameters))
+            return "run-1"
+
+    fake_api = FakeAPI()
+    monkeypatch.setenv("KINDLING_ENV", "prod")
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (fake_api, platform),
+    )
+    result = CliRunner().invoke(
+        cli, ["app", "run", "orders", "--platform", "fabric", "--no-wait", *args]
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_api.submitted == [("orders", expected, None)]
 
 
 def test_app_run_remote_submits_without_deploying(monkeypatch):
@@ -2811,6 +2933,184 @@ class TestAppRunCommand:
         assert "SYNAPSE_WORKSPACE_NAME" in result.output
 
 
+class TestAppRunTargetResolution:
+    """`app run APP` accepts an app name or a path to an app directory."""
+
+    @staticmethod
+    def _repo_with_app(tmp_path, app_dir_name="my_app"):
+        app_dir = tmp_path / "repo" / "apps" / app_dir_name
+        app_dir.mkdir(parents=True)
+        (app_dir / "app.py").write_text("# app\n", encoding="utf-8")
+        return tmp_path / "repo", app_dir
+
+    @staticmethod
+    def _capture_standalone(monkeypatch):
+        import subprocess
+
+        calls = []
+
+        def fake_run(cmd, env=None, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, returncode=0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        return calls
+
+    def test_dot_from_inside_app_dir(self, tmp_path, monkeypatch):
+        _repo, app_dir = self._repo_with_app(tmp_path)
+        calls = self._capture_standalone(monkeypatch)
+        monkeypatch.chdir(app_dir)
+
+        result = CliRunner().invoke(cli, ["app", "run", ".", "--no-dotenv"])
+
+        assert result.exit_code == 0, result.output
+        assert calls[0][-1] == str((app_dir / "app.py").resolve())
+
+    def test_relative_path_from_repo_root(self, tmp_path, monkeypatch):
+        repo, app_dir = self._repo_with_app(tmp_path)
+        calls = self._capture_standalone(monkeypatch)
+        monkeypatch.chdir(repo)
+
+        result = CliRunner().invoke(cli, ["app", "run", "apps/my_app", "--no-dotenv"])
+
+        assert result.exit_code == 0, result.output
+        assert calls[0][-1] == str((app_dir / "app.py").resolve())
+
+    def test_absolute_path(self, tmp_path, monkeypatch):
+        _repo, app_dir = self._repo_with_app(tmp_path)
+        calls = self._capture_standalone(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(cli, ["app", "run", str(app_dir), "--no-dotenv"])
+
+        assert result.exit_code == 0, result.output
+        assert calls[0][-1] == str((app_dir / "app.py").resolve())
+
+    @pytest.mark.parametrize("name", ["my_app", "my-app"])
+    def test_name_resolves_by_convention(self, tmp_path, monkeypatch, name):
+        repo, app_dir = self._repo_with_app(tmp_path)
+        calls = self._capture_standalone(monkeypatch)
+        monkeypatch.chdir(repo / "apps")  # walks up to find apps/my_app/
+
+        result = CliRunner().invoke(cli, ["app", "run", name, "--no-dotenv"])
+
+        assert result.exit_code == 0, result.output
+        assert calls[0][-1] == str((app_dir / "app.py").resolve())
+
+    def test_missing_path_is_a_clear_error(self, tmp_path, monkeypatch):
+        calls = self._capture_standalone(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(cli, ["app", "run", "apps/nope", "--no-dotenv"])
+
+        assert result.exit_code != 0
+        assert "App path 'apps/nope' does not exist" in result.output
+        assert "Python identifier" not in result.output
+        assert calls == []
+
+    def test_directory_without_app_py_is_rejected(self, tmp_path, monkeypatch):
+        calls = self._capture_standalone(monkeypatch)
+        (tmp_path / "not_an_app").mkdir()
+        monkeypatch.chdir(tmp_path / "not_an_app")
+
+        result = CliRunner().invoke(cli, ["app", "run", ".", "--no-dotenv"])
+
+        assert result.exit_code != 0
+        assert "is not an app directory: no app.py" in result.output
+        assert calls == []
+
+    def test_unknown_name_still_reports_convention_lookup(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(cli, ["app", "run", "ghost", "--no-dotenv"])
+
+        assert result.exit_code != 0
+        assert "App 'ghost' not found at apps/ghost/" in result.output
+
+    @staticmethod
+    def _fake_remote(monkeypatch):
+        from unittest.mock import MagicMock
+
+        api = MagicMock()
+        api.submit_app_run.return_value = "run-1"
+        monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (api, p))
+        return api
+
+    def test_remote_dot_submits_app_directory_name(self, tmp_path, monkeypatch):
+        """A path names the deployed app the way `app deploy` does by default."""
+        _repo, app_dir = self._repo_with_app(tmp_path)
+        api = self._fake_remote(monkeypatch)
+        monkeypatch.chdir(app_dir)
+
+        result = CliRunner().invoke(cli, ["app", "run", ".", "--platform", "fabric", "--no-wait"])
+
+        assert result.exit_code == 0, result.output
+        assert api.submit_app_run.call_args.args[0] == "my_app"
+        api.deploy_app.assert_not_called()
+
+    @pytest.mark.parametrize("typed", ["my-app", "my_app"])
+    def test_remote_name_matches_deployed_folder_name(self, tmp_path, monkeypatch, typed):
+        """`app deploy my-app` deploys under the folder name (my_app), so
+        `app run my-app --platform` must submit my_app, not my-app."""
+        repo, _app_dir = self._repo_with_app(tmp_path)
+        api = self._fake_remote(monkeypatch)
+        monkeypatch.chdir(repo)
+
+        result = CliRunner().invoke(cli, ["app", "run", typed, "--platform", "fabric", "--no-wait"])
+
+        assert result.exit_code == 0, result.output
+        assert api.submit_app_run.call_args.args[0] == "my_app"
+
+    def test_remote_name_without_local_repo_uses_snake_case(self, tmp_path, monkeypatch):
+        api = self._fake_remote(monkeypatch)
+        monkeypatch.chdir(tmp_path)  # no apps/ folder here
+
+        result = CliRunner().invoke(
+            cli, ["app", "run", "daily-orders", "--platform", "fabric", "--no-wait"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert api.submit_app_run.call_args.args[0] == "daily_orders"
+
+    def test_remote_name_matches_deploy_default(self, tmp_path, monkeypatch):
+        """deploy and run agree on the remote name for the same typed name."""
+        from kindling_cli.cli import (
+            _default_app_name,
+            _remote_app_name,
+            _resolve_by_convention,
+        )
+
+        repo, _app_dir = self._repo_with_app(tmp_path)
+        monkeypatch.chdir(repo)
+        for typed in ("my-app", "my_app"):
+            deployed = _default_app_name(_resolve_by_convention(typed, "apps", "app"))
+            assert _remote_app_name(typed) == deployed == "my_app"
+
+    def test_remote_app_name_overrides_path(self, tmp_path, monkeypatch):
+        api = self._fake_remote(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            cli,
+            ["app", "run", ".", "--platform", "fabric", "--no-wait", "--app-name", "orders"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert api.submit_app_run.call_args.args[0] == "orders"
+
+    def test_remote_invalid_path_is_rejected(self, tmp_path, monkeypatch):
+        api = self._fake_remote(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            cli, ["app", "run", "./missing", "--platform", "fabric", "--no-wait"]
+        )
+
+        assert result.exit_code != 0
+        assert "does not exist" in result.output
+        api.submit_app_run.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # env check --platform
 # ---------------------------------------------------------------------------
@@ -3390,6 +3690,189 @@ def test_runner_register_fails_when_platform_auth_missing(monkeypatch):
     assert "DATABRICKS_TOKEN" in result.output
 
 
+# --- Databricks job compute options (app run --platform / runner register) ---
+
+
+def _fake_compute_api(monkeypatch):
+    from unittest.mock import MagicMock
+
+    api = MagicMock()
+    api.submit_app_run.return_value = "run-1"
+    api.register_app_job.return_value = {"job_id": "job-1", "job_name": "my-app"}
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (api, p))
+    return api
+
+
+def test_app_run_databricks_compute_options_reach_sdk(tmp_path, monkeypatch):
+    api = _fake_compute_api(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "app",
+            "run",
+            "my_app",
+            "--platform",
+            "databricks",
+            "--no-wait",
+            "--new-cluster",
+            "--spark-version",
+            "15.4.x-scala2.12",
+            "--node-type",
+            "Standard_DS4_v2",
+            "--num-workers",
+            "4",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert api.submit_app_run.call_args.kwargs["compute"] == {
+        "force_new_cluster": True,
+        "spark_version": "15.4.x-scala2.12",
+        "node_type_id": "Standard_DS4_v2",
+        "num_workers": 4,
+    }
+
+
+def test_app_run_databricks_cluster_id_reaches_sdk(tmp_path, monkeypatch):
+    api = _fake_compute_api(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        ["app", "run", "my_app", "--platform", "databricks", "--no-wait", "--cluster-id", "0101-a"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert api.submit_app_run.call_args.kwargs["compute"] == {"existing_cluster_id": "0101-a"}
+
+
+def test_app_run_without_compute_options_passes_no_compute(tmp_path, monkeypatch):
+    """Older SDK clients without a compute parameter keep working."""
+    api = _fake_compute_api(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli, ["app", "run", "my_app", "--platform", "databricks", "--no-wait"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "compute" not in api.submit_app_run.call_args.kwargs
+
+
+def test_app_run_compute_options_rejected_on_other_platforms(tmp_path, monkeypatch):
+    def _no_api(platform):
+        raise AssertionError("platform API must not be created")
+
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", _no_api)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        ["app", "run", "my_app", "--platform", "fabric", "--no-wait", "--num-workers", "2"],
+    )
+
+    assert result.exit_code != 0
+    assert "--num-workers is only supported on Databricks, not fabric" in result.output
+
+
+def test_app_run_compute_options_rejected_for_standalone(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli, ["app", "run", "my_app", "--no-dotenv", "--new-cluster", "--cluster-id", "x"]
+    )
+
+    assert result.exit_code != 0
+    assert "--cluster-id, --new-cluster are only valid for remote app runs" in result.output
+
+
+@pytest.mark.parametrize(
+    "args, message",
+    [
+        (["--cluster-id", "a", "--new-cluster"], "mutually exclusive"),
+        (["--cluster-id", "a", "--node-type", "n"], "--node-type only apply to a new job cluster"),
+        (["--cluster-id", " "], "--cluster-id must not be empty"),
+        (["--num-workers", "0"], "x>=1"),
+    ],
+)
+def test_app_run_compute_option_conflicts(tmp_path, monkeypatch, args, message):
+    api = _fake_compute_api(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli, ["app", "run", "my_app", "--platform", "databricks", "--no-wait", *args]
+    )
+
+    assert result.exit_code != 0
+    assert message in result.output
+    api.submit_app_run.assert_not_called()
+
+
+def test_app_run_compute_sdk_value_error_is_reported(tmp_path, monkeypatch):
+    api = _fake_compute_api(monkeypatch)
+    api.submit_app_run.side_effect = ValueError("set force_new_cluster")
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli, ["app", "run", "my_app", "--platform", "databricks", "--no-wait", "--num-workers", "2"]
+    )
+
+    assert result.exit_code != 0
+    assert "set force_new_cluster" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_runner_register_databricks_compute_options_reach_sdk(monkeypatch):
+    api = _fake_compute_api(monkeypatch)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "runner",
+            "register",
+            "--app",
+            "my-app",
+            "--platform",
+            "databricks",
+            "--new-cluster",
+            "--node-type",
+            "Standard_E8s_v3",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    call = api.register_app_job.call_args
+    assert call.args == ("my-app",)
+    assert call.kwargs["compute"] == {"force_new_cluster": True, "node_type_id": "Standard_E8s_v3"}
+
+
+def test_runner_register_compute_options_rejected_on_other_platforms(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+
+    result = CliRunner().invoke(
+        cli,
+        ["runner", "register", "--app", "my-app", "--platform", "synapse", "--cluster-id", "c"],
+    )
+
+    assert result.exit_code != 0
+    assert "--cluster-id is only supported on Databricks, not synapse" in result.output
+
+
+def test_runner_register_compute_with_sdk_lacking_compute_parameter(monkeypatch):
+    """An SDK whose register_app_job predates compute gets an upgrade hint."""
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+
+    result = CliRunner().invoke(
+        cli,
+        ["runner", "register", "--app", "my-app", "--platform", "databricks", "--new-cluster"],
+    )
+
+    assert result.exit_code != 0
+    assert "upgrade spark-kindling-sdk" in result.output
+
+
 def test_runner_status_summary(monkeypatch):
     monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
     monkeypatch.setattr(
@@ -3891,6 +4374,42 @@ def test_package_add_writes_into_scaffolded_subpackages(tmp_path, monkeypatch, t
     } <= walked
 
 
+def test_package_add_ingestion_destination_entity_uses_default_provider(tmp_path):
+    """Ingestion appends through the destination entity's own provider, so the
+    scaffolded entity must not claim provider_type csv (which also needs a
+    provider.path it never gets); omitting it selects the default Delta provider."""
+    project = _scaffolded_package(tmp_path, "landing")
+    module = project / "src" / "landing"
+    result = CliRunner().invoke(
+        cli,
+        [
+            "package",
+            "add",
+            "ingestion",
+            "bronze.sales_report",
+            "--filename-metadata",
+            "report_date",
+            "--package",
+            str(project),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    entities = (module / "entities" / "bronze.py").read_text()
+    assert 'entityid="bronze.sales_report"' in entities
+    assert '"provider_type":' not in entities
+
+    entry = (module / "pipes" / "bronze_sales_report_ingestion.py").read_text()
+    assert '"provider_type":' not in entry
+    assert 'dest_entity_id="bronze.sales_report"' in entry
+    assert "(?P<report_date>" in entry
+    compile(entities, "bronze.py", "exec")
+    compile(entry, "bronze_sales_report_ingestion.py", "exec")
+
+    unit_stub = (project / "tests" / "unit" / "test_bronze_sales_report_ingestion.py").read_text()
+    assert "report_date" in unit_stub
+
+
 def test_package_add_same_name_in_two_namespaces_keeps_both_test_stubs(tmp_path):
     project = _scaffolded_package(tmp_path, "ledger")
     runner = CliRunner()
@@ -3955,6 +4474,67 @@ def test_package_add_pipe_skips_existing_output_entity(tmp_path, spelling):
 
     assert result.exit_code == 0, result.output
     assert entities.read_text() == f"DataEntities.entity({spelling})\n"
+
+
+def test_package_add_entity_fixture_stub_is_header_row_from_schema(tmp_path):
+    """The stub is the scaffolded schema's header row with no data rows, so the
+    runtime treats it as "no fixture" until rows are added."""
+    from kindling.entity_provider_csv import fixture_csv_has_data_rows
+
+    project = _scaffolded_package(tmp_path, "ledger")
+    result = CliRunner().invoke(
+        cli, ["package", "add", "entity", "bronze.orders", "--package", str(project)]
+    )
+
+    assert result.exit_code == 0, result.output
+    entities = (project / "src" / "ledger" / "entities" / "bronze.py").read_text()
+    assert 'StructField("id", StringType(), False)' in entities
+    stub = project / "tests" / "entities" / "bronze" / "orders.csv"
+    assert stub.read_text(encoding="utf-8") == "id\n"
+    assert fixture_csv_has_data_rows(stub) is False
+
+
+def test_package_add_entity_keeps_existing_fixture(tmp_path):
+    project = _scaffolded_package(tmp_path, "ledger")
+    fixture = project / "tests" / "entities" / "bronze" / "orders.csv"
+    fixture.parent.mkdir(parents=True, exist_ok=True)
+    fixture.write_text("id,amount\n1,10\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["package", "add", "entity", "bronze.orders", "--package", str(project)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert fixture.read_text(encoding="utf-8") == "id,amount\n1,10\n"
+    assert "Kept existing fixture" in result.output
+
+
+def test_package_add_pipe_input_stub_is_treated_as_no_fixture(tmp_path):
+    """An input's schema isn't known to `package add pipe`, so its stub is a
+    comment-only placeholder, which the runtime ignores."""
+    from kindling.entity_provider_csv import fixture_csv_has_data_rows
+
+    project = _scaffolded_package(tmp_path, "ledger")
+    result = CliRunner().invoke(
+        cli,
+        [
+            "package",
+            "add",
+            "pipe",
+            "silver.orders",
+            "--inputs",
+            "bronze.orders",
+            "--package",
+            str(project),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    stub = project / "tests" / "entities" / "bronze" / "orders.csv"
+    content = stub.read_text(encoding="utf-8")
+    assert content.startswith("#")
+    assert "bronze.orders" in content
+    assert fixture_csv_has_data_rows(stub) is False
 
 
 # ---------------------------------------------------------------------------
@@ -5004,3 +5584,221 @@ class TestArtifactStoreDestinations:
         from kindling_cli.cli import _resolve_destination
 
         assert _resolve_destination() == "abfss://deploy@acct.dfs.core.windows.net/kindling"
+
+
+_CORE_WHEEL = "spark_kindling-0.13.2-py3-none-any.whl"
+_SDP_WHEEL = "spark_kindling_ext_sdp-0.13.2-py3-none-any.whl"
+_OTEL_WHEEL = "spark_kindling_ext_otel_azure-0.13.2-py3-none-any.whl"
+
+
+def _write_release_wheels(directory: Path) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in (_CORE_WHEEL, _SDP_WHEEL, _OTEL_WHEEL):
+        (directory / name).write_bytes(b"fake-wheel")
+
+
+class TestRuntimeDeployExtensions:
+    """`runtime deploy --extension/--all-extensions` puts extension wheels in packages/."""
+
+    def _patch_github_release(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version: "0.13.2")
+
+        def fake_download(version, temp_dir, repo="sep/spark-kindling-framework"):
+            assert version == "0.13.2"
+            _write_release_wheels(temp_dir)
+            (temp_dir / "kindling_bootstrap.py").write_text("# bootstrap\n")
+
+        monkeypatch.setattr("kindling_cli.cli._download_github_release_assets", fake_download)
+
+    def _deploy(self, *args):
+        return CliRunner().invoke(cli, ["runtime", "deploy", *args])
+
+    @staticmethod
+    def _packages(dest_dir: Path):
+        return sorted(p.name for p in (dest_dir / "packages").iterdir())
+
+    def test_github_source_default_uploads_core_wheel_only(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        self._patch_github_release(monkeypatch)
+        dest_dir = tmp_path / "artifacts"
+
+        result = self._deploy("--source", "github:latest", "--dest", str(dest_dir))
+
+        assert result.exit_code == 0, result.output
+        assert self._packages(dest_dir) == [_CORE_WHEEL]
+        assert (dest_dir / "scripts" / "kindling_bootstrap.py").exists()
+
+    def test_github_source_named_extension(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        self._patch_github_release(monkeypatch)
+        dest_dir = tmp_path / "artifacts"
+
+        result = self._deploy(
+            "--source",
+            "github:0.13.2",
+            "--dest",
+            str(dest_dir),
+            "--extension",
+            "spark-kindling-ext-sdp",
+        )
+
+        assert result.exit_code == 0, result.output
+        assert self._packages(dest_dir) == [_CORE_WHEEL, _SDP_WHEEL]
+
+    def test_github_source_all_extensions_json(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        self._patch_github_release(monkeypatch)
+        dest_dir = tmp_path / "artifacts"
+
+        result = self._deploy(
+            "--source", "github:latest", "--dest", str(dest_dir), "--all-extensions", "--json"
+        )
+
+        assert result.exit_code == 0, result.output
+        assert self._packages(dest_dir) == sorted([_CORE_WHEEL, _SDP_WHEEL, _OTEL_WHEEL])
+        payload = json.loads(result.stdout)
+        assert payload["version"] == "0.13.2"
+        assert payload["wheels"] == [_CORE_WHEEL]
+        assert payload["extension_wheels"] == [_OTEL_WHEEL, _SDP_WHEEL]
+        assert payload["scripts"] == ["kindling_bootstrap.py"]
+
+    def test_github_source_missing_extension_lists_available(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        self._patch_github_release(monkeypatch)
+        dest_dir = tmp_path / "artifacts"
+
+        result = self._deploy(
+            "--source",
+            "github:latest",
+            "--dest",
+            str(dest_dir),
+            "--extension",
+            "spark-kindling-ext-nope",
+        )
+
+        assert result.exit_code != 0
+        assert "spark-kindling-ext-nope" in result.output
+        assert "spark-kindling-ext-otel-azure, spark-kindling-ext-sdp" in result.output
+        assert not (dest_dir / "packages").exists()
+
+    def test_local_source_named_extension_underscore_form(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        source_dir = tmp_path / "dist"
+        _write_release_wheels(source_dir)
+        dest_dir = tmp_path / "artifacts"
+
+        result = self._deploy(
+            "--source",
+            f"local:{source_dir}",
+            "--dest",
+            str(dest_dir),
+            "--extension",
+            "spark_kindling_ext_otel_azure",
+            "--json",
+        )
+
+        assert result.exit_code == 0, result.output
+        assert self._packages(dest_dir) == [_CORE_WHEEL, _OTEL_WHEEL]
+        payload = json.loads(result.stdout)
+        assert payload["wheels"] == [_CORE_WHEEL]
+        assert payload["extension_wheels"] == [_OTEL_WHEEL]
+
+    def test_local_source_all_extensions(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        source_dir = tmp_path / "dist"
+        _write_release_wheels(source_dir)
+        dest_dir = tmp_path / "artifacts"
+
+        result = self._deploy(
+            "--source", f"local:{source_dir}", "--dest", str(dest_dir), "--all-extensions"
+        )
+
+        assert result.exit_code == 0, result.output
+        assert self._packages(dest_dir) == sorted([_CORE_WHEEL, _SDP_WHEEL, _OTEL_WHEEL])
+
+    def test_local_source_default_skips_extensions(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        source_dir = tmp_path / "dist"
+        _write_release_wheels(source_dir)
+        dest_dir = tmp_path / "artifacts"
+
+        result = self._deploy("--source", f"local:{source_dir}", "--dest", str(dest_dir))
+
+        assert result.exit_code == 0, result.output
+        assert self._packages(dest_dir) == [_CORE_WHEEL]
+
+    def test_local_source_missing_extension_errors(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        source_dir = tmp_path / "dist"
+        source_dir.mkdir()
+        (source_dir / _CORE_WHEEL).write_bytes(b"fake-wheel")
+        dest_dir = tmp_path / "artifacts"
+
+        result = self._deploy(
+            "--source",
+            f"local:{source_dir}",
+            "--dest",
+            str(dest_dir),
+            "--extension",
+            "spark-kindling-ext-sdp",
+        )
+
+        assert result.exit_code != 0
+        assert "spark-kindling-ext-sdp" in result.output
+        assert "Available extensions: none" in result.output
+
+    def test_local_source_all_extensions_without_any_errors(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        source_dir = tmp_path / "dist"
+        source_dir.mkdir()
+        (source_dir / _CORE_WHEEL).write_bytes(b"fake-wheel")
+
+        result = self._deploy(
+            "--source", f"local:{source_dir}", "--dest", str(tmp_path / "a"), "--all-extensions"
+        )
+
+        assert result.exit_code != 0
+        assert "spark_kindling_ext_" in result.output
+
+    def test_store_source_rejects_extension_options(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        src_dir = tmp_path / "staging"
+        (src_dir / "packages").mkdir(parents=True)
+
+        result = self._deploy(
+            "--source", str(src_dir), "--dest", str(tmp_path / "prod"), "--all-extensions"
+        )
+
+        assert result.exit_code != 0
+        assert "store-to-store copy" in result.output
+
+    def test_store_source_json_splits_extension_wheels(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        src_dir = tmp_path / "staging"
+        _write_release_wheels(src_dir / "packages")
+        dest_dir = tmp_path / "prod"
+
+        result = self._deploy("--source", str(src_dir), "--dest", str(dest_dir), "--json")
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["wheels"] == [_CORE_WHEEL]
+        assert sorted(payload["extension_wheels"]) == [_OTEL_WHEEL, _SDP_WHEEL]
+        assert self._packages(dest_dir) == sorted([_CORE_WHEEL, _SDP_WHEEL, _OTEL_WHEEL])
+
+    def test_uploaded_extension_names_match_bootstrap_prefixes(self, tmp_path):
+        from kindling.bootstrap import dist_name_candidates
+        from kindling_cli.cli import _select_extension_wheels
+
+        _write_release_wheels(tmp_path)
+        (tmp_path / "kindling_ext_legacy-0.1.0-py3-none-any.whl").write_bytes(b"x")
+
+        for requested in ("spark-kindling-ext-sdp", "spark_kindling_ext_sdp", "kindling-ext-sdp"):
+            [wheel] = _select_extension_wheels(tmp_path, [requested], False, "dist")
+            prefixes = [
+                c.replace("-", "_") + "-" for c in dist_name_candidates("spark-kindling-ext-sdp")
+            ]
+            assert any(wheel.name.startswith(p) for p in prefixes)
+
+        [legacy] = _select_extension_wheels(tmp_path, ["spark-kindling-ext-legacy"], False, "dist")
+        assert legacy.name == "kindling_ext_legacy-0.1.0-py3-none-any.whl"

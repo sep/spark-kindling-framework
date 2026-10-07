@@ -91,7 +91,9 @@ Job-deployment (system-test / deployment API) keys:
 - `kindling.bootstrap.load_workspace_packages`: Same intent as bootstrap `load_workspace_packages`.
 - `kindling.bootstrap.ignored_folders`: Folder names ignored when loading workspace packages/notebooks.
 - `kindling.required_packages`: List of PyPI packages to `pip install` at startup.
-- `kindling.extensions`: List of Kindling extension wheels to load from artifacts storage.
+- `kindling.extensions`: List of Kindling extension wheels to load from artifacts storage
+  (`{artifacts}/packages/`). Upload them with
+  `kindling runtime deploy --extension <name>` (or `--all-extensions`).
 
 Legacy/compat keys (still accepted by config translation, logged as deprecated):
 

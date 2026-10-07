@@ -23,7 +23,8 @@ This means a read-only CSV provider only implements `BaseEntityProvider`, while 
 Built-in providers: `delta` (all five + merge), `parquet` (all five, no
 merge — plain-parquet interchange at solution boundaries; see
 `entity_provider_parquet.py` for the no-transaction-log caveats), `csv`,
-`memory`, `eventhub`, `sql` (views), `current_view`, and `adx-api`
+`memory`, `eventhub`, `view` (SQL entities: read-only, evaluates the
+declared SQL), `current_view`, and `adx-api`
 (Azure Data Explorer via the azure-kusto Python SDKs, `[adx]` extra —
 runs where the JVM Kusto connector cannot). Extensions add `adx`
 (Kusto Spark connector) and `cosmos` (Cosmos DB Spark connector: batch

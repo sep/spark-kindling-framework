@@ -55,7 +55,7 @@ same three wheels cover that too.
 
 ### Devcontainer (recommended)
 
-`kindling repo init` generates a `.devcontainer/devcontainer.json` that uses the published image `ghcr.io/sep/spark-kindling-framework/devcontainer:latest`. The image ships Python 3.11, Java 21, uv, poe, the Databricks CLI and the Hadoop Azure JARs (at `/opt/hadoop-jars`, symlinked to `/tmp/hadoop-jars`). It bakes in no Kindling packages: PySpark 3.5 and Delta Lake come from the project's own dependencies (the `standalone` extra), and `kindling` is a shim that runs `./.venv/bin/kindling` when the current directory has one, else a system-installed CLI, else installs the latest release CLI.
+`kindling repo init` generates a `.devcontainer/devcontainer.json` that uses the published image `ghcr.io/sep/spark-kindling-framework/devcontainer:latest`. The image ships Python 3.11, Java 21, uv, poe, the Databricks CLI and the Hadoop Azure JARs (at `/opt/hadoop-jars`, symlinked to `/tmp/hadoop-jars`). It bakes in no Kindling packages: PySpark 3.5 and Delta Lake come from the project's own dependencies (the repo root's `spark-kindling[standalone]` and each package's `dev` group), and `kindling` is a shim that runs `./.venv/bin/kindling` when the current directory has one, else a system-installed CLI, else installs the latest release CLI.
 
 Open the repo in VS Code and choose **Dev Containers: Reopen in Container**. The `postCreateCommand` runs `kindling env bootstrap` at the repo root: if the root `pyproject.toml` declares no Kindling dependency, it adopts the release your packages pin (failing if they disagree), or pins the latest release for an empty repo, then runs `uv sync --all-packages`. You end up with one repo-wide `.venv/` and `uv.lock` at the root with every package installed editable (including the `dev` group), and VS Code's interpreter set to `.venv/bin/python`. It then runs `kindling agent setup`, installing the Kindling skill for the coding agents the repo uses (`repo init --agents`; see the CLI reference).
 
@@ -227,7 +227,7 @@ uv run kindling app run . --env local
 Or from the repo root (`kindling app run` finds `apps/my_domain_app/` by convention):
 
 ```bash
-kindling app run my-domain-app --env local
+kindling app run my_domain_app --env local
 ```
 
 Pass runtime parameters:

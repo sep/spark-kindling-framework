@@ -25,6 +25,8 @@ re-running upstream layers.
 
 Entity data sources follow the priority stack:
 `tests/entities/` fixture CSV → `kindling.yaml` env mapping → registered provider.
+A fixture with no data rows (empty, header-only, or only `#` comment lines) is ignored
+with a warning naming the file, and the entity's provider is read instead.
 
 | Option | Default | Description |
 |---|---|---|
@@ -251,7 +253,9 @@ Checks `pyproject.toml` for any `spark-kindling`/`spark-kindling-*`
 dependency. If none is declared — as in the uv workspace root that
 `kindling repo init` writes — it adopts the Kindling dependencies declared by
 nested package/app projects (e.g. `packages/*/pyproject.toml`), failing if
-they disagree on the release. Only if no nested project declares Kindling
+they disagree on the release; the adopted `spark-kindling` always gets the
+`standalone` extra at the root (packages declare plain `spark-kindling`), since
+the root is the local dev environment and is never built into a wheel. Only if no nested project declares Kindling
 either (an empty repo) does it add `spark-kindling[standalone]` to
 `dependencies` and `spark-kindling-sdk`/`spark-kindling-cli` to the `dev`
 group, pinned to the target Kindling release (default: latest) as GitHub
@@ -421,7 +425,8 @@ environment or promoting between environments (e.g. staging → prod).
 **Destination layout** under `--dest`:
 
 ```
-{dest}/packages/   ← spark_kindling-*.whl
+{dest}/packages/   ← spark_kindling-*.whl, plus spark_kindling_ext_*.whl
+                     chosen with --extension / --all-extensions
 {dest}/scripts/    ← kindling_bootstrap.py
 ```
 
@@ -430,10 +435,23 @@ The `--dest` root is your `artifacts_storage_path` in `BOOTSTRAP_CONFIG`.
 | Option | Default | Description |
 |---|---|---|
 | `--source TEXT` | required | Source specifier (see above) |
-| `--dest TEXT` | required | Destination `abfss://` URI |
+| `--dest TEXT` | required | Destination artifacts root (`abfss://…`, `/Volumes/…`, or a local directory) |
 | `--version TEXT` | — | Release version for `github:` source; overrides the version embedded in `--source` |
+| `--extension NAME` | — | Also upload this extension's wheel from the source. Repeatable. Takes the distribution name (`spark-kindling-ext-sdp`; `spark_kindling_ext_sdp` also works). `github:` and `local:` sources only |
+| `--all-extensions` | — | Also upload every `spark_kindling_ext_*.whl` in the source. `github:` and `local:` sources only |
 | `--skip-bootstrap` | — | Skip the bootstrap script |
 | `--overwrite` | — | Overwrite existing scripts (wheels always overwrite) |
+| `--json` | — | Print a JSON summary (`wheels`, `extension_wheels`, `scripts`, `version`, `dest`) on stdout; progress goes to stderr |
+
+**Extensions.** At startup, bootstrap installs each distribution listed in
+`kindling.extensions` from the wheel with that name in `{dest}/packages/`.
+Without `--extension` or `--all-extensions`, `runtime deploy` uploads only the
+core `spark_kindling` wheel. With them, it also uploads the named extension
+wheels from the same release (`github:`) or directory (`local:`), so the
+extensions match the runtime version. If you name an extension the source
+doesn't have, the command fails and lists the ones it has. A store-to-store
+copy already copies every wheel under `packages/`, extensions included, so the
+two options are rejected for that source.
 
 ```bash
 # Install the latest release into a storage account
@@ -446,10 +464,18 @@ kindling runtime deploy \
   --source github:0.10.15 \
   --dest abfss://artifacts@myacct.dfs.core.windows.net/kindling
 
-# Deploy from a local build
+# Install a release plus the extensions named in kindling.extensions
+kindling runtime deploy \
+  --source github:latest \
+  --dest /Volumes/main/kindling/artifacts \
+  --extension spark-kindling-ext-sdp \
+  --extension spark-kindling-ext-otel-azure
+
+# Deploy from a local build, with every extension wheel in it
 kindling runtime deploy \
   --source local:./dist \
-  --dest abfss://artifacts@mydev.dfs.core.windows.net/kindling
+  --dest abfss://artifacts@mydev.dfs.core.windows.net/kindling \
+  --all-extensions
 
 # Promote staging → prod (ADLS to ADLS)
 kindling runtime deploy \
@@ -518,23 +544,51 @@ on the fly; use `--local-folder` to override or `--kda-package` for a pre-built 
 | `--platform databricks\|fabric\|synapse` | auto-detected | Target platform |
 | `--json` | — | Machine-readable JSON output |
 
-### `app run <APP_NAME>`
+### `app run <APP>`
 
 Run an app locally (standalone) or submit a run of a deployed app (remote).
 
-**Standalone** (`--platform standalone`, the default): looks up `apps/<app_name>/` by convention
-and runs locally with embedded Spark. Use `--local-folder` to override for non-standard layouts.
+`APP` is an app name or a path to an app directory (one containing `app.py`): `.` from
+inside the app directory, `apps/my_pipeline`, or an absolute path. `.`, `..`, `~`-prefixed
+and absolute paths, and anything containing a path separator are paths; anything else is a name.
 
-**Remote** (`--platform databricks|fabric|synapse`): submits a run of the already-deployed app.
-The app must have been deployed first with `kindling app deploy`. `--local-folder` has no meaning
-for remote runs and will error.
+**Standalone** (`--platform standalone`, the default): a name looks up `apps/<app_name>/` by
+convention (walking up from the current directory); a path runs that directory. Runs locally
+with embedded Spark. Use `--local-folder` to override for non-standard layouts.
+
+**Remote** (`--platform databricks|fabric|synapse`): submits a run of the already-deployed app;
+nothing is uploaded. APP resolves to the name `kindling app deploy` deploys under: the app
+folder's name. A name finds `apps/<snake_name>/` (so `my-app` and `my_app` both submit
+`my_app`), falling back to the snake_case form when the folder isn't available locally; a
+path uses that directory's name. Use `--app-name` for an app deployed under a custom name.
+The app must have been deployed first with `kindling app deploy`. `--env` defaults to
+`KINDLING_ENV`, as for `app deploy`, so the run reads the environment overlay that was deployed.
+`--local-folder` has no meaning for remote runs and will error.
+
+**Databricks job compute.** Without compute options, a Databricks run uses the existing cluster in
+`DATABRICKS_CLUSTER_ID` when it is set, and otherwise a new job cluster with the SDK defaults
+(`13.3.x-scala2.12`, `Standard_DS3_v2`, 1 worker). The options below change that. They are
+Databricks-only and error on other platforms and for standalone runs.
+
+| Compute option | Description |
+|---|---|
+| `--cluster-id TEXT` | Run on this existing cluster, overriding `DATABRICKS_CLUSTER_ID` |
+| `--new-cluster` | Run on a new job cluster even if `DATABRICKS_CLUSTER_ID` is set |
+| `--spark-version TEXT` | Runtime version of the new job cluster |
+| `--node-type TEXT` | Node type of the new job cluster |
+| `--num-workers INT` | Worker count of the new job cluster (at least 1) |
+
+`--spark-version`, `--node-type` and `--num-workers` size a new job cluster, so they cannot be
+combined with `--cluster-id`, and when `DATABRICKS_CLUSTER_ID` is set they need `--new-cluster`
+(otherwise the run fails instead of quietly using the existing cluster). Unset sizing options keep
+the defaults above. Serverless job compute is not supported.
 
 | Option | Default | Description |
 |---|---|---|
 | `--platform standalone\|databricks\|fabric\|synapse` | `standalone` | Execution platform |
 | `--local-folder PATH` | — | Override convention lookup (standalone only) |
 | `--app-name TEXT` | — | Remote app name override (remote only) |
-| `--env TEXT` | — | Runtime environment |
+| `--env TEXT` | `KINDLING_ENV` (standalone: `KINDLING_ENV` or `local`) | Environment overlay for the run |
 | `--config PATH` | — | Config directory override (standalone only) |
 | `--quiet` / `-q` | — | Suppress INFO logs (standalone only) |
 | `--local-package PATH` | — | Prepend a local package root to PYTHONPATH (repeatable; standalone only) |
@@ -548,18 +602,28 @@ for remote runs and will error.
 | `--dotenv PATH` | `.env` | Dotenv file to load (repeatable) |
 | `--no-dotenv` | — | Do not load `.env` |
 | `--json` | — | Machine-readable JSON output |
+| `--cluster-id`, `--new-cluster`, `--spark-version`, `--node-type`, `--num-workers` | — | Databricks job compute (see above; Databricks only) |
 
 ```bash
+# Local standalone — from inside apps/my_pipeline/, or by path
+kindling app run .
+kindling app run apps/my_pipeline
+
 # Local standalone — convention lookup
-kindling app run my-pipeline
-kindling app run my-pipeline --local-package packages/my_pipeline --env local
+kindling app run my_pipeline
+kindling app run my_pipeline --local-package packages/my_pipeline --env local
 
 # Local standalone — non-standard layout
-kindling app run my-pipeline --local-folder path/to/app
+kindling app run my_pipeline --local-folder path/to/app
 
 # Remote — deploy first, then run
-kindling app deploy my-pipeline --platform synapse
-kindling app run my-pipeline --platform synapse
+kindling app deploy my_pipeline --platform synapse
+kindling app run my_pipeline --platform synapse
+
+# Databricks — pick the job compute
+kindling app run my_pipeline --platform databricks --cluster-id 0101-123456-abcd123
+kindling app run my_pipeline --platform databricks \
+  --new-cluster --spark-version 15.4.x-scala2.12 --node-type Standard_DS4_v2 --num-workers 4
 ```
 
 ### `app status <RUN_ID>`
@@ -665,10 +729,21 @@ the definition in place (idempotent). Config overrides supplied with
 | `--config KEY=VALUE` | — | Config override baked into the job definition (repeatable) |
 | `--platform databricks\|fabric\|synapse` | auto-detected | Target platform |
 | `--json` | — | Machine-readable JSON output |
+| `--cluster-id TEXT` | `DATABRICKS_CLUSTER_ID` | Databricks only: run the job on this existing cluster |
+| `--new-cluster` | — | Databricks only: use a new job cluster even if `DATABRICKS_CLUSTER_ID` is set |
+| `--spark-version TEXT` | `13.3.x-scala2.12` | Databricks only: new job cluster runtime version |
+| `--node-type TEXT` | `Standard_DS3_v2` | Databricks only: new job cluster node type |
+| `--num-workers INT` | `1` | Databricks only: new job cluster worker count |
+
+The compute options follow the same rules as for
+[`app run`](#app-run-app): sizing options cannot be combined with
+`--cluster-id` and need `--new-cluster` when `DATABRICKS_CLUSTER_ID` is set.
 
 ```bash
 kindling runner register --app my-app --platform synapse
-kindling runner register --app my-app --config env=prod --config region=eastus
+kindling runner register --app my-app --config environment=prod --config region=eastus
+kindling runner register --app my-app --platform databricks \
+  --new-cluster --node-type Standard_DS4_v2 --num-workers 4
 ```
 
 ### `runner status`
@@ -831,12 +906,17 @@ Create and deploy Kindling domain packages.
 
 Create a Kindling package under an existing multi-package repo at
 `packages/<snake_name>/`, as a uv workspace member: its own `pyproject.toml`
-(uv_build, `src/<snake_name>/` layout, Kindling pinned by release wheel URL to
-the CLI's version, a `dev` group with pytest, pytest-cov, poethepoet, the SDK
-and the CLI) with poe tasks `test`, `test-unit`, `test-component`
+(uv_build, `src/<snake_name>/` layout, plain `spark-kindling` as the runtime
+dependency pinned by release wheel URL to the CLI's version, a `dev` group with
+pytest, pytest-cov, poethepoet, the SDK, the CLI and the local Spark stack
+`pyspark`/`delta-spark`/`pandas`/`pyarrow` at the bounds of the `standalone`
+extra) with poe tasks `test`, `test-unit`, `test-component`
 (`test-integration`/`test-all` unless `--no-integration`), `build`
 (`uv build`; wheels land in the repo-root `dist/`) and `update-kindling`.
-Every package must pin the same Kindling release as the repo root;
+The runtime dependency carries no `standalone` extra because the package's
+wheel is installed on managed Spark runtimes (Databricks, Fabric, Synapse) that
+provide their own Spark and Delta; its `Requires-Dist` names plain
+`spark-kindling`. Every package must pin the same Kindling release as the repo root;
 `kindling env update` moves the pins. Work in it with `uv run poe test` /
 `uv run poe build` (`uv run` syncs the package; a bare `uv sync` in a package
 directory would remove the other packages from the shared `.venv/`).
@@ -870,7 +950,9 @@ Scaffold an entity definition and a CSV fixture stub.
 
 - Appends a `DataEntities.entity()` skeleton to `<module>/entities/<ns>.py` (inside
   the scaffolded `entities/` package; `<module>/entities.py` for a package without one)
-- Creates `tests/entities/<ns>/<name>.csv` under the package's project root
+- Creates `tests/entities/<ns>/<name>.csv` under the package's project root: a header
+  row of the scaffolded schema's columns (`id`) and no data rows. Local runs ignore a
+  fixture with no data rows and read the entity's provider until you add rows.
 
 | Option | Default | Description |
 |---|---|---|
@@ -884,7 +966,9 @@ runtime imports only a package's `entities`, `pipes` and `ingestion` namespaces,
 so `pipes/` is created if missing; a flat `pipes.py` is appended to instead);
 its output entity `<ns>.<name>_output` is declared in `<module>/entities/<ns>.py`
 unless it already exists;
-test stubs and input fixture stubs go under the project root's `tests/`.
+test stubs and input fixture stubs go under the project root's `tests/`. An input
+fixture stub is a single comment line (the input's schema isn't known), so local
+runs ignore it until you replace it with a header row and data rows.
 
 | Option | Default | Description |
 |---|---|---|
@@ -896,9 +980,11 @@ test stubs and input fixture stubs go under the project root's `tests/`.
 Scaffold a file-ingestion pipe and matching test stubs. The `--source-pattern`
 is matched against the filename (not the full ABFSS path); named groups are
 automatically extracted as columns by the framework. Writes
-`<module>/pipes/<ns>_<name>_ingestion.py`, appends the entity to
+`<module>/pipes/<ns>_<name>_ingestion.py`, appends the destination entity to
 `<module>/entities/<ns>.py`, and puts test stubs and the sample-CSV folder under
-the project root's `tests/`.
+the project root's `tests/`. The entity has no `provider_type` tag, so matched
+files are appended through the default Delta provider; ingestion writes through
+whatever provider the destination entity declares.
 
 | Option | Default | Description |
 |---|---|---|
