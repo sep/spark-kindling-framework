@@ -127,8 +127,9 @@ to PyPI only).
 | `spark-kindling-ext-databricks`, `spark-kindling-ext-sdp` | `spark-kindling-ext-databricks-autoloader` |
 | `spark-kindling-ext-cosmos`, `spark-kindling-ext-temporal`, `spark-kindling-ext-otel-azure` | `spark-kindling-ext-visualization` |
 
-To publish another package, add its distribution name to `PUBLISHED` in the
-job and set up its trusted publisher (below).
+To publish another package, add it to `PUBLISHED` in
+`scripts/select_pypi_dists.sh` and to `_PYPI_PUBLISHED_DISTRIBUTIONS` in the
+CLI (a unit test keeps the two in step), then bootstrap it on PyPI (below).
 
 - **Where**: a prerelease tag (`a`, `b` or `rc`, e.g. `v0.14.0rc1`) goes to
   [TestPyPI](https://test.pypi.org/project/spark-kindling/) through the
