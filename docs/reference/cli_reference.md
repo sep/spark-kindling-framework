@@ -561,8 +561,9 @@ nothing is uploaded. APP resolves to the name `kindling app deploy` deploys unde
 folder's name. A name finds `apps/<snake_name>/` (so `my-app` and `my_app` both submit
 `my_app`), falling back to the snake_case form when the folder isn't available locally; a
 path uses that directory's name. Use `--app-name` for an app deployed under a custom name.
-The app must have been deployed first with `kindling app deploy`. `--local-folder` has no meaning
-for remote runs and will error.
+The app must have been deployed first with `kindling app deploy`. `--env` defaults to
+`KINDLING_ENV`, as for `app deploy`, so the run reads the environment overlay that was deployed.
+`--local-folder` has no meaning for remote runs and will error.
 
 **Databricks job compute.** Without compute options, a Databricks run uses the existing cluster in
 `DATABRICKS_CLUSTER_ID` when it is set, and otherwise a new job cluster with the SDK defaults
@@ -587,7 +588,7 @@ the defaults above. Serverless job compute is not supported.
 | `--platform standalone\|databricks\|fabric\|synapse` | `standalone` | Execution platform |
 | `--local-folder PATH` | — | Override convention lookup (standalone only) |
 | `--app-name TEXT` | — | Remote app name override (remote only) |
-| `--env TEXT` | — | Runtime environment |
+| `--env TEXT` | `KINDLING_ENV` (standalone: `KINDLING_ENV` or `local`) | Environment overlay for the run |
 | `--config PATH` | — | Config directory override (standalone only) |
 | `--quiet` / `-q` | — | Suppress INFO logs (standalone only) |
 | `--local-package PATH` | — | Prepend a local package root to PYTHONPATH (repeatable; standalone only) |
@@ -740,7 +741,7 @@ The compute options follow the same rules as for
 
 ```bash
 kindling runner register --app my-app --platform synapse
-kindling runner register --app my-app --config env=prod --config region=eastus
+kindling runner register --app my-app --config environment=prod --config region=eastus
 kindling runner register --app my-app --platform databricks \
   --new-cluster --node-type Standard_DS4_v2 --num-workers 4
 ```

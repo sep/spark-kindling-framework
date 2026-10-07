@@ -5533,7 +5533,8 @@ def _run_remote_app(
     try:
         run_id = api_client.submit_app_run(
             resolved_name,
-            environment=env or None,
+            # Same default as `app deploy`, so a run reads the overlay it deployed.
+            environment=env or os.getenv("KINDLING_ENV") or None,
             parameters=parameters or None,
             **submit_kwargs,
         )
@@ -5709,7 +5710,14 @@ def _run_standalone_app(
 @app_group.command("run")
 @click.argument("app", required=True)
 @click.option("--app-name", default=None, help="Remote app name override for remote runs.")
-@click.option("--env", default=None, help="Runtime environment to pass to the app run.")
+@click.option(
+    "--env",
+    default=None,
+    help=(
+        "Environment overlay for the run (default: KINDLING_ENV; for standalone "
+        "runs, KINDLING_ENV or 'local')."
+    ),
+)
 @click.option(
     "--local-folder",
     "local_folder",
@@ -7919,7 +7927,7 @@ def runner_register(
 
     \b
         kindling runner register --app my-app --platform synapse
-        kindling runner register --app my-app --config env=prod --config region=eastus
+        kindling runner register --app my-app --config environment=prod --config region=eastus
         kindling runner register --app my-app --platform databricks \\
             --new-cluster --node-type Standard_DS4_v2 --num-workers 4
     """

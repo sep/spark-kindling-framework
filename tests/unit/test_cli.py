@@ -1880,6 +1880,7 @@ def test_app_run_deployed_name_creates_and_runs_job(monkeypatch):
 
     fake_api = FakeAPI()
 
+    monkeypatch.delenv("KINDLING_ENV", raising=False)
     monkeypatch.setattr(
         "kindling_cli.cli._create_platform_api",
         lambda platform: (fake_api, platform),
@@ -1889,6 +1890,37 @@ def test_app_run_deployed_name_creates_and_runs_job(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "run-1" in result.output
     assert fake_api.submitted == [("orders", None, None)]
+
+
+@pytest.mark.parametrize(
+    "args, expected",
+    [
+        ([], "prod"),
+        (["--env", "dev"], "dev"),
+    ],
+)
+def test_app_run_remote_environment_defaults_to_kindling_env(monkeypatch, args, expected):
+    """A remote run uses KINDLING_ENV like `app deploy`, so it reads the deployed overlay."""
+
+    class FakeAPI:
+        def __init__(self):
+            self.submitted = []
+
+        def submit_app_run(self, app_name, environment=None, parameters=None):
+            self.submitted.append((app_name, environment, parameters))
+            return "run-1"
+
+    fake_api = FakeAPI()
+    monkeypatch.setenv("KINDLING_ENV", "prod")
+    monkeypatch.setattr(
+        "kindling_cli.cli._create_platform_api",
+        lambda platform: (fake_api, platform),
+    )
+    result = CliRunner().invoke(
+        cli, ["app", "run", "orders", "--platform", "fabric", "--no-wait", *args]
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_api.submitted == [("orders", expected, None)]
 
 
 def test_app_run_remote_submits_without_deploying(monkeypatch):

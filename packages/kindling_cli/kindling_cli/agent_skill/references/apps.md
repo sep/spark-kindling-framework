@@ -30,7 +30,8 @@ the packages it runs in `lake-reqs.txt`.
   .devcontainer/  .github/workflows/ci.yml  scripts/setup-local-dev.sh
   packages/
     <pkg>/                # workspace member (distribution name <pkg-kebab>)
-      pyproject.toml      # pins spark-kindling[standalone] via [tool.uv.sources] wheel URLs; poe tasks
+      pyproject.toml      # runtime dep: plain spark-kindling, pinned via [tool.uv.sources] wheel URLs;
+                          # dev group: pytest, poe, SDK/CLI + pyspark/delta-spark/pandas/pyarrow; poe tasks
       settings.yaml  settings.local.yaml  .env.example
       src/<pkg>/
         entities/         # @DataEntities.entity declarations   -> auto-registered
@@ -227,16 +228,26 @@ Each command gets one line here. Run `--help` or see
 `docs/reference/cli_reference.md` for details.
 
 ```bash
+kindling runtime deploy --source github:0.13.2 --extension spark-kindling-ext-databricks   # Kindling + extension wheels -> <artifacts>/packages/
 kindling package check sales-core              # metadata, src layout, wheel builds
 kindling package deploy sales-core --artifacts-path /Volumes/main/kindling/artifacts   # build wheel -> <artifacts>/packages/
 kindling app package daily_orders --platform databricks --env prod   # -> dist/<app-dir>.kda
 kindling app deploy daily_orders --platform databricks --env prod    # upload app to <artifacts>/data-apps/<name>/
 kindling app run daily_orders --platform databricks --env prod       # run the deployed app remotely
+kindling app run daily_orders --platform databricks --new-cluster --node-type Standard_DS4_v2 --num-workers 4   # size the job cluster
 kindling runner register --app daily-orders --platform databricks    # named job for external orchestrators
 kindling bundle build --name sales --target dev --app daily-orders   # Databricks Lakeflow bundle (deploy with databricks CLI)
 ```
 
 - Deploy the packages listed in `lake-reqs.txt` **before** the app that needs them.
+- Cloud bootstrap installs the extensions named in `kindling.extensions` from
+  `<artifacts>/packages/`; `kindling runtime deploy --extension NAME`
+  (repeatable) or `--all-extensions` puts their wheels there.
+- Remote `app run` and `app deploy` both default `--env` to `KINDLING_ENV`.
+- Databricks job compute: `--cluster-id ID` (existing cluster), or
+  `--new-cluster` with `--spark-version`, `--node-type`, `--num-workers`, on
+  `app run --platform databricks` and `runner register`. Serverless jobs are
+  not supported.
 - A `.kda` archive contains only `*.py`, `*.yaml`/`*.yml`, `*.sql`,
   `requirements.txt` and `lake-reqs.txt`. `settings.local.yaml` is never
   included, `settings.<platform>.yaml`/`settings.<env>.yaml` are included only
@@ -261,11 +272,16 @@ kindling bundle build --name sales --target dev --app daily-orders   # Databrick
   Never hand-edit one package's `[tool.uv.sources]` URL.
 - Kindling extensions are added with `kindling env add spark-kindling-ext-databricks`,
   never with `uv add` and a version you guessed.
+- A package's runtime `dependencies` take plain `spark-kindling`. Never put
+  `spark-kindling[standalone]`, `pyspark` or `delta-spark` there: lake wheels
+  are pip-installed with their dependencies on clusters that already supply
+  Spark and Delta. Local Spark comes from the root's `[standalone]` pin and
+  each package's `dev` group.
 - Run `kindling` from the repo `.venv/` (or `uv run kindling ...`).
 
 ```bash
 kindling env bootstrap
-kindling env update --version 0.13.1
+kindling env update --version 0.13.2
 (cd packages/sales_core && uv run poe test)
 ```
 

@@ -48,6 +48,12 @@ All notable changes to spark-kindling are documented here.
   also writes in. `--force` is gone; `--check` exits 1 when files are stale.
 ### Fixed
 
+- **`kindling app run --platform` uses `KINDLING_ENV`.** `app deploy` defaults
+  `--environment` to `KINDLING_ENV`, but a remote `app run` passed no
+  environment unless `--env` was given, so with `KINDLING_ENV=prod` a run
+  could miss the `prod` overlay it had just deployed. Remote runs now default
+  `--env` to `KINDLING_ENV` too. The `runner register --help` example now uses
+  `--config environment=prod` (the key the runner reads).
 - **`kindling app run <name> --platform` submits the deployed name.** `app
   deploy my-app` deploys under the app folder's name (`my_app`), but `app run
   my-app --platform` submitted `my-app`, which doesn't exist remotely. A remote
