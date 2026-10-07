@@ -1,12 +1,18 @@
 """
-Unit tests for SqlEntityProvider.
+Unit tests for SqlEntityProvider (provider_type "view").
 """
 
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from kindling.data_entities import EntityMetadata
+from kindling.entity_provider import (
+    can_ensure_destination,
+    is_replace_writable,
+    is_stream_writable,
+    is_streamable,
+    is_writable,
+)
 from kindling.entity_provider_sql import SqlEntityProvider
 
 
@@ -38,104 +44,99 @@ def provider():
     return SqlEntityProvider(tp)
 
 
-class TestSqlEntityProviderViewName:
-    def test_uses_table_name_tag_when_present(self, provider):
-        entity = _sql_entity(tags={"provider.table_name": "catalog.schema.my_view"})
-        assert provider._view_name(entity) == "catalog.schema.my_view"
-
-    def test_falls_back_to_entity_name(self, provider):
-        entity = _sql_entity(name="recent_sales")
-        assert provider._view_name(entity) == "recent_sales"
+def _patched_spark(mock_spark):
+    return patch(
+        "kindling.entity_provider_sql.get_or_create_spark_session", return_value=mock_spark
+    )
 
 
 class TestSqlEntityProviderReadEntity:
-    def test_reads_view_as_dataframe(self, provider):
-        entity = _sql_entity(name="recent_sales")
+    def test_evaluates_declared_sql(self, provider):
+        entity = _sql_entity(sql="SELECT a FROM sales.tx WHERE a > 1")
         mock_df = MagicMock()
         mock_spark = MagicMock()
-        mock_spark.read.table.return_value = mock_df
+        mock_spark.sql.return_value = mock_df
 
-        with patch(
-            "kindling.entity_provider_sql.get_or_create_spark_session", return_value=mock_spark
-        ):
+        with _patched_spark(mock_spark):
             result = provider.read_entity(entity)
 
         assert result is mock_df
-        mock_spark.read.table.assert_called_once_with("recent_sales")
+        mock_spark.sql.assert_called_once_with("SELECT a FROM sales.tx WHERE a > 1")
+        mock_spark.read.table.assert_not_called()
 
-    def test_uses_table_name_tag_for_read(self, provider):
-        entity = _sql_entity(tags={"provider.table_name": "catalog.schema.my_view"})
+    def test_does_not_read_or_create_the_catalog_view(self, provider):
+        """Reads must not depend on, or create, the migrate-managed view."""
+        entity = _sql_entity(sql="SELECT 1", tags={"provider.table_name": "cat.sch.v"})
         mock_spark = MagicMock()
 
-        with patch(
-            "kindling.entity_provider_sql.get_or_create_spark_session", return_value=mock_spark
-        ):
+        with _patched_spark(mock_spark):
             provider.read_entity(entity)
 
-        mock_spark.read.table.assert_called_once_with("catalog.schema.my_view")
+        mock_spark.sql.assert_called_once_with("SELECT 1")
+        mock_spark.read.table.assert_not_called()
 
     def test_raises_for_non_sql_entity(self, provider):
-        entity = _delta_entity()
-
         with pytest.raises(ValueError, match="SqlEntityProvider cannot read non-SQL entity"):
-            provider.read_entity(entity)
+            provider.read_entity(_delta_entity())
 
 
 class TestSqlEntityProviderCheckEntityExists:
-    def test_returns_true_when_view_exists(self, provider):
-        entity = _sql_entity(name="my_view")
-        mock_spark = MagicMock()  # spark.sql() succeeds → view exists
+    def test_true_when_sql_resolves(self, provider):
+        entity = _sql_entity(sql="SELECT * FROM t")
+        mock_spark = MagicMock()
 
-        with patch(
-            "kindling.entity_provider_sql.get_or_create_spark_session", return_value=mock_spark
-        ):
+        with _patched_spark(mock_spark):
             assert provider.check_entity_exists(entity) is True
 
-        mock_spark.sql.assert_called_once_with("DESCRIBE my_view")
+        mock_spark.sql.assert_called_once_with("SELECT * FROM t")
 
-    def test_returns_false_when_view_missing(self, provider):
-        entity = _sql_entity(name="my_view")
+    def test_false_when_sql_does_not_resolve(self, provider):
+        entity = _sql_entity(sql="SELECT * FROM missing")
         mock_spark = MagicMock()
         mock_spark.sql.side_effect = Exception("TABLE_OR_VIEW_NOT_FOUND")
 
-        with patch(
-            "kindling.entity_provider_sql.get_or_create_spark_session", return_value=mock_spark
-        ):
+        with _patched_spark(mock_spark):
             assert provider.check_entity_exists(entity) is False
 
 
-class TestSqlEntityProviderEnsureDestination:
-    def test_issues_create_or_replace_view(self, provider):
-        entity = _sql_entity(name="recent_sales", sql="SELECT a, b FROM source")
-        mock_spark = MagicMock()
+class TestSqlEntityProviderCapabilities:
+    def test_is_read_only(self, provider):
+        assert not is_writable(provider)
+        assert not is_stream_writable(provider)
+        assert not is_replace_writable(provider)
+        assert not hasattr(provider, "merge_to_entity")
 
-        with patch(
-            "kindling.entity_provider_sql.get_or_create_spark_session", return_value=mock_spark
-        ):
-            provider.ensure_destination(entity)
+    def test_does_not_ensure_destinations(self, provider):
+        """The runner calls ensure_destination on pipe outputs; a SQL entity
+        is never a valid output, and the view is migrate's to create."""
+        assert not can_ensure_destination(provider)
 
-        mock_spark.sql.assert_called_once_with(
-            "CREATE OR REPLACE VIEW recent_sales AS SELECT a, b FROM source"
-        )
+    def test_is_not_streamable(self, provider):
+        assert not is_streamable(provider)
 
-    def test_uses_table_name_tag_in_ddl(self, provider):
-        entity = _sql_entity(
-            sql="SELECT 1",
-            tags={"provider.table_name": "catalog.schema.v"},
-        )
-        mock_spark = MagicMock()
 
-        with patch(
-            "kindling.entity_provider_sql.get_or_create_spark_session", return_value=mock_spark
-        ):
-            provider.ensure_destination(entity)
+class TestSqlEntityProviderRegistration:
+    def test_registered_under_view(self):
+        from kindling.entity_provider_registry import EntityProviderRegistry
 
-        calls = [c.args[0] for c in mock_spark.sql.call_args_list]
-        assert "CREATE SCHEMA IF NOT EXISTS catalog.schema" in calls
-        assert "CREATE OR REPLACE VIEW catalog.schema.v AS SELECT 1" in calls
+        with patch("kindling.entity_provider_registry.GlobalInjector"):
+            lp = MagicMock()
+            lp.get_logger.return_value = MagicMock()
+            registry = EntityProviderRegistry(lp)
 
-    def test_raises_for_non_sql_entity(self, provider):
-        entity = _delta_entity()
+        assert registry.get_provider_class("view") is SqlEntityProvider
 
-        with pytest.raises(ValueError, match="ensure_destination called on non-SQL entity"):
-            provider.ensure_destination(entity)
+    def test_sql_entity_decorator_tag_resolves_to_provider(self):
+        """DataEntities.sql_entity tags entities provider_type 'view'; that
+        tag must resolve through the registry rather than fail with
+        "Unknown provider type: 'view'"."""
+        from kindling.entity_provider_registry import EntityProviderRegistry
+
+        lp = MagicMock()
+        lp.get_logger.return_value = MagicMock()
+        sql_provider = SqlEntityProvider(lp)
+        with patch("kindling.entity_provider_registry.GlobalInjector") as injector:
+            registry = EntityProviderRegistry(lp)
+            injector.get.return_value = sql_provider
+            assert registry.get_provider_for_entity(_sql_entity()) is sql_provider
+            injector.get.assert_called_once_with(SqlEntityProvider)

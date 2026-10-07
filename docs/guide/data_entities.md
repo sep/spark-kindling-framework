@@ -86,11 +86,12 @@ Or via a bundled package resource:
 )
 ```
 
-**Purpose**: Registers a SQL-defined (permanent catalog view) entity. The entity is read-only; the migration layer materializes it with `CREATE OR REPLACE VIEW`.
+**Purpose**: Registers a SQL-defined entity: a read-only dataset defined by its SQL, which `kindling migrate apply` publishes as a permanent catalog view (`CREATE OR REPLACE VIEW`).
 
 **Parameters**:
 - `entityid`: Unique identifier for the entity
 - `name`: Human-readable name
+- `name`: Catalog view name that `kindling migrate apply` creates (override with the `provider.table_name` tag)
 - `tags`: Optional key-value metadata (the `provider_type: "view"` tag is added automatically)
 - `sql`: A literal SQL string (mutually exclusive with `sql_source`)
 - `sql_source`: A `SqlSource` object pointing to an inline string, a package resource (`"package:path/to/file.sql"`), or a filesystem path (mutually exclusive with `sql`)
@@ -109,7 +110,10 @@ Exactly one of `inline`, `resource`, or `file` must be provided.
 
 **Usage Notes**:
 - SQL entities have no `merge_columns`, `partition_columns`, or `schema` — they are fully defined by their SQL body.
-- Writing to a SQL entity raises `NotImplementedError`.
+- **Reading**: a SQL entity can be a pipe input. The built-in `view` provider (`SqlEntityProvider`) reads it by evaluating the declared SQL (`spark.sql(sql)`), not by reading the catalog view. The read does not need `kindling migrate apply` to have run, always matches the SQL the running code declares, and works standalone (where the session catalog does not persist a view between runs) and over session temp views such as `memory` entities. Qualify table names in the SQL: it resolves against the session's current catalog and schema. Reads are batch only (the provider is not streamable), and a watermarked read falls back to a full read every time.
+- **Publishing**: `kindling migrate apply` creates or replaces the catalog view and `kindling migrate plan` detects SQL changes by hash. Reading a SQL entity never creates or touches the view.
+- **Writing**: SQL entities are read-only. A pipe whose output is a SQL entity fails at persist time with a `ValueError` naming the entity (`Entity '...' is read-only: provider 'view' does not support write operations ...`). The provider exposes no write or destination-ensuring capability, so no DDL is issued.
+- **SDP / Lakeflow declaration**: SQL entities are not declarable as SDP inputs or outputs (`external_input_not_declarable` / `output_entity_not_table_backed`).
 - Raises `KindlingNotInitializedError` if called before `initialize()`.
 - Must be called at module level for proper registration.
 

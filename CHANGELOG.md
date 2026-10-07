@@ -68,6 +68,14 @@ All notable changes to spark-kindling are documented here.
   stub, `package add pipe --inputs` keeps a comment-line stub, `app validate`
   warns about such fixtures and `app inspect --entities` marks them ignored.
   Lines starting with `#` are comments in fixtures.
+- **SQL entities can be pipe inputs.** Entities declared with
+  `@DataEntities.sql_entity` are tagged `provider_type: "view"`, but no `view`
+  provider was registered, so reading one in the core runner failed with
+  `Unknown provider type: 'view'`. The built-in `view` provider now reads a
+  SQL entity by evaluating its declared SQL, so the read does not depend on
+  `kindling migrate apply` having created the catalog view (and works
+  standalone). SQL entities stay read-only: a pipe that writes to one fails
+  with an error naming the entity, and no view DDL is issued.
 
 ## [0.13.1] - 2026-10-06
 
