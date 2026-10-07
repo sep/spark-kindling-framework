@@ -29,6 +29,7 @@ class EntityMetadata:
     schema: Any
     partition_columns: List[str] = field(default_factory=list)
     cluster_columns: List[str] = field(default_factory=list)
+    sql: Optional[str] = None
 ```
 
 **Purpose**: Defines comprehensive metadata for a data entity.
@@ -41,6 +42,7 @@ class EntityMetadata:
 - `merge_columns`: Columns used as keys for merge operations (typically primary keys)
 - `tags`: Key-value pairs for categorization and metadata
 - `schema`: Spark schema definition for the entity
+- `sql`: Resolved SQL body for SQL-defined entities; set by `DataEntities.sql_entity()`, `None` otherwise
 
 ### 2. DataEntities.entity() Declaration
 
@@ -55,15 +57,16 @@ DataEntities.entity(
 )
 ```
 
-**Purpose**: Decorator to register entity definitions with the framework.
+**Purpose**: Registers an entity definition with the framework at call time.
 
 **Parameters**: All parameters correspond to `EntityMetadata` fields.
 
 **Usage Notes**:
+- `entityid`, `name`, `merge_columns`, `tags`, and `schema` are required; a missing one raises `ValueError` (pass `merge_columns=[]` for an entity without keys)
 - `partition_columns` and `cluster_columns` are optional (default: `[]`)
-- Returns `None` (used for registration side effects only)
+- Returns an identity decorator, so the call can also be written as `@DataEntities.entity(...)` above a function or class; registration happens either way
 - Must be called at module level for proper registration
-- Schema can be a Spark StructType or string representation
+- Schema must be a Spark `StructType`, or `None` to let the first write define the table. String (DDL) schemas are not supported: SCD2 validation and schema augmentation, `add_columns`, and the `derived.replace_keys` check all need a `StructType`
 
 ### 3. @DataEntities.sql_entity() Decorator
 
@@ -125,7 +128,7 @@ class EntityPathLocator(ABC):
 
 **Purpose**: Abstract interface for determining where entity data is stored.
 
-**Implementation Required**: Define how entity IDs map to storage paths (e.g., S3, HDFS, local filesystem).
+**Default Implementation**: `ConfigDrivenEntityPathLocator` (in `kindling.entity_resolution`) is bound automatically. It uses the entity's `provider.path` tag when set, otherwise `kindling.storage.table_root` (default `Tables`) plus the entity ID with dots turned into slashes.
 
 **Usage**: Typically implemented to support different storage backends or path conventions.
 
@@ -141,7 +144,7 @@ class EntityNameMapper(ABC):
 
 **Purpose**: Abstract interface for mapping entity IDs to table names.
 
-**Implementation Required**: Define naming conventions for database tables/views.
+**Default Implementation**: `ConfigDrivenEntityNameMapper` (in `kindling.entity_resolution`) is bound automatically. It honors the `provider.table_name`, `provider.table_catalog`, and `provider.table_schema` tags and the `kindling.storage.*` naming config.
 
 **Usage**: Enables flexible naming strategies (e.g., environment prefixes, schema organization).
 
@@ -212,8 +215,13 @@ class StreamWritableEntityProvider(ABC):
         checkpoint_location: str,
         format: Optional[str] = None,
         options: Optional[dict] = None,
-    ) -> StreamingQuery:
-        """Append a streaming DataFrame to the entity."""
+    ) -> Union[DataStreamWriter, StreamingQuery]:
+        """Append a streaming DataFrame to the entity.
+
+        Returns an unstarted DataStreamWriter for the caller to start, or an
+        already-started StreamingQuery when the provider resolves the
+        destination itself.
+        """
         pass
 ```
 
@@ -271,9 +279,9 @@ if is_writable(provider):
 | Provider | BaseEntityProvider | WritableEntityProvider | StreamableEntityProvider | StreamWritableEntityProvider | DestinationEnsuringProvider | DeclarableStreamingSource |
 |----------|:-----------------:|:---------------------:|:------------------------:|:---------------------------:|:---------------------------:|:-------------------------:|
 | Delta (full) | yes | yes | yes | yes | yes | |
-| CSV (read-only) | yes | | | | | |
+| CSV | yes | yes | | | | |
 | EventHub | yes | | yes | | | yes |
-| Memory (testing) | yes | yes | yes | yes | yes | |
+| Memory (testing) | yes | yes | yes | yes | | |
 
 #### Legacy EntityProvider ABC
 
@@ -326,7 +334,7 @@ class DataEntityManager(DataEntityRegistry):
 
 **Key Features**:
 - Singleton pattern with automatic binding
-- Thread-safe registry storage
+- Config overlays from the `dataentities:` and `dataentities-bytag:` sections
 - Runtime entity discovery
 
 ## Usage Examples
@@ -443,7 +451,9 @@ incremental_df = entity_provider.read_entity_since_version(entity_def, version -
 
 ## Implementation Requirements
 
-To use this framework, you must implement:
+Built-in providers cover `delta` (the default when an entity has no `provider_type`
+tag), `csv`, `parquet`, `memory`, `eventhub`, and `adx-api`, and the path locator and
+name mapper have config-driven defaults. To add a custom storage backend, implement:
 
 1. **`BaseEntityProvider`** (required): batch read and existence check for your storage backend
 2. **`WritableEntityProvider`** (if writable): batch write and append operations
@@ -451,9 +461,9 @@ To use this framework, you must implement:
 4. **`StreamWritableEntityProvider`** (if streaming writes needed): streaming append operations
 5. **`DestinationEnsuringProvider`** (if DDL needed): pre-creation of write destinations
 6. **`DeclarableStreamingSource`** (if a declarative engine may own the provider's stream): secret-safe source specs
-7. **EntityPathLocator**: Path resolution for your storage system
-8. **EntityNameMapper**: Table naming conventions
-9. **Schema Definitions**: Spark StructType schemas for all entities
+7. **EntityPathLocator** (optional): replace the default path resolution
+8. **EntityNameMapper** (optional): replace the default table naming
+9. **Schema Definitions**: Spark StructType schemas for your entities
 
 ## Common Implementation Patterns
 
@@ -496,14 +506,22 @@ class MyDeltaEntityProvider(
     def append_to_entity(self, df, entity):
         path = self.path_locator.get_table_path(entity)
         df.write.format("delta").mode("append").save(path)
+
+
+# Make it available to entities tagged provider_type: "my_delta"
+GlobalInjector.get(EntityProviderRegistry).register_provider("my_delta", MyDeltaEntityProvider)
 ```
+
+The pipe runner resolves each entity's provider from its `provider_type` tag
+through `EntityProviderRegistry`, so a custom provider is used only after it is
+registered there.
 
 ### Path Locator Example
 
 ```python
 @GlobalInjector.singleton_autobind()
 class S3EntityPathLocator(EntityPathLocator):
-    def __init__(self, base_path: str = "s3a://data-lake/"):
+    def __init__(self, base_path: str = "s3a://data-lake"):
         self.base_path = base_path
 
     def get_table_path(self, entity):
@@ -532,7 +550,7 @@ and no `spark` parameter (Spark is not injected into batch pipe functions).
 
 ```python
 # Entity definition
-@DataEntities.entity(
+DataEntities.entity(
     entityid="bronze.raw_sales",
     name="Raw Sales Data",
     partition_columns=["date"],
@@ -575,6 +593,7 @@ and Lakeflow owns checkpoints and query lifecycle.
 DataEntities.entity(
     entityid="stream.telemetry",
     name="Telemetry Event Hub",
+    merge_columns=[],
     tags={
         "provider_type": "eventhub",
         "provider.eventhub.connectionString": "@secret:lakeflow:eh-conn",
@@ -596,8 +615,11 @@ DataEntities.entity(
 
 @DataPipes.pipe(
     pipeid="bronze.telemetry.ingest",
+    name="Ingest Telemetry",
+    tags={},
     input_entity_ids=["stream.telemetry"],
     output_entity_id="bronze.telemetry",
+    output_type="delta",
     driving_entity_ids=["stream.telemetry"],
 )
 def ingest_telemetry(stream_telemetry):
@@ -648,8 +670,8 @@ Registering an SCD2 entity also auto-registers a read-only companion at `{entity
     output_entity_id="gold.active_customers",
     ...
 )
-def gold_active_customers(dim_customer_current):
-    return dim_customer_current.select("customer_id", "name", "region")
+def gold_active_customers(silver_dim_customer_current):
+    return silver_dim_customer_current.select("customer_id", "name", "region")
 ```
 
 Writing to a companion entity raises `NotImplementedError`.
