@@ -36,13 +36,16 @@ SKILL_FILES = sorted(
         *(SKILL_DIR / "references").glob("*.md"),
     ]
 )
-FENCE = re.compile(r"^```(\w+)[^\n]*\n(.*?)^```", re.S | re.M)
+# Fences may be indented (e.g. inside a numbered list item).
+FENCE = re.compile(r"^([ \t]*)```(\w+)[^\n]*\n(.*?)^[ \t]*```", re.S | re.M)
 ILLUSTRATIVE = "# illustrative"
 
 
 def _blocks(path: Path, language: str):
     return [
-        body for lang, body in FENCE.findall(path.read_text(encoding="utf-8")) if lang == language
+        textwrap.dedent(body)
+        for _indent, lang, body in FENCE.findall(path.read_text(encoding="utf-8"))
+        if lang == language
     ]
 
 
@@ -130,7 +133,12 @@ def test_cli_commands_exist(path):
     runner = CliRunner()
     for tokens in _kindling_commands(path):
         command_path, rest = _resolve(tokens)
-        assert command_path, f"unknown kindling command: kindling {' '.join(tokens)}"
+        command = cli
+        for name in command_path:
+            command = command.commands[name]
+        assert command_path and not hasattr(
+            command, "commands"
+        ), f"unknown or incomplete kindling command: kindling {' '.join(tokens)}"
         help_result = runner.invoke(cli, [*command_path, "--help"])
         assert help_result.exit_code == 0, help_result.output
         for option in (t.split("=", 1)[0] for t in rest if t.startswith("--")):

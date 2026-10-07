@@ -7991,10 +7991,12 @@ def repo_init(
     agents_option: str = "all",
 ) -> None:
     """Create a Kindling repo root with shared dev tooling."""
+    from kindling_cli import agent_files
     from kindling_cli.scaffold import RepoScaffoldConfig, generate_repo, validate_name
 
     try:
         snake = validate_name(repo_name)
+        agent_files.parse_agents(agents_option)  # fail before writing anything
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
 
