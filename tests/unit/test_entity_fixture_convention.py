@@ -114,7 +114,7 @@ class TestFixtureCsvHasDataRows:
             pytest.param("", id="empty"),
             pytest.param("\n\n", id="blank-lines"),
             pytest.param("id,name\n", id="header-only"),
-            pytest.param("id,name\n\n,\n", id="header-and-blank-rows"),
+            pytest.param("id,name\n\n\n", id="header-and-blank-lines"),
             pytest.param("# add CSV headers here\n", id="legacy-comment-stub"),
             pytest.param("# note\n# another\n", id="comment-only"),
             pytest.param("# note\nid,name\n", id="comment-and-header"),
@@ -458,3 +458,13 @@ class TestCreatePipeEntityReaderFixtureConvention:
         mock_reader.option.assert_any_call("comment", "#")
         mock_reader.load.assert_called_once_with(str(csv_file))
         strategy.logger.warning.assert_not_called()
+
+
+def test_delimiter_only_row_counts_as_data(tmp_path):
+    from kindling.entity_provider_csv import fixture_csv_has_data_rows
+
+    fixture = tmp_path / "x.csv"
+    fixture.write_text("id,name\n,\n")
+    assert fixture_csv_has_data_rows(fixture) is True
+    fixture.write_text("id,name\n\n\n")
+    assert fixture_csv_has_data_rows(fixture) is False

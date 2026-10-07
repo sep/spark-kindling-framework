@@ -6762,7 +6762,8 @@ def _read_csv_rows(csv_path: Path) -> Tuple[List[str], List[List[str]]]:
     # header and rows a local run reads.
     text = csv_path.read_text(encoding="utf-8")
     lines = [line for line in text.splitlines(keepends=True) if not line.startswith("#")]
-    records = [r for r in csv.reader(lines) if any(field.strip() for field in r)]
+    # Skip blank lines only: a delimiter-only line (",") is a row of nulls.
+    records = [r for r in csv.reader(lines) if r]
     if not records:
         return [], []
     return records[0], records[1:]

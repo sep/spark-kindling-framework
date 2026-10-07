@@ -598,3 +598,12 @@ def test_read_csv_rows_skips_comments_and_blank_records(tmp_path):
     assert _read_csv_rows(fixture) == (["id", "name"], [["1", "foo"], ["2", "bar"]])
     (tmp_path / "empty.csv").write_text("# only a comment\n")
     assert _read_csv_rows(tmp_path / "empty.csv") == ([], [])
+
+
+def test_read_csv_rows_keeps_delimiter_only_null_rows(tmp_path):
+    """`,` is a data row of nulls (entity validate must see the null key)."""
+    from kindling_cli.cli import _read_csv_rows
+
+    fixture = tmp_path / "orders.csv"
+    fixture.write_text("id,name\n,\n1,foo\n")
+    assert _read_csv_rows(fixture) == (["id", "name"], [["", ""], ["1", "foo"]])

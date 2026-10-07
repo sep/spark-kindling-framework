@@ -90,7 +90,7 @@ def fixture_csv_has_data_rows(csv_path: Path) -> bool:
         lines = (line for line in handle if not line.startswith(_FIXTURE_COMMENT_PREFIX))
         records = 0
         for record in csv.reader(lines):
-            if not any(field.strip() for field in record):
+            if not record:  # blank line; a delimiter-only line is a row of nulls
                 continue
             records += 1
             if records >= 2:

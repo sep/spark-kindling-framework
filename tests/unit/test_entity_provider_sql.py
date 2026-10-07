@@ -140,3 +140,48 @@ class TestSqlEntityProviderRegistration:
             injector.get.return_value = sql_provider
             assert registry.get_provider_for_entity(_sql_entity()) is sql_provider
             injector.get.assert_called_once_with(SqlEntityProvider)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "DROP TABLE IF EXISTS important_table",
+        "select 1; drop table x",
+        "with x as (select 1) insert into t select * from x",
+        "INSERT INTO t VALUES (1)",
+        "SET spark.sql.shuffle.partitions=1",
+        "",
+    ],
+)
+def test_non_query_sql_is_rejected_before_spark(sql, monkeypatch):
+    """A SQL entity is read by running its SQL; a statement that is not a
+    single read-only query must never reach spark.sql()."""
+    import kindling.entity_provider_sql as module
+    from kindling.entity_provider_sql import SqlEntityProvider
+
+    spark = MagicMock()
+    monkeypatch.setattr(module, "get_or_create_spark_session", lambda: spark)
+    provider = SqlEntityProvider.__new__(SqlEntityProvider)
+    provider._logger = MagicMock()
+    entity = MagicMock(entityid="reporting.x", sql=sql, is_sql_entity=True)
+
+    with pytest.raises(ValueError, match="single read-only query"):
+        provider.read_entity(entity)
+    with pytest.raises(ValueError, match="single read-only query"):
+        provider.check_entity_exists(entity)
+    spark.sql.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM sales.orders",
+        "with recent as (select * from s.o) select * from recent;",
+        "select 'drop table x' as note, last_update from t -- insert later",
+        "(SELECT 1)",
+    ],
+)
+def test_queries_are_accepted(sql):
+    from kindling.entity_provider_sql import require_query_sql
+
+    require_query_sql(sql, "reporting.x")
