@@ -122,7 +122,7 @@ def test_repo_init_installs_selected_agents(tmp_path):
     assert (tmp_path / "AGENTS.md").is_file()
     assert not (tmp_path / "CLAUDE.md").exists()
     devcontainer = (tmp_path / ".devcontainer/devcontainer.json").read_text()
-    assert "kindling env bootstrap && kindling agent setup" in devcontainer
+    assert "kindling env bootstrap && ./.venv/bin/kindling agent setup" in devcontainer
 
 
 def test_instruction_block_lists_project_packages_and_apps(tmp_path):
@@ -185,3 +185,23 @@ def test_repo_init_rejects_bad_agents_before_writing(tmp_path):
     assert result.exit_code != 0
     assert "unknown: cursor" in result.output
     assert not target.exists() or not any(target.iterdir())
+
+
+def test_saved_windows_paths_are_normalized_for_cleanup(tmp_path):
+    assert _setup(tmp_path, "--agents", "copilot").exit_code == 0
+    state_path = tmp_path / ".kindling-agent.json"
+    state = json.loads(state_path.read_text())
+    state["installed"] = [p.replace("/", "\\") for p in state["installed"]]
+    state_path.write_text(json.dumps(state))
+
+    assert _setup(tmp_path, "--agents", "claude").exit_code == 0
+    assert not (tmp_path / ".github/skills/kindling").exists()
+    assert not (tmp_path / ".github/copilot-instructions.md").exists()
+    assert all("\\" not in p for p in json.loads(state_path.read_text())["installed"])
+
+
+def test_setup_none_on_new_directory_saves_selection(tmp_path):
+    target = tmp_path / "new-project"
+    result = _setup(target, "--agents", "none")
+    assert result.exit_code == 0, result.output
+    assert json.loads((target / ".kindling-agent.json").read_text())["agents"] == []

@@ -94,9 +94,12 @@ def load_state(project_root: Path) -> Optional[Dict]:
     if not path.is_file():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    # Paths are stored POSIX-style; normalize any written with backslashes.
+    state["installed"] = [str(p).replace("\\", "/") for p in state.get("installed", [])]
+    return state
 
 
 def _discover_project_context(project_root: Path) -> List[str]:
@@ -219,23 +222,23 @@ def plan(project_root: Path, agents: List[str], version: str) -> Dict[str, List[
     expected = _expected_skill(version)
     for rel in skill_dirs_for(agents):
         if _installed_skill(project_root / rel) != expected:
-            write.append(str(rel))
+            write.append(rel.as_posix())
     for rel in instruction_files_for(agents):
         path = project_root / rel
         existing = path.read_text(encoding="utf-8") if path.is_file() else ""
         match = _BLOCK_RE.search(existing)
         legacy = existing.startswith(_LEGACY_GENERATED_PREFIX)
         if legacy or not match or match.group(0).rstrip("\n") != block.rstrip("\n"):
-            write.append(str(rel))
-    keep = {str(p) for p in skill_dirs_for(agents)} | {
-        str(p) for p in instruction_files_for(agents)
+            write.append(rel.as_posix())
+    keep = {p.as_posix() for p in skill_dirs_for(agents)} | {
+        p.as_posix() for p in instruction_files_for(agents)
     }
     remove = [p for p in state.get("installed", []) if p not in keep]
     remove += [
-        str(rel)
+        rel.as_posix()
         for rel in _INSTRUCTION_FILES.values()
-        if str(rel) not in keep
-        and str(rel) not in remove
+        if rel.as_posix() not in keep
+        and rel.as_posix() not in remove
         and _is_legacy_generated(project_root / rel)
     ]
     if (project_root / _LEGACY_VERSION_FILE).exists():
@@ -258,15 +261,15 @@ def apply(project_root: Path, agents: List[str], version: str) -> Dict[str, List
 
     skill_dirs = skill_dirs_for(agents)
     instruction_files = instruction_files_for(agents)
-    keep = {str(p) for p in skill_dirs} | {str(p) for p in instruction_files}
+    keep = {p.as_posix() for p in skill_dirs} | {p.as_posix() for p in instruction_files}
 
     previously_installed = list(state.get("installed", []))
     # Files generated whole by the pre-skill `agent setup`, for agents no
     # longer selected; selected ones are rewritten below.
     previously_installed += [
-        str(rel)
+        rel.as_posix()
         for rel in _INSTRUCTION_FILES.values()
-        if str(rel) not in previously_installed and _is_legacy_generated(project_root / rel)
+        if rel.as_posix() not in previously_installed and _is_legacy_generated(project_root / rel)
     ]
     legacy_version_file = project_root / _LEGACY_VERSION_FILE
     if legacy_version_file.exists():
@@ -277,22 +280,23 @@ def apply(project_root: Path, agents: List[str], version: str) -> Dict[str, List
         if rel in keep:
             continue
         path = project_root / rel
-        if rel in {str(p) for p in _SKILL_DIRS.values()} and path.is_dir():
+        if rel in {p.as_posix() for p in _SKILL_DIRS.values()} and path.is_dir():
             shutil.rmtree(path)
             removed.append(rel)
-        elif rel in {str(p) for p in _INSTRUCTION_FILES.values()} and _remove_block(path):
+        elif rel in {p.as_posix() for p in _INSTRUCTION_FILES.values()} and _remove_block(path):
             removed.append(rel)
 
     for rel in skill_dirs:
         if _write_skill(project_root / rel, version):
-            written.append(str(rel))
+            written.append(rel.as_posix())
     block = render_instruction_block(project_root, version)
     for rel in instruction_files:
         if _upsert_block(project_root / rel, block):
-            written.append(str(rel))
+            written.append(rel.as_posix())
 
     new_state = _state(agents, version, keep)
     # Always recorded, even for no agents, so a later run without --agents
     # keeps that choice instead of falling back to all.
+    project_root.mkdir(parents=True, exist_ok=True)
     (project_root / STATE_FILE).write_text(json.dumps(new_state, indent=2) + "\n", encoding="utf-8")
     return {"written": written, "removed": removed}

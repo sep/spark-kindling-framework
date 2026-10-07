@@ -783,7 +783,8 @@ Scaffold and manage multi-package Kindling repos.
 
 Create a Kindling repo root with shared dev tooling: `.devcontainer/devcontainer.json`
 (image `ghcr.io/sep/spark-kindling-framework/devcontainer:latest`,
-`postCreateCommand` `kindling env bootstrap && kindling agent setup`, interpreter
+`postCreateCommand` `kindling env bootstrap && ./.venv/bin/kindling agent setup`
+(the project's pinned CLI), interpreter
 `${containerWorkspaceFolder}/.venv/bin/python`), `.github/workflows/ci.yml`
 (runs `uv run poe test && uv run poe build` in each `packages/*`
 inside the devcontainer image), `.gitignore` (includes `.venv/` and `dist/`),
