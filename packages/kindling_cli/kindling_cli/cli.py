@@ -6458,7 +6458,7 @@ def package_add_ingestion(
     Creates:
       <module>/pipes/<ns>_<name>_ingestion.py     — FileIngestionEntries skeleton
                                                     (pipes/ is created if missing)
-      <module>/entities/<ns>.py                   — entity definition with CSV provider
+      <module>/entities/<ns>.py                   — destination entity (default Delta provider)
                                                     (<module>/entities.py without entities/)
       tests/unit/test_<ns>_<name>_ingestion.py        — pytest skip stub
       tests/integration/test_<ns>_<name>_ingestion.py — pytest skip stub
@@ -6501,7 +6501,6 @@ FileIngestionEntries.entry(
     patterns=[r"{pattern}"],
     dest_entity_id="{entity_id}",
     tags={{
-        "provider_type": "csv",
         "layer": "{namespace}",
     }},
     infer_schema=False,
@@ -6515,7 +6514,10 @@ FileIngestionEntries.entry(
 
     # --- entity definition in entities.py ---
     entity_block = f"""
-# --- {entity_id} (CSV ingestion) ---
+# --- {entity_id} (file ingestion destination) ---
+# Matched source files are appended through this entity's own provider. No
+# provider_type tag means the default Delta provider; set one (plus its
+# provider.* tags) to land the data somewhere else.
 from pyspark.sql.types import StringType, StructField, StructType
 
 {schema_var} = StructType(
@@ -6531,7 +6533,6 @@ DataEntities.entity(
     partition_columns=[],
     merge_columns=["id"],
     tags={{
-        "provider_type": "csv",
         "layer": "{namespace}",
     }},
     schema={schema_var},

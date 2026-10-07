@@ -73,7 +73,10 @@ def _make_processor(entry, spark):
     proc.fir.get_entry_definition.side_effect = {entry.entry_id: entry}.get
     proc.der = MagicMock()
     proc.der.get_entity_definition.return_value = SimpleNamespace(entityid=entry.dest_entity_id)
+    # The destination entity's provider, as resolved by the provider registry.
     proc.ep = MagicMock()
+    proc.provider_registry = MagicMock()
+    proc.provider_registry.get_provider_for_entity.return_value = proc.ep
     return proc
 
 

@@ -3891,6 +3891,42 @@ def test_package_add_writes_into_scaffolded_subpackages(tmp_path, monkeypatch, t
     } <= walked
 
 
+def test_package_add_ingestion_destination_entity_uses_default_provider(tmp_path):
+    """Ingestion appends through the destination entity's own provider, so the
+    scaffolded entity must not claim provider_type csv (which also needs a
+    provider.path it never gets); omitting it selects the default Delta provider."""
+    project = _scaffolded_package(tmp_path, "landing")
+    module = project / "src" / "landing"
+    result = CliRunner().invoke(
+        cli,
+        [
+            "package",
+            "add",
+            "ingestion",
+            "bronze.sales_report",
+            "--filename-metadata",
+            "report_date",
+            "--package",
+            str(project),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    entities = (module / "entities" / "bronze.py").read_text()
+    assert 'entityid="bronze.sales_report"' in entities
+    assert '"provider_type":' not in entities
+
+    entry = (module / "pipes" / "bronze_sales_report_ingestion.py").read_text()
+    assert '"provider_type":' not in entry
+    assert 'dest_entity_id="bronze.sales_report"' in entry
+    assert "(?P<report_date>" in entry
+    compile(entities, "bronze.py", "exec")
+    compile(entry, "bronze_sales_report_ingestion.py", "exec")
+
+    unit_stub = (project / "tests" / "unit" / "test_bronze_sales_report_ingestion.py").read_text()
+    assert "report_date" in unit_stub
+
+
 def test_package_add_same_name_in_two_namespaces_keeps_both_test_stubs(tmp_path):
     project = _scaffolded_package(tmp_path, "ledger")
     runner = CliRunner()
