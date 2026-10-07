@@ -2852,18 +2852,27 @@ def _reconcile_root_kindling_dependencies(
     if not by_project:
         return {}
 
-    versions_by_project: Dict[Path, str] = {}
+    # Compare per distribution: extensions version independently of the
+    # runtime, so one project legitimately pins several versions at once.
+    pins_by_distribution: Dict[str, Dict[Path, str]] = {}
     for path, entries in by_project.items():
-        versions = {
-            v for v in (_declared_kindling_version(entry) for _, _, entry in entries.values()) if v
-        }
-        if len(versions) == 1:
-            versions_by_project[path] = next(iter(versions))
+        for name, (_group, _extras, entry) in entries.items():
+            version = _declared_kindling_version(entry)
+            if version:
+                pins_by_distribution.setdefault(_canonical_distribution_name(name), {})[
+                    path
+                ] = version
 
-    distinct_versions = set(versions_by_project.values())
-    if len(distinct_versions) > 1:
+    conflicts = {
+        distribution: pins
+        for distribution, pins in pins_by_distribution.items()
+        if len(set(pins.values())) > 1
+    }
+    if conflicts:
         lines = "\n".join(
-            f"  {path}: {version}" for path, version in sorted(versions_by_project.items())
+            f"  {path}: {distribution} {version}"
+            for distribution, pins in sorted(conflicts.items())
+            for path, version in sorted(pins.items())
         )
         raise click.ClickException(
             f"No spark-kindling* dependency declared at {root_pyproject_path}, and "
@@ -3639,25 +3648,32 @@ def _require_single_pin_form(project_path: Path) -> None:
     version. uv rejects a workspace that sources one package both ways, and
     bootstrap adopts just one nested entry, so the sync would fail; `kindling
     env update` rewrites every project to one form."""
-    forms: Dict[str, List[Path]] = {"url": [], "version": []}
+    # Per distribution: a PyPI-pinned runtime beside a URL-pinned,
+    # GitHub-only extension is fine; one package pinned both ways is not.
+    forms: Dict[str, Dict[str, List[Path]]] = {}
     for nested in _discover_descendant_pyprojects(project_path):
         try:
             entries = list(_iter_kindling_dependency_entries(nested))
         except Exception:
             continue
-        for _name, _group, entry in entries:
-            if isinstance(entry, dict) and entry.get("url"):
-                forms["url"].append(nested)
-            elif isinstance(entry, dict) and entry.get("version"):
-                forms["version"].append(nested)
-    if forms["url"] and forms["version"]:
-        by_url = ", ".join(sorted({str(p.parent) for p in forms["url"]}))
-        by_version = ", ".join(sorted({str(p.parent) for p in forms["version"]}))
+        for name, _group, entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            form = "url" if entry.get("url") else "version" if entry.get("version") else None
+            if form:
+                by_form = forms.setdefault(_canonical_distribution_name(name), {})
+                by_form.setdefault(form, []).append(nested.parent)
+    mixed = {name: by_form for name, by_form in forms.items() if len(by_form) > 1}
+    if mixed:
+        details = "; ".join(
+            f"{name}: by URL in {', '.join(sorted(map(str, by_form['url'])))}, by version "
+            f"in {', '.join(sorted(map(str, by_form['version'])))}"
+            for name, by_form in sorted(mixed.items())
+        )
         raise click.ClickException(
-            "Nested projects pin Kindling in two forms -- by release wheel URL "
-            f"({by_url}) and by version ({by_version}); a uv workspace must pin each "
-            "package one way. Run `kindling env update` at the repo root to give every "
-            "project the same form."
+            f"Nested projects pin a Kindling package in two forms ({details}); a uv "
+            "workspace must pin each package one way. Run `kindling env update` at the "
+            "repo root to give every project the same form."
         )
 
 

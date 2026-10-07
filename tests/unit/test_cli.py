@@ -639,6 +639,46 @@ def test_env_bootstrap_rejects_nested_projects_with_mixed_pin_forms(monkeypatch,
     assert commands == []
 
 
+def test_env_bootstrap_allows_different_forms_for_different_packages(monkeypatch, tmp_path):
+    """A PyPI-pinned runtime beside a URL-pinned (GitHub-only) extension is valid."""
+    root = tmp_path / "repo"
+    _write_pyproject(root, "[project]\nname = 'repo'\nversion = '0.1.0'\ndependencies = []\n")
+    _write_pyproject(
+        root / "packages" / "a",
+        "[project]\nname = 'a'\nversion = '0.1.0'\n"
+        "dependencies = ['spark-kindling==1.2.3', 'spark-kindling-ext-adx']\n\n"
+        f"[tool.uv.sources]\nspark-kindling-ext-adx = {{ url = '{_wheel_url('spark_kindling_ext_adx-0.1.0-py3-none-any.whl')}' }}\n",
+    )
+    commands = []
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append(cmd))
+
+    result = CliRunner().invoke(cli, ["env", "bootstrap", "--project", str(root)])
+
+    assert result.exit_code == 0, result.output
+    assert ["uv", "add", "spark-kindling==1.2.3"] in commands
+    assert ["uv", "add", _wheel_url("spark_kindling_ext_adx-0.1.0-py3-none-any.whl")] in commands
+
+
+def test_reconcile_compares_versions_per_package_with_extensions_present(tmp_path):
+    """Projects that also pin an independently versioned extension are still
+    checked: two members pinning different runtime releases must fail."""
+    from kindling_cli.cli import _reconcile_root_kindling_dependencies
+
+    root = tmp_path / "repo"
+    _write_pyproject(root, "[project]\nname = 'repo'\nversion = '0.1.0'\ndependencies = []\n")
+    for member, runtime in (("a", "0.14.0"), ("b", "0.15.0")):
+        _write_pyproject(
+            root / "packages" / member,
+            f"[project]\nname = '{member}'\nversion = '0.1.0'\n"
+            f"dependencies = ['spark-kindling=={runtime}', 'spark-kindling-ext-sdp==0.3.4']\n",
+        )
+
+    with pytest.raises(click.ClickException, match="disagree") as excinfo:
+        _reconcile_root_kindling_dependencies(root / "pyproject.toml", root)
+    assert "spark-kindling 0.14.0" in str(excinfo.value.message)
+    assert "spark-kindling 0.15.0" in str(excinfo.value.message)
+
+
 def test_version_pinned_dependency_reports_its_version(tmp_path):
     from kindling_cli.cli import (
         _declared_kindling_version,
