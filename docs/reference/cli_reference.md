@@ -423,7 +423,8 @@ environment or promoting between environments (e.g. staging → prod).
 **Destination layout** under `--dest`:
 
 ```
-{dest}/packages/   ← spark_kindling-*.whl
+{dest}/packages/   ← spark_kindling-*.whl, plus spark_kindling_ext_*.whl
+                     chosen with --extension / --all-extensions
 {dest}/scripts/    ← kindling_bootstrap.py
 ```
 
@@ -432,10 +433,23 @@ The `--dest` root is your `artifacts_storage_path` in `BOOTSTRAP_CONFIG`.
 | Option | Default | Description |
 |---|---|---|
 | `--source TEXT` | required | Source specifier (see above) |
-| `--dest TEXT` | required | Destination `abfss://` URI |
+| `--dest TEXT` | required | Destination artifacts root (`abfss://…`, `/Volumes/…`, or a local directory) |
 | `--version TEXT` | — | Release version for `github:` source; overrides the version embedded in `--source` |
+| `--extension NAME` | — | Also upload this extension's wheel from the source. Repeatable. Takes the distribution name (`spark-kindling-ext-sdp`; `spark_kindling_ext_sdp` also works). `github:` and `local:` sources only |
+| `--all-extensions` | — | Also upload every `spark_kindling_ext_*.whl` in the source. `github:` and `local:` sources only |
 | `--skip-bootstrap` | — | Skip the bootstrap script |
 | `--overwrite` | — | Overwrite existing scripts (wheels always overwrite) |
+| `--json` | — | Print a JSON summary (`wheels`, `extension_wheels`, `scripts`, `version`, `dest`) on stdout; progress goes to stderr |
+
+**Extensions.** At startup, bootstrap installs each distribution listed in
+`kindling.extensions` from the wheel with that name in `{dest}/packages/`.
+Without `--extension` or `--all-extensions`, `runtime deploy` uploads only the
+core `spark_kindling` wheel. With them, it also uploads the named extension
+wheels from the same release (`github:`) or directory (`local:`), so the
+extensions match the runtime version. If you name an extension the source
+doesn't have, the command fails and lists the ones it has. A store-to-store
+copy already copies every wheel under `packages/`, extensions included, so the
+two options are rejected for that source.
 
 ```bash
 # Install the latest release into a storage account
@@ -448,10 +462,18 @@ kindling runtime deploy \
   --source github:0.10.15 \
   --dest abfss://artifacts@myacct.dfs.core.windows.net/kindling
 
-# Deploy from a local build
+# Install a release plus the extensions named in kindling.extensions
+kindling runtime deploy \
+  --source github:latest \
+  --dest /Volumes/main/kindling/artifacts \
+  --extension spark-kindling-ext-sdp \
+  --extension spark-kindling-ext-otel-azure
+
+# Deploy from a local build, with every extension wheel in it
 kindling runtime deploy \
   --source local:./dist \
-  --dest abfss://artifacts@mydev.dfs.core.windows.net/kindling
+  --dest abfss://artifacts@mydev.dfs.core.windows.net/kindling \
+  --all-extensions
 
 # Promote staging → prod (ADLS to ADLS)
 kindling runtime deploy \

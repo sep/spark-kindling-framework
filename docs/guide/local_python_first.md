@@ -418,6 +418,30 @@ kindling runtime deploy \
 
 The `--dest` root becomes your `artifacts_storage_path` in `BOOTSTRAP_CONFIG`.
 
+### Getting extensions onto the cluster
+
+Extensions listed under `kindling.extensions` in your settings are installed at
+bootstrap from wheels in `{artifacts}/packages/`. `runtime deploy` uploads only
+the core runtime wheel unless you ask for extensions, so name each one your
+settings list (or pass `--all-extensions`):
+
+```yaml
+kindling:
+  extensions: [spark-kindling-ext-sdp]
+```
+
+```bash
+kindling runtime deploy \
+  --source github:latest \
+  --dest abfss://artifacts@myacct.dfs.core.windows.net/kindling \
+  --extension spark-kindling-ext-sdp
+```
+
+The extension wheels come from the same GitHub release (or `local:` directory)
+as the runtime, so their versions match. Naming an extension the source does
+not contain fails and lists what is available. Promoting with a store-to-store
+copy carries the extension wheels along with everything else in `packages/`.
+
 ### Workspace initialization and config deploy
 
 To push `settings.yaml` and optional notebook stubs into the workspace for the

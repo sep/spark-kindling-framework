@@ -15,6 +15,17 @@ All notable changes to spark-kindling are documented here.
   and its examples are executed by the integration tests. `kindling repo
   init --agents ...` installs it for new repos, and the scaffolded
   devcontainer refreshes it after `kindling env bootstrap`.
+- **`kindling runtime deploy` uploads extension wheels.** Bootstrap installs
+  the extensions in `kindling.extensions` from `<artifacts>/packages/`, but
+  `runtime deploy` uploaded only the core `spark_kindling` wheel, so a domain
+  project had no command to put extension wheels there. `--extension NAME`
+  (repeatable; `spark-kindling-ext-sdp` or `spark_kindling_ext_sdp`) and
+  `--all-extensions` now upload extension wheels from the `github:` release
+  assets or the `local:` directory alongside the runtime; a name the source
+  doesn't have is an error that lists the extensions it does have. Without
+  either option only the core wheel is uploaded, as before. `runtime deploy`
+  also gains `--json`, reporting the uploaded `wheels`, `extension_wheels` and
+  `scripts`.
 
 ### Changed
 

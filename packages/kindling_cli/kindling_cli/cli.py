@@ -3912,6 +3912,74 @@ def _deploy_wheels(store: ArtifactStore, wheels: List[Path], quiet: bool = False
     return count
 
 
+_EXTENSION_DIST_PREFIX = "spark-kindling-ext-"
+_LEGACY_EXTENSION_DIST_PREFIX = "kindling-ext-"
+
+
+def _normalize_extension_name(name: str) -> str:
+    """Canonical distribution name of a Kindling extension.
+
+    Accepts the distribution name (``spark-kindling-ext-sdp``), its wheel /
+    underscore form (``spark_kindling_ext_sdp``) and the pre-rename alias
+    (``kindling-ext-sdp``) -- the same equivalences bootstrap's
+    ``dist_name_candidates`` applies when it looks for the wheel in
+    ``packages/``.
+    """
+    normalized = re.sub(r"[-_.]+", "-", name.strip()).lower()
+    if normalized.startswith(_LEGACY_EXTENSION_DIST_PREFIX):
+        normalized = _EXTENSION_DIST_PREFIX + normalized[len(_LEGACY_EXTENSION_DIST_PREFIX) :]
+    return normalized
+
+
+def _available_extension_wheels(source_dir: Path) -> Dict[str, List[Path]]:
+    """Extension wheels in a directory, keyed by canonical distribution name."""
+    available: Dict[str, List[Path]] = {}
+    wheels = set(source_dir.glob("spark_kindling_ext_*.whl")) | set(
+        source_dir.glob("kindling_ext_*.whl")
+    )
+    for wheel in sorted(wheels):
+        # Wheel filenames escape dashes in the distribution name, so the
+        # distribution is everything before the first dash.
+        dist = _normalize_extension_name(wheel.name.split("-", 1)[0])
+        available.setdefault(dist, []).append(wheel)
+    return available
+
+
+def _select_extension_wheels(
+    source_dir: Path,
+    names: Sequence[str],
+    all_extensions: bool,
+    source_label: str,
+) -> List[Path]:
+    """Pick the extension wheels requested by --extension / --all-extensions."""
+    if not names and not all_extensions:
+        return []
+
+    available = _available_extension_wheels(source_dir)
+    available_text = ", ".join(sorted(available)) or "none"
+
+    missing = [name for name in names if _normalize_extension_name(name) not in available]
+    if missing:
+        raise click.ClickException(
+            f"Extension(s) not found in {source_label}: {', '.join(missing)}. "
+            f"Available extensions: {available_text}."
+        )
+    if all_extensions and not available:
+        raise click.ClickException(
+            f"--all-extensions: no spark_kindling_ext_*.whl wheels found in {source_label}."
+        )
+
+    if all_extensions:
+        selected = sorted(available)
+    else:
+        selected = []
+        for name in names:
+            dist = _normalize_extension_name(name)
+            if dist not in selected:
+                selected.append(dist)
+    return [wheel for dist in selected for wheel in available[dist]]
+
+
 def _load_package_metadata(package_root: Path) -> Tuple[str, str]:
     """Read package name and version from PEP 621 or legacy Poetry metadata."""
     pyproject_path = package_root / "pyproject.toml"
@@ -4003,17 +4071,21 @@ def _deploy_bootstrap_script(
     store: ArtifactStore,
     repo_root: Path,
     overwrite: bool = True,
+    err: bool = False,
 ) -> bool:
-    """Upload kindling_bootstrap.py to scripts/. Returns True if found and uploaded."""
+    """Upload kindling_bootstrap.py to scripts/. Returns True if found and uploaded.
+
+    ``err`` routes progress to stderr (keeps --json stdout parseable).
+    """
     bootstrap = repo_root / "runtime" / "scripts" / "kindling_bootstrap.py"
     if not bootstrap.exists():
         return False
     if store.upload_file(
         "scripts/kindling_bootstrap.py", bootstrap.read_bytes(), overwrite=overwrite
     ):
-        click.echo("  kindling_bootstrap.py")
+        click.echo("  kindling_bootstrap.py", err=err)
     else:
-        click.echo("  kindling_bootstrap.py (exists, skipped)")
+        click.echo("  kindling_bootstrap.py (exists, skipped)", err=err)
     return True
 
 
@@ -8628,13 +8700,14 @@ def _copy_between_stores(
     dest_store: ArtifactStore,
     dest_prefix: str,
     overwrite: bool = True,
-) -> int:
+    err: bool = False,
+) -> List[str]:
     """Copy files under a source prefix to a dest prefix, across any backends.
 
     Each file is buffered in memory (fine at wheel/config sizes). Returns the
-    count of files copied.
+    copied paths, relative to the prefix. ``err`` routes progress to stderr.
     """
-    count = 0
+    copied: List[str] = []
     for file_path in src_store.list_files(src_prefix):
         rel = (
             file_path[len(src_prefix) + 1 :]
@@ -8643,9 +8716,9 @@ def _copy_between_stores(
         )
         dest_path = f"{dest_prefix}/{rel}" if dest_prefix else rel
         dest_store.upload_file(dest_path, src_store.download_file(file_path), overwrite=overwrite)
-        click.echo(f"  {rel}")
-        count += 1
-    return count
+        click.echo(f"  {rel}", err=err)
+        copied.append(rel)
+    return copied
 
 
 @cli.group("runtime")
@@ -8682,6 +8755,26 @@ def runtime_group() -> None:
     help="Release version for github source (overrides VERSION in --source github:VERSION).",
 )
 @click.option(
+    "--extension",
+    "extensions",
+    multiple=True,
+    metavar="NAME",
+    help=(
+        "Also upload this Kindling extension's wheel from the source "
+        "(distribution name, e.g. spark-kindling-ext-sdp; spark_kindling_ext_sdp "
+        "also accepted). Repeatable. github: and local: sources only."
+    ),
+)
+@click.option(
+    "--all-extensions",
+    "all_extensions",
+    is_flag=True,
+    help=(
+        "Also upload every spark_kindling_ext_*.whl wheel in the source. "
+        "github: and local: sources only."
+    ),
+)
+@click.option(
     "--skip-bootstrap",
     "skip_bootstrap",
     is_flag=True,
@@ -8697,13 +8790,17 @@ def runtime_group() -> None:
         "scripts are skipped if already present."
     ),
 )
+@click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
 @traced_command("runtime.deploy")
 def runtime_deploy(
     source: str,
     dest: str,
     version: Optional[str],
+    extensions: Tuple[str, ...],
+    all_extensions: bool,
     skip_bootstrap: bool,
     overwrite: bool,
+    json_output: bool,
 ) -> None:
     """Deploy kindling runtime artifacts (wheels + bootstrap script) to artifact storage.
 
@@ -8717,16 +8814,27 @@ def runtime_deploy(
 
     \b
     Destination layout under --dest:
-      {dest}/packages/  — spark_kindling-*.whl wheel files
+      {dest}/packages/  — spark_kindling-*.whl (+ spark_kindling_ext_*.whl
+                          selected with --extension / --all-extensions)
       {dest}/scripts/   — kindling_bootstrap.py
+
+    Extension wheels uploaded here are what bootstrap installs for the
+    distributions listed in kindling.extensions.
 
     \b
     Examples:
       kindling runtime deploy --source github:latest --dest abfss://artifacts@myprod.dfs.core.windows.net/kindling
-      kindling runtime deploy --source local:./dist --dest /Volumes/main/kindling/artifacts
+      kindling runtime deploy --source github:latest --dest /Volumes/main/kindling/artifacts --extension spark-kindling-ext-sdp
+      kindling runtime deploy --source local:./dist --dest /Volumes/main/kindling/artifacts --all-extensions
       kindling runtime deploy --source abfss://artifacts@staging.dfs.core.windows.net/k --dest /Volumes/main/kindling/artifacts
     """
     import tempfile
+
+    def say(message: str = "") -> None:
+        _emit_progress(message, json_output)
+
+    def is_extension_wheel(name: str) -> bool:
+        return name.startswith(("spark_kindling_ext_", "kindling_ext_"))
 
     # ---- Validate dest and open its store ----------------------------------------
     try:
@@ -8737,6 +8845,30 @@ def runtime_deploy(
             message = f"Invalid destination URI `{dest}`. {message}"
         raise click.ClickException(message) from exc
 
+    is_store_source = not source.startswith(("github:", "local:"))
+    if is_store_source and (extensions or all_extensions):
+        raise click.ClickException(
+            "--extension / --all-extensions apply to github: and local: sources. "
+            "A store-to-store copy already copies every wheel under packages/, "
+            "extensions included."
+        )
+
+    resolved_version: Optional[str] = None
+    runtime_wheels: List[str] = []
+    extension_wheels: List[str] = []
+    scripts: List[str] = []
+
+    def upload_wheels(source_dir: Path, wheels: List[Path], source_label: str) -> None:
+        selected_extensions = _select_extension_wheels(
+            source_dir, extensions, all_extensions, source_label
+        )
+        say("Packages → packages/")
+        count = _deploy_wheels(dest_store, wheels + selected_extensions, quiet=json_output)
+        say(f"  ({count} wheel(s) uploaded)")
+        say()
+        runtime_wheels.extend(wheel.name for wheel in wheels)
+        extension_wheels.extend(wheel.name for wheel in selected_extensions)
+
     # ---- Determine source type --------------------------------------------------
     if source.startswith("github:"):
         # github:VERSION or github:latest
@@ -8744,8 +8876,8 @@ def runtime_deploy(
         resolved_version = version or embedded_version
         resolved_version = _resolve_github_version(resolved_version)
 
-        click.echo(f"Publishing from GitHub release v{resolved_version} → {dest}")
-        click.echo()
+        say(f"Publishing from GitHub release v{resolved_version} → {dest}")
+        say()
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -8758,27 +8890,25 @@ def runtime_deploy(
                     "Expected spark_kindling-*.whl attachments."
                 )
 
-            click.echo("Packages → packages/")
-            count = _deploy_wheels(dest_store, wheels)
-            click.echo(f"  ({count} wheel(s) uploaded)")
-            click.echo()
+            upload_wheels(tmp_path, wheels, f"GitHub release v{resolved_version}")
 
             if not skip_bootstrap:
                 bootstrap_in_release = tmp_path / "kindling_bootstrap.py"
                 if bootstrap_in_release.exists():
-                    click.echo("Scripts → scripts/")
+                    say("Scripts → scripts/")
                     if dest_store.upload_file(
                         "scripts/kindling_bootstrap.py",
                         bootstrap_in_release.read_bytes(),
                         overwrite=overwrite,
                     ):
-                        click.echo("  kindling_bootstrap.py")
+                        say("  kindling_bootstrap.py")
+                        scripts.append("kindling_bootstrap.py")
                     else:
-                        click.echo("  kindling_bootstrap.py (exists, skipped)")
-                    click.echo()
+                        say("  kindling_bootstrap.py (exists, skipped)")
+                    say()
                 else:
-                    click.echo("  kindling_bootstrap.py not in release assets — skipping.")
-                    click.echo()
+                    say("  kindling_bootstrap.py not in release assets — skipping.")
+                    say()
 
     elif source.startswith("local:"):
         # local:PATH
@@ -8791,8 +8921,8 @@ def runtime_deploy(
         if not local_dir.is_dir():
             raise click.ClickException(f"Local source path is not a directory: {local_dir}")
 
-        click.echo(f"Publishing from local directory {local_dir} → {dest}")
-        click.echo()
+        say(f"Publishing from local directory {local_dir} → {dest}")
+        say()
 
         wheels = _find_wheels(local_dir)
         if not wheels:
@@ -8801,14 +8931,11 @@ def runtime_deploy(
                 "Expected spark_kindling-*.whl or kindling_<platform>-*.whl."
             )
 
-        click.echo("Packages → packages/")
-        count = _deploy_wheels(dest_store, wheels)
-        click.echo(f"  ({count} wheel(s) uploaded)")
-        click.echo()
+        upload_wheels(local_dir, wheels, str(local_dir))
 
         if not skip_bootstrap:
             # Look for bootstrap in runtime/scripts/ relative to local_dir or its parents
-            click.echo("Scripts → scripts/")
+            say("Scripts → scripts/")
             repo_root = local_dir
             bootstrap_found = False
             for candidate in (repo_root, repo_root.parent, repo_root.parent.parent):
@@ -8817,11 +8944,14 @@ def runtime_deploy(
                     bootstrap_found = True
                     break
             if bootstrap_found:
-                if _deploy_bootstrap_script(dest_store, repo_root, overwrite=overwrite):
-                    click.echo()
+                if _deploy_bootstrap_script(
+                    dest_store, repo_root, overwrite=overwrite, err=json_output
+                ):
+                    scripts.append("kindling_bootstrap.py")
+                    say()
             else:
-                click.echo("  kindling_bootstrap.py not found in runtime/scripts/ — skipping.")
-                click.echo()
+                say("  kindling_bootstrap.py not found in runtime/scripts/ — skipping.")
+                say()
 
     else:
         # Store-to-store copy (abfss://, /Volumes/, file://, local directory)
@@ -8837,40 +8967,57 @@ def runtime_deploy(
                 f"({exc.message})"
             ) from exc
 
-        click.echo(f"Publishing from {src_store.describe()} → {dest_store.describe()}")
-        click.echo()
+        say(f"Publishing from {src_store.describe()} → {dest_store.describe()}")
+        say()
 
         # Copy packages
-        click.echo("Packages → packages/")
-        pkg_count = _copy_between_stores(
+        say("Packages → packages/")
+        copied_packages = _copy_between_stores(
             src_store,
             "packages",
             dest_store,
             "packages",
             overwrite=True,  # wheels always overwrite
+            err=json_output,
         )
-        if pkg_count == 0:
-            click.echo("  (no wheel files found at source packages path)")
+        if not copied_packages:
+            say("  (no wheel files found at source packages path)")
         else:
-            click.echo(f"  ({pkg_count} file(s) copied)")
-        click.echo()
+            say(f"  ({len(copied_packages)} file(s) copied)")
+        say()
+        for rel in copied_packages:
+            name = PurePosixPath(rel).name
+            (extension_wheels if is_extension_wheel(name) else runtime_wheels).append(rel)
 
         if not skip_bootstrap:
-            click.echo("Scripts → scripts/")
-            script_count = _copy_between_stores(
+            say("Scripts → scripts/")
+            scripts = _copy_between_stores(
                 src_store,
                 "scripts",
                 dest_store,
                 "scripts",
                 overwrite=overwrite,
+                err=json_output,
             )
-            if script_count == 0:
-                click.echo("  (no script files found at source scripts path)")
+            if not scripts:
+                say("  (no script files found at source scripts path)")
             else:
-                click.echo(f"  ({script_count} file(s) copied)")
-            click.echo()
+                say(f"  ({len(scripts)} file(s) copied)")
+            say()
 
-    click.echo("Deploy complete.")
+    _emit_result(
+        {
+            "source": source,
+            "dest": dest_store.root,
+            "version": resolved_version,
+            "packages_path": "packages",
+            "wheels": runtime_wheels,
+            "extension_wheels": extension_wheels,
+            "scripts": scripts,
+        },
+        json_output,
+        "Deploy complete.",
+    )
 
 
 def main() -> None:

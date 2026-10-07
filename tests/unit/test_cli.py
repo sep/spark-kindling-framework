@@ -5279,3 +5279,221 @@ class TestArtifactStoreDestinations:
         from kindling_cli.cli import _resolve_destination
 
         assert _resolve_destination() == "abfss://deploy@acct.dfs.core.windows.net/kindling"
+
+
+_CORE_WHEEL = "spark_kindling-0.13.2-py3-none-any.whl"
+_SDP_WHEEL = "spark_kindling_ext_sdp-0.13.2-py3-none-any.whl"
+_OTEL_WHEEL = "spark_kindling_ext_otel_azure-0.13.2-py3-none-any.whl"
+
+
+def _write_release_wheels(directory: Path) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in (_CORE_WHEEL, _SDP_WHEEL, _OTEL_WHEEL):
+        (directory / name).write_bytes(b"fake-wheel")
+
+
+class TestRuntimeDeployExtensions:
+    """`runtime deploy --extension/--all-extensions` puts extension wheels in packages/."""
+
+    def _patch_github_release(self, monkeypatch):
+        monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version: "0.13.2")
+
+        def fake_download(version, temp_dir, repo="sep/spark-kindling-framework"):
+            assert version == "0.13.2"
+            _write_release_wheels(temp_dir)
+            (temp_dir / "kindling_bootstrap.py").write_text("# bootstrap\n")
+
+        monkeypatch.setattr("kindling_cli.cli._download_github_release_assets", fake_download)
+
+    def _deploy(self, *args):
+        return CliRunner().invoke(cli, ["runtime", "deploy", *args])
+
+    @staticmethod
+    def _packages(dest_dir: Path):
+        return sorted(p.name for p in (dest_dir / "packages").iterdir())
+
+    def test_github_source_default_uploads_core_wheel_only(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        self._patch_github_release(monkeypatch)
+        dest_dir = tmp_path / "artifacts"
+
+        result = self._deploy("--source", "github:latest", "--dest", str(dest_dir))
+
+        assert result.exit_code == 0, result.output
+        assert self._packages(dest_dir) == [_CORE_WHEEL]
+        assert (dest_dir / "scripts" / "kindling_bootstrap.py").exists()
+
+    def test_github_source_named_extension(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        self._patch_github_release(monkeypatch)
+        dest_dir = tmp_path / "artifacts"
+
+        result = self._deploy(
+            "--source",
+            "github:0.13.2",
+            "--dest",
+            str(dest_dir),
+            "--extension",
+            "spark-kindling-ext-sdp",
+        )
+
+        assert result.exit_code == 0, result.output
+        assert self._packages(dest_dir) == [_CORE_WHEEL, _SDP_WHEEL]
+
+    def test_github_source_all_extensions_json(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        self._patch_github_release(monkeypatch)
+        dest_dir = tmp_path / "artifacts"
+
+        result = self._deploy(
+            "--source", "github:latest", "--dest", str(dest_dir), "--all-extensions", "--json"
+        )
+
+        assert result.exit_code == 0, result.output
+        assert self._packages(dest_dir) == sorted([_CORE_WHEEL, _SDP_WHEEL, _OTEL_WHEEL])
+        payload = json.loads(result.stdout)
+        assert payload["version"] == "0.13.2"
+        assert payload["wheels"] == [_CORE_WHEEL]
+        assert payload["extension_wheels"] == [_OTEL_WHEEL, _SDP_WHEEL]
+        assert payload["scripts"] == ["kindling_bootstrap.py"]
+
+    def test_github_source_missing_extension_lists_available(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        self._patch_github_release(monkeypatch)
+        dest_dir = tmp_path / "artifacts"
+
+        result = self._deploy(
+            "--source",
+            "github:latest",
+            "--dest",
+            str(dest_dir),
+            "--extension",
+            "spark-kindling-ext-nope",
+        )
+
+        assert result.exit_code != 0
+        assert "spark-kindling-ext-nope" in result.output
+        assert "spark-kindling-ext-otel-azure, spark-kindling-ext-sdp" in result.output
+        assert not (dest_dir / "packages").exists()
+
+    def test_local_source_named_extension_underscore_form(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        source_dir = tmp_path / "dist"
+        _write_release_wheels(source_dir)
+        dest_dir = tmp_path / "artifacts"
+
+        result = self._deploy(
+            "--source",
+            f"local:{source_dir}",
+            "--dest",
+            str(dest_dir),
+            "--extension",
+            "spark_kindling_ext_otel_azure",
+            "--json",
+        )
+
+        assert result.exit_code == 0, result.output
+        assert self._packages(dest_dir) == [_CORE_WHEEL, _OTEL_WHEEL]
+        payload = json.loads(result.stdout)
+        assert payload["wheels"] == [_CORE_WHEEL]
+        assert payload["extension_wheels"] == [_OTEL_WHEEL]
+
+    def test_local_source_all_extensions(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        source_dir = tmp_path / "dist"
+        _write_release_wheels(source_dir)
+        dest_dir = tmp_path / "artifacts"
+
+        result = self._deploy(
+            "--source", f"local:{source_dir}", "--dest", str(dest_dir), "--all-extensions"
+        )
+
+        assert result.exit_code == 0, result.output
+        assert self._packages(dest_dir) == sorted([_CORE_WHEEL, _SDP_WHEEL, _OTEL_WHEEL])
+
+    def test_local_source_default_skips_extensions(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        source_dir = tmp_path / "dist"
+        _write_release_wheels(source_dir)
+        dest_dir = tmp_path / "artifacts"
+
+        result = self._deploy("--source", f"local:{source_dir}", "--dest", str(dest_dir))
+
+        assert result.exit_code == 0, result.output
+        assert self._packages(dest_dir) == [_CORE_WHEEL]
+
+    def test_local_source_missing_extension_errors(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        source_dir = tmp_path / "dist"
+        source_dir.mkdir()
+        (source_dir / _CORE_WHEEL).write_bytes(b"fake-wheel")
+        dest_dir = tmp_path / "artifacts"
+
+        result = self._deploy(
+            "--source",
+            f"local:{source_dir}",
+            "--dest",
+            str(dest_dir),
+            "--extension",
+            "spark-kindling-ext-sdp",
+        )
+
+        assert result.exit_code != 0
+        assert "spark-kindling-ext-sdp" in result.output
+        assert "Available extensions: none" in result.output
+
+    def test_local_source_all_extensions_without_any_errors(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        source_dir = tmp_path / "dist"
+        source_dir.mkdir()
+        (source_dir / _CORE_WHEEL).write_bytes(b"fake-wheel")
+
+        result = self._deploy(
+            "--source", f"local:{source_dir}", "--dest", str(tmp_path / "a"), "--all-extensions"
+        )
+
+        assert result.exit_code != 0
+        assert "spark_kindling_ext_" in result.output
+
+    def test_store_source_rejects_extension_options(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        src_dir = tmp_path / "staging"
+        (src_dir / "packages").mkdir(parents=True)
+
+        result = self._deploy(
+            "--source", str(src_dir), "--dest", str(tmp_path / "prod"), "--all-extensions"
+        )
+
+        assert result.exit_code != 0
+        assert "store-to-store copy" in result.output
+
+    def test_store_source_json_splits_extension_wheels(self, tmp_path, monkeypatch):
+        _clear_artifacts_env(monkeypatch)
+        src_dir = tmp_path / "staging"
+        _write_release_wheels(src_dir / "packages")
+        dest_dir = tmp_path / "prod"
+
+        result = self._deploy("--source", str(src_dir), "--dest", str(dest_dir), "--json")
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["wheels"] == [_CORE_WHEEL]
+        assert sorted(payload["extension_wheels"]) == [_OTEL_WHEEL, _SDP_WHEEL]
+        assert self._packages(dest_dir) == sorted([_CORE_WHEEL, _SDP_WHEEL, _OTEL_WHEEL])
+
+    def test_uploaded_extension_names_match_bootstrap_prefixes(self, tmp_path):
+        from kindling.bootstrap import dist_name_candidates
+        from kindling_cli.cli import _select_extension_wheels
+
+        _write_release_wheels(tmp_path)
+        (tmp_path / "kindling_ext_legacy-0.1.0-py3-none-any.whl").write_bytes(b"x")
+
+        for requested in ("spark-kindling-ext-sdp", "spark_kindling_ext_sdp", "kindling-ext-sdp"):
+            [wheel] = _select_extension_wheels(tmp_path, [requested], False, "dist")
+            prefixes = [
+                c.replace("-", "_") + "-" for c in dist_name_candidates("spark-kindling-ext-sdp")
+            ]
+            assert any(wheel.name.startswith(p) for p in prefixes)
+
+        [legacy] = _select_extension_wheels(tmp_path, ["spark-kindling-ext-legacy"], False, "dist")
+        assert legacy.name == "kindling_ext_legacy-0.1.0-py3-none-any.whl"
