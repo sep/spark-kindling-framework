@@ -30,6 +30,7 @@ class PipeMetadata:
     output_entity_id: str
     output_type: str
     use_watermark: bool = False
+    driving_entity_ids: Optional[List[str]] = None
 ```
 
 **Purpose**: Defines metadata for a data pipe.
@@ -41,8 +42,16 @@ class PipeMetadata:
 - `tags`: Key-value pairs for categorization and filtering
 - `input_entity_ids`: List of input entity identifiers
 - `output_entity_id`: Identifier for the output entity
-- `output_type`: Type of the output (e.g., "table", "view")
+- `output_type`: Free-form label for the output (e.g., "table", "delta"). Required by
+  the decorator and shown by the CLI, but never read at runtime: how the output is
+  written comes from the output entity's `provider_type` tag and its write tags
+  (`write.mode`, `dataset.kind`, `merge_columns`), not from this field
 - `use_watermark`: Whether to apply watermark-based incremental reads (default `False`)
+- `driving_entity_ids`: Optional subset of `input_entity_ids` that drive the pipe
+  (default `None`, meaning the first input only). Driving inputs are the ones read
+  incrementally when `use_watermark` is set, and the ones that decide whether the
+  pipe is skipped. Must be a non-empty list of ids that appear in
+  `input_entity_ids`, or `ValueError` is raised
 
 ### 2. @DataPipes.pipe() Decorator
 
@@ -65,7 +74,7 @@ def my_transformation_function(input_entity1, input_entity2):
 **Parameters**: All parameters correspond to `PipeMetadata` fields except `execute` (automatically set).
 
 **Usage Notes**:
-- All parameters are required
+- `pipeid`, `name`, `tags`, `input_entity_ids`, `output_entity_id`, and `output_type` are required; `use_watermark` and `driving_entity_ids` are optional
 - Input entity IDs with dots (.) are converted to underscores (_) in function parameters
 - The decorated function receives DataFrames as named parameters
 - Function must return a DataFrame
@@ -87,7 +96,7 @@ class EntityReadPersistStrategy(ABC):
 
 **Purpose**: Abstract interface for defining how entities are read and persisted.
 
-**Implementation Required**: Users must implement both methods to define their storage strategy.
+**Default Implementation**: `SimpleReadPersistStrategy` is bound automatically. It reads each input through the entity's provider (applying watermarks to driving inputs) and writes the output according to the output entity's tags and provider. Implement this interface only to replace that behavior.
 
 ### 4. DataPipesRegistry (Abstract)
 
@@ -96,6 +105,11 @@ class DataPipesRegistry(ABC):
     @abstractmethod
     def register_pipe(self, pipeid, **decorator_params):
         """Register a pipe with given parameters"""
+        pass
+
+    @abstractmethod
+    def unregister_pipe(self, pipeid):
+        """Remove a registered pipe"""
         pass
 
     @abstractmethod
@@ -121,6 +135,11 @@ class DataPipesExecution(ABC):
     def run_datapipes(self, pipes):
         """Execute a list of pipes"""
         pass
+
+    @abstractmethod
+    def run_datapipes_dag(self, pipes, strategy=None, **kwargs):
+        """Execute a list of pipes through the DAG orchestrator"""
+        pass
 ```
 
 **Purpose**: Abstract interface for pipe execution.
@@ -144,7 +163,7 @@ class DataPipesManager(DataPipesRegistry):
 **Key Features**:
 - Singleton pattern with automatic binding
 - Debug logging for pipe registration
-- Thread-safe registry storage
+- Config overlays from the `datapipes:` and `datapipes-bytag:` sections
 
 ### 7. DataPipesExecuter
 
@@ -160,7 +179,7 @@ class DataPipesExecuter(DataPipesExecution):
 **Key Features**:
 - Distributed tracing support
 - Automatic entity reading and persistence
-- Conditional execution (skips if first input entity is None)
+- Conditional execution (skips a pipe when every driving input read returns `None`; by default the only driving input is the first one)
 - Debug logging throughout execution
 
 ## Usage Examples
@@ -231,7 +250,7 @@ kindling:
   execution:
     parallel: true        # run independent pipes within a generation concurrently
     max_workers: 4
-    error_strategy: fail_fast   # or: continue
+    error_strategy: fail_fast   # or: continue, skip_dependents
     auto_cache: true
 ```
 
@@ -286,11 +305,13 @@ print(f"Pipe: {pipe_def.name}, Inputs: {pipe_def.input_entity_ids}")
 
 ## Implementation Requirements
 
-To use this framework, you must implement:
+`initialize()` binds default implementations of everything the framework needs
+(`SimpleReadPersistStrategy`, `DataEntityManager`, and the platform's logging and
+tracing providers). You only implement these interfaces to replace a default:
 
-1. **EntityReadPersistStrategy**: Define how your data is read from and written to storage
-2. **Data Entity Registry**: Implement entity definition lookup (referenced but not shown in code)
-3. **Logging and Tracing Providers**: Set up logging and distributed tracing infrastructure
+1. **EntityReadPersistStrategy**: Change how data is read from and written to storage
+2. **DataEntityRegistry**: Change how entity definitions are looked up
+3. **Logging and Tracing Providers**: Change the logging and distributed tracing infrastructure
 
 ## Dependencies
 
@@ -303,8 +324,8 @@ The framework requires these components to be available through dependency injec
 ## Error Handling
 
 - **Missing Decorator Parameters**: Raises `ValueError` if required `PipeMetadata` fields are missing
-- **Entity Not Found**: Pipes are skipped if the first input entity returns `None`
-- **Execution Failures**: Individual pipe failures are logged but don't stop the entire pipeline
+- **No New Data**: A pipe is skipped (and `datapipes.pipe_skipped` is emitted) when every driving input read returns `None`, for example when a watermarked read finds nothing new. A non-driving input that reads `None` does not skip the pipe
+- **Execution Failures**: `run_datapipes` without `use_dag` stops at the first failing pipe: it emits `datapipes.pipe_failed` and `datapipes.run_failed`, then re-raises the exception, so later pipes in the list do not run. With `use_dag=True`, `error_strategy` decides (`fail_fast` by default, `continue`, or `skip_dependents`)
 
 ## Best Practices
 
@@ -319,11 +340,13 @@ The framework requires these components to be available through dependency injec
 
 The framework provides built-in logging at debug level for:
 - Pipe registration events
-- Pipeline execution start/end
 - Individual pipe execution
 - Pipe skipping due to missing inputs
 
-Distributed tracing spans are automatically created for:
+Run start and end are reported through the `datapipes.before_run`,
+`datapipes.after_run`, and `datapipes.run_failed` signals rather than log lines.
+
+When tracing is enabled (the default), distributed tracing spans are created for:
 - Overall pipeline execution
 - Individual pipe execution
 
