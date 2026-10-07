@@ -131,7 +131,12 @@ All notable changes to spark-kindling are documented here.
   SQL entity by evaluating its declared SQL, so the read does not depend on
   `kindling migrate apply` having created the catalog view (and works
   standalone). SQL entities stay read-only: a pipe that writes to one fails
-  with an error naming the entity, and no view DDL is issued.
+  with an error naming the entity, and no view DDL is issued. That holds
+  whatever the entity's tags say: a SQL entity always resolves to the `view`
+  provider, and `sql_entity(tags={"provider_type": ...})` naming another
+  provider is an error. The SQL must be a single read-only query; DDL, DML,
+  session commands and multiple statements are rejected when the entity is
+  declared and when it is read.
 
 ## [0.13.1] - 2026-10-06
 

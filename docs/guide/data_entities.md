@@ -73,7 +73,7 @@ DataEntities.entity(
 ```python
 @DataEntities.sql_entity(
     entityid="reporting.recent_sales",
-    name="Recent Sales",
+    name="recent_sales",
     tags={"layer": "reporting"},
     sql="SELECT * FROM sales.transactions WHERE event_date >= current_date() - 30",
 )
@@ -84,7 +84,7 @@ Or via a bundled package resource:
 ```python
 @DataEntities.sql_entity(
     entityid="reporting.recent_sales",
-    name="Recent Sales",
+    name="recent_sales",
     sql_source=SqlSource(resource="my_app:sql/recent_sales.sql"),
 )
 ```
@@ -93,9 +93,8 @@ Or via a bundled package resource:
 
 **Parameters**:
 - `entityid`: Unique identifier for the entity
-- `name`: Human-readable name
-- `name`: Catalog view name that `kindling migrate apply` creates (override with the `provider.table_name` tag)
-- `tags`: Optional key-value metadata (the `provider_type: "view"` tag is added automatically)
+- `name`: The catalog view identifier that `kindling migrate apply` creates (`CREATE OR REPLACE VIEW <name>`), unless the `provider.table_name` tag is set, which wins. Use a valid identifier such as `recent_sales` or `reporting.recent_sales`, not a display label.
+- `tags`: Optional key-value metadata. `provider_type: "view"` is added automatically, and any other `provider_type` is an error: SQL entities are always read-only.
 - `sql`: A literal SQL string (mutually exclusive with `sql_source`)
 - `sql_source`: A `SqlSource` object pointing to an inline string, a package resource (`"package:path/to/file.sql"`), or a filesystem path (mutually exclusive with `sql`)
 

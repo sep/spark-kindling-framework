@@ -47,12 +47,16 @@ def _is_local_execution() -> bool:
 
 def _read_only_output_error(output_entity) -> ValueError:
     """Error for a pipe whose output entity's provider cannot write."""
-    provider_type = (output_entity.tags or {}).get("provider_type", "unknown")
+    is_sql_entity = getattr(output_entity, "is_sql_entity", False) is True
+    # A SQL entity always resolves to the read-only view provider, whatever its tags say.
+    provider_type = (
+        "view" if is_sql_entity else (output_entity.tags or {}).get("provider_type", "unknown")
+    )
     message = (
         f"Entity '{output_entity.entityid}' is read-only: provider "
         f"'{provider_type}' does not support write operations"
     )
-    if getattr(output_entity, "is_sql_entity", False) is True:
+    if is_sql_entity:
         message += (
             ". It is a SQL entity (DataEntities.sql_entity), defined by its SQL; "
             "write to a table-backed entity and select from that in the SQL instead"
@@ -302,6 +306,11 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                 persist_id=persist_id,
             )
             df = _apply_df_transforms(results, df)
+
+            # SQL entities are read-only views, whatever provider their tags
+            # name; reject before any write branch (derived replace included).
+            if getattr(output_entity, "is_sql_entity", False) is True:
+                raise _read_only_output_error(output_entity)
 
             # Derived datasets (dataset.kind='derived') are replaced,
             # not evolved: the provider swaps the whole table — or

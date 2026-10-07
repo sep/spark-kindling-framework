@@ -141,6 +141,22 @@ class TestSqlEntityProviderRegistration:
             assert registry.get_provider_for_entity(_sql_entity()) is sql_provider
             injector.get.assert_called_once_with(SqlEntityProvider)
 
+    @pytest.mark.parametrize("provider_type", ["delta", "csv", "memory"])
+    def test_sql_entity_ignores_writable_provider_tag(self, provider_type):
+        """A provider_type override (e.g. from a config overlay) must not
+        make a SQL entity writable: it still resolves to the view provider."""
+        from kindling.entity_provider_registry import EntityProviderRegistry
+
+        lp = MagicMock()
+        lp.get_logger.return_value = MagicMock()
+        sql_provider = SqlEntityProvider(lp)
+        with patch("kindling.entity_provider_registry.GlobalInjector") as injector:
+            registry = EntityProviderRegistry(lp)
+            injector.get.return_value = sql_provider
+            entity = _sql_entity(tags={"provider_type": provider_type})
+            assert registry.get_provider_for_entity(entity) is sql_provider
+            injector.get.assert_called_once_with(SqlEntityProvider)
+
 
 @pytest.mark.parametrize(
     "sql",
@@ -161,6 +177,12 @@ class TestSqlEntityProviderRegistration:
         "FROM src /* outer /* inner */ ( */ INSERT INTO dst SELECT id",
         "WITH x AS (SELECT 1) /* a /* b */ ( */ INSERT INTO dst SELECT * FROM x",
         "select 1 /* never closed /* nested */",
+        # raw literals have no escapes: r'\' is a complete string
+        "FROM (SELECT r'\\' AS n) src INSERT INTO dst SELECT '--' AS n",
+        'FROM (SELECT R"\\" AS n) src INSERT INTO dst SELECT "--" AS n',
+        "select r'unterminated",
+        # Spark ends a -- comment at a carriage return as well as a line feed
+        "FROM src -- note\rINSERT INTO dst SELECT id",
     ],
 )
 def test_non_query_sql_is_rejected_before_spark(sql, monkeypatch):
@@ -194,6 +216,8 @@ def test_non_query_sql_is_rejected_before_spark(sql, monkeypatch):
         "with a as (select 1), b (c) as (select 2) select * from a join b",
         "select 'it''s' as q, 'semi;colon' as s",
         "select /* a /* nested */ comment */ id from t",
+        "SELECT regexp_extract(s, r'\\d+') AS digits, r'C:\\dir\\' AS p FROM t",
+        'select r, R"x" as y from t -- note\r\n',
     ],
 )
 def test_queries_are_accepted(sql):

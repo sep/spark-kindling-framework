@@ -403,3 +403,20 @@ def test_read_only_provider_output_rejected_without_sql_hint():
     message = str(excinfo.value)
     assert "provider 'csv' does not support write operations" in message
     assert "SQL entity" not in message
+
+
+@pytest.mark.parametrize("tags", [{"provider_type": "delta"}, {"dataset.kind": "derived"}])
+def test_sql_entity_output_rejected_whatever_its_tags(tags):
+    """A SQL entity is read-only even when its tags (e.g. a config overlay)
+    name a writable provider or mark it derived; no write branch runs."""
+    dst_entity = Mock(entityid="entity.dst", tags=tags, merge_columns=[], is_sql_entity=True)
+    out_provider = Mock(spec=_MergeWritableProvider)
+    out_provider.replace_entity = Mock()
+
+    persist, _ = _make_strategy(dst_entity, out_provider)
+    with pytest.raises(ValueError, match="provider 'view' does not support write"):
+        persist(Mock(name="df"))
+
+    out_provider.check_entity_exists.assert_not_called()
+    out_provider.merge_to_entity.assert_not_called()
+    out_provider.replace_entity.assert_not_called()

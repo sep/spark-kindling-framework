@@ -9,7 +9,6 @@ from typing import Any, Dict, List
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from kindling.data_entities import (
     DataEntities,
     DataEntityManager,
@@ -480,6 +479,21 @@ class TestDataEntitiesDecorator:
         assert DecoratedSqlEntity.__name__ == "DecoratedSqlEntity"
         mock_registry.register_entity.assert_called_once()
         assert mock_registry.register_entity.call_args[0][0] == "reporting.decorated"
+
+    def test_sql_entity_rejects_writable_provider_type(self):
+        """SQL entities are read-only views; a provider_type tag naming
+        another provider is a declaration error."""
+        mock_registry = MagicMock()
+        DataEntities.deregistry = mock_registry
+
+        with pytest.raises(ValueError, match="cannot use provider_type 'delta'"):
+            DataEntities.sql_entity(
+                entityid="reporting.x",
+                name="x",
+                sql="SELECT 1",
+                tags={"provider_type": "delta"},
+            )
+        mock_registry.register_entity.assert_not_called()
 
     def test_decorator_removes_entityid_from_params(self):
         """Test that decorator removes entityid before passing to register_entity"""

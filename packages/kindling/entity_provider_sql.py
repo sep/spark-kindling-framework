@@ -46,8 +46,9 @@ def _sql_tokens(sql: str):
         if c.isspace():
             i += 1
         elif sql.startswith("--", i):
-            end = sql.find("\n", i)
-            i = n if end == -1 else end + 1
+            # Spark ends a line comment at a carriage return or a line feed.
+            ends = [e for e in (sql.find("\n", i), sql.find("\r", i)) if e != -1]
+            i = min(ends) + 1 if ends else n
         elif sql.startswith("/*", i):
             # Spark block comments nest: /* a /* b */ c */ is one comment.
             depth, i = 1, i + 2
@@ -76,6 +77,13 @@ def _sql_tokens(sql: str):
                 j += 1
             tokens.append(("str", "") if c != "`" else ("word", "`"))
             i = j + 1
+        elif c in "rR" and i + 1 < n and sql[i + 1] in "'\"":
+            # Raw literal (r'...', R"..."): no escapes, ends at the next quote.
+            end = sql.find(sql[i + 1], i + 2)
+            if end == -1:
+                raise ValueError("unterminated quoted text")
+            tokens.append(("str", ""))
+            i = end + 1
         elif c.isalpha() or c == "_":
             j = i
             while j < n and (sql[j].isalnum() or sql[j] == "_"):
