@@ -198,13 +198,15 @@ every wheel must be a pipeline dependency.
 
    ```bash
    kindling env add spark-kindling-ext-databricks --version 0.13.2   # records release wheel URLs in uv.lock
+   kindling runtime deploy --source github:0.13.2 --dest dist/kindling \
+     --extension spark-kindling-ext-sdp --extension spark-kindling-ext-databricks   # stage release wheels in dist/kindling/packages/
    (cd packages/sales_core && uv build --wheel --out-dir ../../dist/lakeflow)
    kindling bundle build --name sales --target dev --app daily_orders \
      --workspace-host "$DATABRICKS_HOST" --workspace-root /Workspace/Users/me@example.com/sales \
      --catalog main --schema sales \
-     --wheel dist/kindling/spark_kindling-0.13.2-py3-none-any.whl \
-     --wheel dist/kindling/spark_kindling_ext_sdp-0.3.4-py3-none-any.whl \
-     --wheel dist/kindling/spark_kindling_ext_databricks-0.2.0-py3-none-any.whl \
+     --wheel dist/kindling/packages/spark_kindling-0.13.2-py3-none-any.whl \
+     --wheel dist/kindling/packages/spark_kindling_ext_sdp-0.3.4-py3-none-any.whl \
+     --wheel dist/kindling/packages/spark_kindling_ext_databricks-0.2.0-py3-none-any.whl \
      --wheel dist/lakeflow/sales_core-0.1.0-py3-none-any.whl
    cd dist/bundles/databricks
    databricks bundle validate -t dev
@@ -212,8 +214,9 @@ every wheel must be a pipeline dependency.
    databricks bundle run -t dev daily_orders
    ```
 
-   `dist/kindling/` holds the release wheels at the URLs `uv.lock` records.
-   The extension versions shown are examples only.
+   `runtime deploy` to a local directory downloads the release wheels into
+   its `packages/`. Use the file names it reports there; the extension
+   versions shown are examples only.
 
 - Settings are merged at build time, `config/` first and then `apps/<app>/`
   (`settings.yaml`, `settings.databricks.yaml`, `settings.<env>.yaml`, where
@@ -250,7 +253,7 @@ Never guess a version with `uv add`.
   highest version) is matched to a wheel in `<artifacts>/packages/`, then
   pip-installed and imported. Standalone runs and Lakeflow ignore it.
 - Upload extension wheels with the runtime:
-  `kindling runtime deploy --source github:0.13.2 --extension spark-kindling-ext-otel-azure`
+  `kindling runtime deploy --source github:0.13.2 --dest "$KINDLING_ARTIFACTS_STORAGE_PATH" --extension spark-kindling-ext-otel-azure`
   (repeatable; `--all-extensions` uploads every one the release has).
 - Expectation, SCD and temporal YAML (`datapipes: <pipe>: engine: databricks_sdp: ...`)
   is in the extension READMEs and [pipes.md](pipes.md).

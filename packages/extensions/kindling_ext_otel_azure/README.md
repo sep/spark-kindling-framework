@@ -15,7 +15,7 @@ This package provides Azure Monitor-backed implementations of Kindling's telemet
 In a Kindling domain project, add it with `kindling env add spark-kindling-ext-otel-azure`.
 On a cluster, the runtime installs it from `<artifacts>/packages/` when it is listed in
 `kindling.extensions`; upload the wheel there with
-`kindling runtime deploy --source github:<version> --extension spark-kindling-ext-otel-azure`.
+`kindling runtime deploy --source github:<version> --dest <artifacts-root> --extension spark-kindling-ext-otel-azure`.
 
 ## Usage
 

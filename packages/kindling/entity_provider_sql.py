@@ -106,6 +106,12 @@ def _main_statement_index(tokens) -> int:
         i += 1
     while i < len(tokens):
         kind, value = tokens[i]
+        if kind == "(" and depth == 0 and tokens[i - 1][0] == ")":
+            # A parenthesized main query: WITH x AS (...) (SELECT ...).
+            # Its statement keyword is the first token past the parens.
+            while i < len(tokens) and tokens[i][0] == "(":
+                i += 1
+            return i if i < len(tokens) else -1
         if kind == "(":
             depth += 1
         elif kind == ")":

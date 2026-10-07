@@ -20,6 +20,7 @@ import sys
 import textwrap
 from pathlib import Path
 
+import click
 import pytest
 import yaml
 from click.testing import CliRunner
@@ -141,7 +142,14 @@ def test_cli_commands_exist(path):
         ), f"unknown or incomplete kindling command: kindling {' '.join(tokens)}"
         help_result = runner.invoke(cli, [*command_path, "--help"])
         assert help_result.exit_code == 0, help_result.output
-        for option in (t.split("=", 1)[0] for t in rest if t.startswith("--")):
+        given = {t.split("=", 1)[0] for t in rest if t.startswith("-")}
+        for option in (t for t in given if t.startswith("--")):
             assert (
                 option in help_result.output
             ), f"kindling {' '.join(command_path)} has no option {option}"
+        for param in command.params:
+            if isinstance(param, click.Option) and param.required:
+                assert given & set(param.opts), (
+                    f"kindling {' '.join(tokens)} is missing required option "
+                    f"{'/'.join(param.opts)}"
+                )

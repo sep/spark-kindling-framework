@@ -181,6 +181,9 @@ class TestSqlEntityProviderRegistration:
         "FROM (SELECT r'\\' AS n) src INSERT INTO dst SELECT '--' AS n",
         'FROM (SELECT R"\\" AS n) src INSERT INTO dst SELECT "--" AS n',
         "select r'unterminated",
+        # a parenthesized main query after a CTE is still checked
+        "WITH x AS (SELECT 1 AS id) (INSERT INTO dst SELECT id FROM x)",
+        "WITH x AS (SELECT 1) (",
         # Spark ends a -- comment at a carriage return as well as a line feed
         "FROM src -- note\rINSERT INTO dst SELECT id",
     ],
@@ -218,6 +221,8 @@ def test_non_query_sql_is_rejected_before_spark(sql, monkeypatch):
         "select /* a /* nested */ comment */ id from t",
         "SELECT regexp_extract(s, r'\\d+') AS digits, r'C:\\dir\\' AS p FROM t",
         'select r, R"x" as y from t -- note\r\n',
+        "WITH x AS (SELECT 1 AS id) (SELECT id FROM x)",
+        "with a as (select 1), b as (select 2) ((select * from a) union all (select * from b))",
     ],
 )
 def test_queries_are_accepted(sql):

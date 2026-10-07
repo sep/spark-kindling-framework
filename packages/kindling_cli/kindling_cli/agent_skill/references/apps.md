@@ -228,7 +228,7 @@ Each command gets one line here. Run `--help` or see
 `docs/reference/cli_reference.md` for details.
 
 ```bash
-kindling runtime deploy --source github:0.13.2 --extension spark-kindling-ext-databricks   # Kindling + extension wheels -> <artifacts>/packages/
+kindling runtime deploy --source github:0.13.2 --dest /Volumes/main/kindling/artifacts --extension spark-kindling-ext-databricks-autoloader   # Kindling + extension wheels -> <artifacts>/packages/
 kindling package check sales-core              # metadata, src layout, wheel builds
 kindling package deploy sales-core --artifacts-path /Volumes/main/kindling/artifacts   # build wheel -> <artifacts>/packages/
 kindling app package daily_orders --platform databricks --env prod   # -> dist/<app-dir>.kda
