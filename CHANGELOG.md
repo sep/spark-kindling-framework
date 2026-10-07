@@ -15,6 +15,10 @@ All notable changes to spark-kindling are documented here.
   and its examples are executed by the integration tests. `kindling repo
   init --agents ...` installs it for new repos, and the scaffolded
   devcontainer refreshes it after `kindling env bootstrap`.
+- **Databricks getting-started reference in the agent skill**
+  (`references/databricks.md`): auth, artifacts storage and Unity Catalog,
+  Kindling jobs vs Lakeflow bundles, extensions, `settings.databricks.yaml`
+  and troubleshooting.
 - **`kindling runtime deploy` uploads extension wheels.** Bootstrap installs
   the extensions in `kindling.extensions` from `<artifacts>/packages/`, but
   `runtime deploy` uploaded only the core `spark_kindling` wheel, so a domain
