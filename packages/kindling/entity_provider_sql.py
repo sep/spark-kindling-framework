@@ -49,10 +49,17 @@ def _sql_tokens(sql: str):
             end = sql.find("\n", i)
             i = n if end == -1 else end + 1
         elif sql.startswith("/*", i):
-            end = sql.find("*/", i + 2)
-            if end == -1:
-                raise ValueError("unterminated block comment")
-            i = end + 2
+            # Spark block comments nest: /* a /* b */ c */ is one comment.
+            depth, i = 1, i + 2
+            while depth:
+                if i >= n:
+                    raise ValueError("unterminated block comment")
+                if sql.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif sql.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
         elif c in "'\"`":
             j = i + 1
             while True:

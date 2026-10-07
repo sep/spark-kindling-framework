@@ -157,6 +157,10 @@ class TestSqlEntityProviderRegistration:
         "FROM src INSERT INTO t1 SELECT a",
         "with x as (select 1) delete from t",
         "select 'unterminated",
+        # Spark nests block comments; the inner */ must not end the comment
+        "FROM src /* outer /* inner */ ( */ INSERT INTO dst SELECT id",
+        "WITH x AS (SELECT 1) /* a /* b */ ( */ INSERT INTO dst SELECT * FROM x",
+        "select 1 /* never closed /* nested */",
     ],
 )
 def test_non_query_sql_is_rejected_before_spark(sql, monkeypatch):
@@ -189,6 +193,7 @@ def test_non_query_sql_is_rejected_before_spark(sql, monkeypatch):
         "select load, update_time from t",
         "with a as (select 1), b (c) as (select 2) select * from a join b",
         "select 'it''s' as q, 'semi;colon' as s",
+        "select /* a /* nested */ comment */ id from t",
     ],
 )
 def test_queries_are_accepted(sql):
