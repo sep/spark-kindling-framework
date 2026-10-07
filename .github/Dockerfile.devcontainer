@@ -79,16 +79,12 @@ RUN mkdir -p /opt/hadoop-jars \
 
 RUN mkdir -p /spark-warehouse && chown -R vscode:vscode /spark-warehouse
 
-# ── Agent reference doc ───────────────────────────────────────────────────────
-# Baked in at a well-known path so downstream projects can generate
-# tool-specific agent instruction files via `kindling agent setup`.
-# Also written to ~/.claude/CLAUDE.md so Claude Code picks it up as
-# user-level context without any project-level configuration.
-COPY .github/kindling-agent-reference.md /opt/kindling/agent-reference.md
+# Agent guidance is not baked in: `kindling agent setup` (run by the scaffolded
+# postCreateCommand) installs the Kindling skill shipped with the project's own
+# pinned CLI, so it always matches the release the project uses.
 RUN mkdir -p /home/vscode/.claude \
        /home/vscode/.vscode-server/data/User/globalStorage \
        /home/vscode/.vscode-server/data/Machine \
-    && cp /opt/kindling/agent-reference.md /home/vscode/.claude/CLAUDE.md \
     && chown -R vscode:vscode /home/vscode/.claude /home/vscode/.vscode-server
 
 LABEL org.opencontainers.image.source="https://github.com/sep/spark-kindling-framework"

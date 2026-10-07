@@ -4,6 +4,26 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Added
+
+- **A Kindling skill for coding agents.** `kindling agent setup --agents
+  claude,codex,copilot` installs a `kindling` skill (`SKILL.md` plus
+  references for entities, pipes, apps and config) where each agent reads
+  skills, and a short managed block in `CLAUDE.md`, `AGENTS.md` or
+  `.github/copilot-instructions.md`. The skill ships inside
+  `spark-kindling-cli`, so it matches the Kindling release a project pins,
+  and its examples are executed by the integration tests. `kindling repo
+  init --agents ...` installs it for new repos, and the scaffolded
+  devcontainer refreshes it after `kindling env bootstrap`.
+
+### Changed
+
+- `kindling agent setup` no longer needs the devcontainer image: it replaces
+  the image-baked agent reference (and its copy in `~/.claude/CLAUDE.md`)
+  with the skill, writes files only for the selected agents (saved in
+  `.kindling-agent.json`), removes its own files for agents dropped from the
+  selection, and edits only its marked block in instruction files the team
+  also writes in. `--force` is gone; `--check` exits 1 when files are stale.
 ### Fixed
 
 - **`settings.local.yaml` no longer overrides other environments.** Dynaconf

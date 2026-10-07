@@ -46,7 +46,7 @@
       }
     }
   },
-  "postCreateCommand": "kindling env bootstrap",
+  "postCreateCommand": "kindling env bootstrap && if [ -x .venv/bin/kindling ]; then .venv/bin/kindling agent setup; else kindling agent setup; fi",
   "forwardPorts": [
     4040
   ],

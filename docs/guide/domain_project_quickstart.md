@@ -29,7 +29,7 @@ In VS Code:
 1. Open the repo root.
 2. **Command Palette → "Dev Containers: Reopen in Container"**
 
-Once inside the container the `postCreateCommand` automatically runs `kindling env bootstrap` at the repo root. If the root `pyproject.toml` declares no Kindling dependency yet, it adopts the release your packages pin (or, for an empty repo, pins the latest release), then runs `uv sync --all-packages`. The result is one repo-wide `.venv/` with every package installed editable, including the `dev` group and `.venv/bin/kindling`; VS Code's interpreter is set to `.venv/bin/python`. You don't need to run it manually.
+Once inside the container the `postCreateCommand` automatically runs `kindling env bootstrap` at the repo root. If the root `pyproject.toml` declares no Kindling dependency yet, it adopts the release your packages pin (or, for an empty repo, pins the latest release), then runs `uv sync --all-packages`. The result is one repo-wide `.venv/` with every package installed editable, including the `dev` group and `.venv/bin/kindling`; VS Code's interpreter is set to `.venv/bin/python`. It then runs `kindling agent setup`, which installs the Kindling skill for your coding agents (Claude Code, Codex, Copilot — whichever `repo init --agents` selected) from that pinned CLI, so agents get guidance for the exact release you use. You don't need to run either manually.
 
 > `kindling` in the image is a shim: it runs `./.venv/bin/kindling` when one exists in the **current directory**, otherwise a system-wide CLI. Run `kindling` commands from the repo root, or use `uv run kindling ...` from a subdirectory, so you get the project's pinned CLI and its packages.
 

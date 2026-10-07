@@ -3417,6 +3417,8 @@ def env_update(version: str, repo: str, project_path: Path, no_sync: bool) -> No
     _run_checked(_sync_command(no_sync=no_sync), cwd=project_path)
 
     click.echo(f"\nKindling packages in {project_path} are up to date at {resolved_version}.")
+    if (project_path / ".kindling-agent.json").is_file():
+        click.echo("Run `kindling agent setup` to update the Kindling agent skill to this release.")
 
 
 @env_group.command("add")
@@ -7973,17 +7975,28 @@ def repo_group() -> None:
     is_flag=True,
     help="Replace an existing .devcontainer/devcontainer.json.",
 )
+@click.option(
+    "--agents",
+    "agents_option",
+    default="all",
+    show_default=True,
+    help="Coding agents to install the Kindling skill for: comma-separated claude, "
+    "codex, copilot, or all / none (see `kindling agent setup`).",
+)
 def repo_init(
     repo_name: str,
     output_dir: Path,
     template_dir: Optional[Path],
     overwrite_devcontainer: bool,
+    agents_option: str = "all",
 ) -> None:
     """Create a Kindling repo root with shared dev tooling."""
+    from kindling_cli import agent_files
     from kindling_cli.scaffold import RepoScaffoldConfig, generate_repo, validate_name
 
     try:
         snake = validate_name(repo_name)
+        agent_files.parse_agents(agents_option)  # fail before writing anything
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -8008,6 +8021,7 @@ def repo_init(
         raise click.ClickException(f"Repo scaffold failed: {exc}") from exc
 
     click.echo(f"Initialized repo {cfg.kebab_name} in {cfg.output_dir} ({len(created)} files)")
+    _agent_setup(cfg.output_dir, agents_option, check_only=False)
     if had_root_pyproject:
         click.echo(
             "Kept the existing pyproject.toml. For the repo-wide environment, make it a "
@@ -8733,109 +8747,69 @@ def main() -> None:
 # kindling agent
 # =============================================================================
 
-_REFERENCE_PATHS = [
-    Path("/opt/kindling/agent-reference.md"),
-    Path(__file__).parent / "agent-reference.md",
-]
-_VERSION_FILE = ".kindling-agent-version"
-_COPILOT_MAX_CHARS = 8000
-_COPILOT_SECTIONS = ["overview", "entities", "pipes", "signals", "config", "cli"]
-
-
-def _find_reference() -> Optional[Path]:
-    for p in _REFERENCE_PATHS:
-        if p.exists():
-            return p
-    return None
-
-
-def _parse_version(content: str) -> str:
-    for line in content.splitlines():
-        if line.startswith("<!-- VERSION:"):
-            return line.replace("<!-- VERSION:", "").replace("-->", "").strip()
-    return "unknown"
-
-
-def _extract_sections(content: str) -> Dict[str, str]:
-    sections: Dict[str, str] = {}
-    current_name: Optional[str] = None
-    buf: List[str] = []
-    for line in content.splitlines():
-        if line.startswith("<!-- SECTION:"):
-            current_name = line.replace("<!-- SECTION:", "").replace("-->", "").strip()
-            buf = []
-        elif line.startswith("<!-- END SECTION -->"):
-            if current_name:
-                sections[current_name] = "\n".join(buf).strip()
-            current_name = None
-            buf = []
-        elif current_name is not None:
-            buf.append(line)
-    return sections
-
-
-def _strip_html_comments(content: str) -> str:
-    import re
-
-    return re.sub(r"<!--.*?-->", "", content, flags=re.DOTALL).strip()
-
-
-def _discover_project_context(project_root: Path) -> str:
-    lines = []
-    settings = project_root / "settings.yaml"
-    if not settings.exists():
-        for candidate in project_root.rglob("settings.yaml"):
-            settings = candidate
-            break
-    if settings.exists():
-        try:
-            import yaml
-
-            with open(settings) as f:
-                cfg = yaml.safe_load(f) or {}
-            name = cfg.get("name") or cfg.get("kindling", {}).get("name")
-            if name:
-                lines.append(f"App name: **{name}**")
-        except Exception:
-            pass
-
-    entity_files = list(project_root.rglob("entities/*.py"))[:8]
-    if entity_files:
-        lines.append("Entity modules: " + ", ".join(f.stem for f in entity_files))
-
-    pipe_files = list(project_root.rglob("pipes/*.py"))[:8]
-    if pipe_files:
-        lines.append("Pipe modules: " + ", ".join(f.stem for f in pipe_files))
-
-    return "\n".join(lines)
-
-
-def _write_if_changed(path: Path, content: str, force: bool) -> bool:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and not force:
-        existing = path.read_text()
-        if existing == content:
-            return False
-    path.write_text(content)
-    return True
-
 
 @cli.group("agent")
 def agent_group() -> None:
-    """Manage agent instruction files for Claude Code, Copilot, and Codex."""
+    """Install the Kindling skill and instructions for coding agents."""
+
+
+def _agent_setup(project_root: Path, agents_option: Optional[str], check_only: bool) -> None:
+    from kindling_cli import agent_files
+    from kindling_cli.scaffold import _kindling_version
+
+    project_root = project_root.expanduser().resolve()
+    state = agent_files.load_state(project_root)
+    if agents_option is not None:
+        try:
+            agents = agent_files.parse_agents(agents_option)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+    elif state is not None:
+        agents = list(state.get("agents", []))
+    else:
+        agents = list(agent_files.AGENTS)
+    version = _kindling_version()
+
+    if check_only:
+        pending = agent_files.plan(project_root, agents, version)
+        if not pending["write"] and not pending["remove"]:
+            click.echo(
+                f"Up to date (spark-kindling-cli {version}; agents: {', '.join(agents) or 'none'})."
+            )
+            return
+        for rel in pending["write"]:
+            click.echo(f"  would write   {rel}")
+        for rel in pending["remove"]:
+            click.echo(f"  would remove  {rel}")
+        raise click.ClickException("Agent files are out of date; run `kindling agent setup`.")
+
+    result = agent_files.apply(project_root, agents, version)
+    for rel in result["written"]:
+        click.echo(f"✓ {rel}")
+    for rel in result["removed"]:
+        click.echo(f"✗ {rel} (removed)")
+    if not result["written"] and not result["removed"]:
+        click.echo("Already up to date.")
+    click.echo(
+        f"Agents: {', '.join(agents) or 'none'} (spark-kindling-cli {version}). "
+        "Rerun after `kindling env update` to match the new release."
+    )
 
 
 @agent_group.command("setup")
 @click.option(
-    "--force",
-    is_flag=True,
-    help="Regenerate files even if version is unchanged.",
+    "--agents",
+    "agents_option",
+    default=None,
+    help="Comma-separated agents to support: claude, codex, copilot (or all / none). "
+    "Defaults to the project's saved selection, else all. Agents dropped from the "
+    "selection have their Kindling files removed.",
 )
 @click.option(
     "--check",
     "check_only",
     is_flag=True,
-    help="Report whether files are up to date without writing.",
+    help="Report whether the agent files are up to date without writing (exit 1 if not).",
 )
 @click.option(
     "--project",
@@ -8844,112 +8818,23 @@ def agent_group() -> None:
     type=click.Path(path_type=Path, file_okay=False),
     help="Project root directory (default: current directory).",
 )
-def agent_setup(force: bool, check_only: bool, project_root: Path) -> None:
-    """Generate agent instruction files from the Kindling reference doc.
+def agent_setup(agents_option: Optional[str], check_only: bool, project_root: Path) -> None:
+    """Install the Kindling skill and agent instructions into a project.
 
     \b
-    Writes (or updates) three files in the project:
-      CLAUDE.md                        — Claude Code
-      .github/copilot-instructions.md  — GitHub Copilot
-      AGENTS.md                        — Codex / OpenAI agents
+    Per agent:
+      claude   .claude/skills/kindling/   + CLAUDE.md
+      codex    .agents/skills/kindling/   + AGENTS.md
+      copilot  .github/skills/kindling/   + .github/copilot-instructions.md
+               (Copilot also reads .claude/ and .agents/ skills, so its own
+               copy is written only when neither claude nor codex is selected)
 
-    Re-run whenever you pull a new devcontainer image to pick up
-    updated Kindling documentation. Safe to re-run at any time.
+    The skill matches the installed spark-kindling-cli. In instruction
+    files only the block between the kindling:begin/end markers is
+    managed; the rest is left alone. The selection is saved in
+    .kindling-agent.json.
     """
-    ref_path = _find_reference()
-    if ref_path is None:
-        raise click.ClickException(
-            "Kindling agent reference not found. "
-            "Expected /opt/kindling/agent-reference.md (inside devcontainer) "
-            "or a local agent-reference.md alongside the CLI."
-        )
-
-    content = ref_path.read_text()
-    version = _parse_version(content)
-    sections = _extract_sections(content)
-    clean = _strip_html_comments(content)
-
-    version_file = project_root / _VERSION_FILE
-    current_version = version_file.read_text().strip() if version_file.exists() else None
-
-    if not force and current_version == version:
-        if check_only:
-            click.echo(f"Up to date (v{version}).")
-        else:
-            click.echo(f"Already up to date (v{version}). Use --force to regenerate.")
-        return
-
-    if check_only:
-        if current_version is None:
-            click.echo(f"Not initialised — would generate v{version} files.")
-        else:
-            click.echo(
-                f"Out of date: project has v{current_version}, "
-                f"image has v{version}. Run without --check to update."
-            )
-        return
-
-    project_context = _discover_project_context(project_root)
-    project_header = ""
-    if project_context:
-        project_header = f"\n## This Project\n\n{project_context}\n\n---\n\n"
-
-    # ── CLAUDE.md ────────────────────────────────────────────────────────────
-    # Project-level file adds project context; full reference is already in
-    # ~/.claude/CLAUDE.md (user-level, baked into the devcontainer image).
-    claude_content = (
-        f"<!-- Generated by kindling agent setup v{version} — do not edit directly -->\n"
-        f"<!-- Run `kindling agent setup --force` to regenerate -->\n\n"
-        f"# Kindling Project Context\n"
-        f"{project_header}"
-        f"> The full Kindling framework reference is available at "
-        f"`~/.claude/CLAUDE.md` (loaded automatically by Claude Code).\n"
-    )
-    wrote = _write_if_changed(project_root / "CLAUDE.md", claude_content, force)
-    click.echo(f"{'✓' if wrote else '·'} CLAUDE.md")
-
-    # ── .github/copilot-instructions.md ─────────────────────────────────────
-    copilot_parts = [
-        f"<!-- Generated by kindling agent setup v{version} — do not edit directly -->\n",
-        "# Kindling Framework — Quick Reference\n",
-    ]
-    if project_context:
-        copilot_parts.append(f"## This Project\n\n{project_context}\n")
-
-    char_budget = _COPILOT_MAX_CHARS - sum(len(p) for p in copilot_parts)
-    for section_name in _COPILOT_SECTIONS:
-        body = sections.get(section_name, "")
-        if not body:
-            continue
-        block = f"\n{_strip_html_comments(body)}\n"
-        if len(block) > char_budget:
-            break
-        copilot_parts.append(block)
-        char_budget -= len(block)
-
-    copilot_content = "\n".join(copilot_parts)
-    wrote = _write_if_changed(
-        project_root / ".github" / "copilot-instructions.md", copilot_content, force
-    )
-    click.echo(f"{'✓' if wrote else '·'} .github/copilot-instructions.md")
-
-    # ── AGENTS.md ────────────────────────────────────────────────────────────
-    agents_content = (
-        f"<!-- Generated by kindling agent setup v{version} — do not edit directly -->\n"
-        f"<!-- Run `kindling agent setup --force` to regenerate -->\n\n"
-        f"# Kindling Agent Instructions\n\n"
-        f"This project uses the Kindling PySpark data pipeline framework.\n"
-    )
-    if project_context:
-        agents_content += f"\n## This Project\n\n{project_context}\n"
-    agents_content += f"\n---\n\n{clean}\n"
-
-    wrote = _write_if_changed(project_root / "AGENTS.md", agents_content, force)
-    click.echo(f"{'✓' if wrote else '·'} AGENTS.md")
-
-    # ── version stamp ────────────────────────────────────────────────────────
-    version_file.write_text(version)
-    click.echo(f"\nKindling agent files updated to v{version}.")
+    _agent_setup(project_root, agents_option, check_only)
 
 
 if __name__ == "__main__":
