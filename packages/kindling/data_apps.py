@@ -1060,15 +1060,26 @@ class DataAppManager(DataAppRunner):
         self._import_installed_packages(lake_requirements)
 
     def _import_installed_packages(self, package_specs: List[str]) -> None:
-        """Import packages to trigger decorator execution"""
+        """Import the app's lake packages and register their declarations.
+
+        Importing a package alone registers nothing when its declarations
+        live in its ``entities`` / ``pipes`` / ``ingestion`` subpackages (the
+        scaffolded layout, with an empty ``__init__.py``), so those are
+        imported too -- the same walk the local runner does.
+        """
+        from kindling.package_registrations import import_package_registrations
+
+        package_names = []
         for package_spec in package_specs:
             package_name = self._normalize_pkg_name(self._extract_package_name(package_spec))
             try:
                 __import__(package_name)
-                self.logger.info(f"Imported {package_name} - decorators executed")
+                self.logger.info(f"Imported {package_name}")
             except ImportError as e:
                 self.logger.error(f"Failed to import {package_name}: {e}")
                 raise
+            package_names.append(package_name)
+        import_package_registrations(self.logger, package_names)
 
     def _install_pypi_dependencies(
         self, pypi_dependencies: List[str], wheels_cache_dir: str = ""

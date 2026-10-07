@@ -26,6 +26,13 @@ All notable changes to spark-kindling are documented here.
   also writes in. `--force` is gone; `--check` exits 1 when files are stale.
 ### Fixed
 
+- **Deployed apps register their packages' entities and pipes.** On a
+  cloud platform, an app's `lake-reqs.txt` packages were installed and only
+  their top-level module imported. A package laid out as `kindling package
+  init` scaffolds it -- declarations in `entities/` and `pipes/`, an empty
+  `__init__.py` -- registered nothing remotely, so a batch app ran no pipes.
+  Deployed apps now import each package's `entities`, `pipes` and
+  `ingestion` subpackages, the same walk the local runner does.
 - **`settings.local.yaml` no longer overrides other environments.** Dynaconf
   silently loaded a `settings.local.yaml` beside every settings file, after
   all of them, so a developer's local overrides won in `dev`, `prod` or any
