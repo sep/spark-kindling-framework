@@ -83,6 +83,7 @@ packages' entities and pipes **before** app.py runs. app.py only picks the
 execution pattern in its `__main__` block. This is the scaffolded batch app:
 
 ```python
+# illustrative: app.py runs as __main__ under the runner
 """daily-orders: Kindling batch app entrypoint."""
 
 if __name__ == "__main__":
@@ -161,9 +162,16 @@ The executor is just the `__main__` block of app.py. It calls a helper from
 | `streaming` | `run_streaming_app(pipe_ids=None, *, streaming_options=None)` | `ExecutionOrchestrator.execute_streaming`; checkpoint base from `KINDLING_CHECKPOINT_PATH` when no options are given |
 | `file-ingestion` | `run_file_ingestion_app(source_path=None)` | `FileIngestionProcessor.process_path`; path from `KINDLING_INGESTION_PATH` (raises if unset) |
 
+The helpers import from `kindling.apps`:
+
+```python
+from kindling.apps import run_batch_app, run_file_ingestion_app, run_streaming_app
+```
+
 To narrow or customize, edit app.py by hand rather than adding new files:
 
 ```python
+# illustrative: app.py runs as __main__ under the runner
 from kindling.apps import run_batch_app
 
 if __name__ == "__main__":

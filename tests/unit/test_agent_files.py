@@ -122,7 +122,10 @@ def test_repo_init_installs_selected_agents(tmp_path):
     assert (tmp_path / "AGENTS.md").is_file()
     assert not (tmp_path / "CLAUDE.md").exists()
     devcontainer = (tmp_path / ".devcontainer/devcontainer.json").read_text()
-    assert "kindling env bootstrap && ./.venv/bin/kindling agent setup" in devcontainer
+    assert (
+        "kindling env bootstrap && if [ -x .venv/bin/kindling ]; then .venv/bin/kindling agent setup"
+        in devcontainer
+    )
 
 
 def test_instruction_block_lists_project_packages_and_apps(tmp_path):
@@ -205,3 +208,13 @@ def test_setup_none_on_new_directory_saves_selection(tmp_path):
     result = _setup(target, "--agents", "none")
     assert result.exit_code == 0, result.output
     assert json.loads((target / ".kindling-agent.json").read_text())["agents"] == []
+
+
+def test_undecodable_file_in_skill_dir_is_drift_not_a_crash(tmp_path):
+    assert _setup(tmp_path, "--agents", "claude").exit_code == 0
+    (tmp_path / ".claude/skills/kindling/.DS_Store").write_bytes(b"\xff\xfe\x00bad")
+
+    assert _setup(tmp_path, "--check").exit_code == 1  # reported, not raised
+    result = _setup(tmp_path)
+    assert result.exit_code == 0, result.output
+    assert not (tmp_path / ".claude/skills/kindling/.DS_Store").exists()

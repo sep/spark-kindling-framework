@@ -194,11 +194,15 @@ def _expected_skill(version: str) -> Dict[Path, str]:
 def _installed_skill(target: Path) -> Dict[Path, str]:
     if not target.is_dir():
         return {}
-    return {
-        p.relative_to(target): p.read_text(encoding="utf-8")
-        for p in target.rglob("*")
-        if p.is_file()
-    }
+    installed: Dict[Path, str] = {}
+    for path in target.rglob("*"):
+        if path.is_file():
+            try:
+                installed[path.relative_to(target)] = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                # e.g. a .DS_Store: never matches, so setup recreates the dir.
+                installed[path.relative_to(target)] = "\0"
+    return installed
 
 
 def _write_skill(target: Path, version: str) -> bool:
