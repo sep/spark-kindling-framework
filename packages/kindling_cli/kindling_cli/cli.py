@@ -5372,6 +5372,108 @@ def _resolve_runtime_parameters(
     return parameters
 
 
+def _job_compute_options(func):
+    """Add the Databricks job compute options shared by `app run` and `runner register`."""
+    options = [
+        click.option(
+            "--cluster-id",
+            default=None,
+            help="Databricks only: run on this existing cluster (overrides DATABRICKS_CLUSTER_ID).",
+        ),
+        click.option(
+            "--new-cluster",
+            is_flag=True,
+            default=False,
+            help=(
+                "Databricks only: run on a new job cluster even if DATABRICKS_CLUSTER_ID is set."
+            ),
+        ),
+        click.option(
+            "--spark-version",
+            default=None,
+            help="Databricks only: runtime version for a new job cluster (e.g. 15.4.x-scala2.12).",
+        ),
+        click.option(
+            "--node-type",
+            default=None,
+            help="Databricks only: node type for a new job cluster (e.g. Standard_DS3_v2).",
+        ),
+        click.option(
+            "--num-workers",
+            default=None,
+            type=click.IntRange(min=1),
+            help="Databricks only: worker count for a new job cluster.",
+        ),
+    ]
+    for option in reversed(options):
+        func = option(func)
+    return func
+
+
+def _job_compute_flags(
+    cluster_id: Optional[str],
+    new_cluster: bool,
+    spark_version: Optional[str],
+    node_type: Optional[str],
+    num_workers: Optional[int],
+) -> List[str]:
+    """Names of the job compute options that were given."""
+    given = {
+        "--cluster-id": cluster_id is not None,
+        "--new-cluster": new_cluster,
+        "--spark-version": spark_version is not None,
+        "--node-type": node_type is not None,
+        "--num-workers": num_workers is not None,
+    }
+    return [flag for flag, present in given.items() if present]
+
+
+def _resolve_job_compute(
+    platform: str,
+    cluster_id: Optional[str],
+    new_cluster: bool,
+    spark_version: Optional[str],
+    node_type: Optional[str],
+    num_workers: Optional[int],
+) -> Optional[Dict[str, Any]]:
+    """Map the job compute options to the SDK's ``compute`` dict.
+
+    Returns None when no option was given, so the SDK keeps its defaults
+    (including DATABRICKS_CLUSTER_ID).
+    """
+    flags = _job_compute_flags(cluster_id, new_cluster, spark_version, node_type, num_workers)
+    if not flags:
+        return None
+    if platform != "databricks":
+        raise click.ClickException(
+            f"{', '.join(flags)} {'is' if len(flags) == 1 else 'are'} only supported on "
+            f"Databricks, not {platform}."
+        )
+    if cluster_id is not None and not cluster_id.strip():
+        raise click.ClickException("--cluster-id must not be empty.")
+    sizing = [flag for flag in flags if flag in ("--spark-version", "--node-type", "--num-workers")]
+    if cluster_id is not None and new_cluster:
+        raise click.ClickException("--cluster-id and --new-cluster are mutually exclusive.")
+    if cluster_id is not None and sizing:
+        raise click.ClickException(
+            f"{', '.join(sizing)} only apply to a new job cluster and cannot be combined "
+            "with --cluster-id."
+        )
+
+    compute: Dict[str, Any] = {}
+    if cluster_id is not None:
+        compute["existing_cluster_id"] = cluster_id.strip()
+    if new_cluster:
+        compute["force_new_cluster"] = True
+    if spark_version is not None:
+        compute["spark_version"] = spark_version
+    if node_type is not None:
+        compute["node_type_id"] = node_type
+    if num_workers is not None:
+        compute["num_workers"] = num_workers
+    return compute
+
+
 def _run_remote_app(
     app_ref: str,
     app_name: Optional[str],
@@ -5385,8 +5487,12 @@ def _run_remote_app(
     timeout: float,
     fail_on_error: bool,
     json_output: bool,
+    compute_options: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Submit a run of an already-deployed app on a remote platform."""
+    """Submit a run of an already-deployed app on a remote platform.
+
+    ``compute_options`` holds the raw `--cluster-id/--new-cluster/...` values.
+    """
     if poll_interval <= 0:
         raise click.ClickException("--poll-interval must be greater than 0.")
     if timeout <= 0:
@@ -5396,6 +5502,7 @@ def _run_remote_app(
     resolved_name = (app_name or app_ref).strip()
     if not resolved_name:
         raise click.ClickException("App name resolved to an empty string.")
+    compute = _resolve_job_compute(resolved_platform, **(compute_options or {}))
 
     api_client, resolved_platform = _create_platform_api(resolved_platform)
     parameters = _resolve_runtime_parameters(parameters_path, param_overrides, resolved_platform)
@@ -5406,17 +5513,31 @@ def _run_remote_app(
         pass
 
     _emit_progress(f"Submitting app run `{resolved_name}` on {resolved_platform}...", json_output)
+    # compute is passed only when given, so SDK clients that predate it still work.
+    submit_kwargs: Dict[str, Any] = {"compute": compute} if compute else {}
     try:
         run_id = api_client.submit_app_run(
             resolved_name,
             environment=env or None,
             parameters=parameters or None,
+            **submit_kwargs,
         )
     except NotImplementedError:
         raise click.ClickException(
             f"Direct app submission is not yet supported on {resolved_platform}. "
             "Upgrade spark-kindling-sdk when platform support is available."
         )
+    except ValueError as exc:
+        if not compute:
+            raise
+        raise click.ClickException(str(exc)) from exc
+    except TypeError as exc:
+        if not compute or "compute" not in str(exc):
+            raise
+        raise click.ClickException(
+            "This spark-kindling-sdk does not support job compute options; "
+            "upgrade spark-kindling-sdk."
+        ) from exc
     _emit_progress(f"Run ID: {run_id}", json_output)
 
     payload: Dict[str, Any] = {
@@ -5671,6 +5792,7 @@ def _run_standalone_app(
         "locally. By default, locally installed packages are used without contacting the lake."
     ),
 )
+@_job_compute_options
 @traced_command("app.run")
 def app_run(
     app: str,
@@ -5694,6 +5816,11 @@ def app_run(
     dotenv_paths: Tuple[Path, ...],
     no_dotenv: bool,
     load_lake: bool = False,
+    cluster_id: Optional[str] = None,
+    new_cluster: bool = False,
+    spark_version: Optional[str] = None,
+    node_type: Optional[str] = None,
+    num_workers: Optional[int] = None,
 ) -> None:
     """Run an app locally or remotely on a managed platform.
 
@@ -5709,16 +5836,34 @@ def app_run(
     gives it by default). Nothing is uploaded: deploy first with
     'kindling app deploy APP --platform PLATFORM'. --app-name overrides the name.
 
+    For Databricks runs, --cluster-id, --new-cluster, --spark-version,
+    --node-type and --num-workers choose the job compute. Without them the run
+    uses DATABRICKS_CLUSTER_ID if set, else a new job cluster with the SDK
+    defaults.
+
     \b
     --trace/--trace-level are documented sugar for
     --param print_trace=true/--param kindling.telemetry.tracing.level=<level>;
     an explicit --param for the same key still wins.
     """
     param_overrides = _prepend_trace_param_overrides(trace, trace_level, param_overrides)
+    compute_options = {
+        "cluster_id": cluster_id,
+        "new_cluster": new_cluster,
+        "spark_version": spark_version,
+        "node_type": node_type,
+        "num_workers": num_workers,
+    }
 
     if platform == "standalone":
         if app_name:
             raise click.ClickException("--app-name is only valid for remote app runs.")
+        compute_flags = _job_compute_flags(**compute_options)
+        if compute_flags:
+            raise click.ClickException(
+                f"{', '.join(compute_flags)} {'is' if len(compute_flags) == 1 else 'are'} "
+                "only valid for remote app runs (--platform databricks)."
+            )
         if local_folder:
             resolved_app_ref = str(local_folder.expanduser().resolve())
         else:
@@ -5778,6 +5923,7 @@ def app_run(
         timeout,
         fail_on_error,
         json_output,
+        compute_options=compute_options,
     )
 
 
@@ -7725,11 +7871,17 @@ def runner_group() -> None:
     help="Target platform.  Auto-detected from environment if omitted.",
 )
 @click.option("--json", "json_output", is_flag=True, help="Emit machine-readable JSON.")
+@_job_compute_options
 def runner_register(
     app_name: str,
     config_overrides: tuple,
     platform: Optional[str],
     json_output: bool,
+    cluster_id: Optional[str] = None,
+    new_cluster: bool = False,
+    spark_version: Optional[str] = None,
+    node_type: Optional[str] = None,
+    num_workers: Optional[int] = None,
 ) -> None:
     """Register an app as a named job definition for pipeline/workflow integration.
 
@@ -7744,12 +7896,22 @@ def runner_register(
     Config overrides supplied here are baked into the definition as config:k=v
     bootstrap args. Re-running ``register`` updates the definition in place (idempotent).
 
+    On Databricks, --cluster-id, --new-cluster, --spark-version, --node-type and
+    --num-workers choose the job's compute. Without them the job uses
+    DATABRICKS_CLUSTER_ID if set, else a new job cluster with the SDK defaults.
+
     Examples::
 
+    \b
         kindling runner register --app my-app --platform synapse
         kindling runner register --app my-app --config env=prod --config region=eastus
+        kindling runner register --app my-app --platform databricks \\
+            --new-cluster --node-type Standard_DS4_v2 --num-workers 4
     """
     resolved_platform = _resolve_remote_platform(platform)
+    compute = _resolve_job_compute(
+        resolved_platform, cluster_id, new_cluster, spark_version, node_type, num_workers
+    )
     api_client, resolved_platform = _create_platform_api(resolved_platform)
 
     overrides: Dict[str, Any] = {}
@@ -7762,13 +7924,28 @@ def runner_register(
             raise click.ClickException("--config keys must not be empty.")
         _set_nested_key(overrides, k, _coerce_value(v))
 
+    # compute is passed only when given, so SDK clients that predate it still work.
+    register_kwargs: Dict[str, Any] = {"compute": compute} if compute else {}
     try:
-        result = api_client.register_app_job(app_name, config_overrides=overrides or None)
+        result = api_client.register_app_job(
+            app_name, config_overrides=overrides or None, **register_kwargs
+        )
     except (AttributeError, NotImplementedError):
         raise click.ClickException(
             f"Job definition registration is not yet supported on {resolved_platform}. "
             "Upgrade spark-kindling-sdk when platform support is available."
         )
+    except ValueError as exc:
+        if not compute:
+            raise
+        raise click.ClickException(str(exc)) from exc
+    except TypeError as exc:
+        if not compute or "compute" not in str(exc):
+            raise
+        raise click.ClickException(
+            "This spark-kindling-sdk does not support job compute options; "
+            "upgrade spark-kindling-sdk."
+        ) from exc
 
     _emit_result(
         {"platform": resolved_platform, **result},

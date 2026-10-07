@@ -562,6 +562,24 @@ path uses that directory's name. Use `--app-name` for an app deployed under a cu
 The app must have been deployed first with `kindling app deploy`. `--local-folder` has no meaning
 for remote runs and will error.
 
+**Databricks job compute.** Without compute options, a Databricks run uses the existing cluster in
+`DATABRICKS_CLUSTER_ID` when it is set, and otherwise a new job cluster with the SDK defaults
+(`13.3.x-scala2.12`, `Standard_DS3_v2`, 1 worker). The options below change that. They are
+Databricks-only and error on other platforms and for standalone runs.
+
+| Compute option | Description |
+|---|---|
+| `--cluster-id TEXT` | Run on this existing cluster, overriding `DATABRICKS_CLUSTER_ID` |
+| `--new-cluster` | Run on a new job cluster even if `DATABRICKS_CLUSTER_ID` is set |
+| `--spark-version TEXT` | Runtime version of the new job cluster |
+| `--node-type TEXT` | Node type of the new job cluster |
+| `--num-workers INT` | Worker count of the new job cluster (at least 1) |
+
+`--spark-version`, `--node-type` and `--num-workers` size a new job cluster, so they cannot be
+combined with `--cluster-id`, and when `DATABRICKS_CLUSTER_ID` is set they need `--new-cluster`
+(otherwise the run fails instead of quietly using the existing cluster). Unset sizing options keep
+the defaults above. Serverless job compute is not supported.
+
 | Option | Default | Description |
 |---|---|---|
 | `--platform standalone\|databricks\|fabric\|synapse` | `standalone` | Execution platform |
@@ -581,6 +599,7 @@ for remote runs and will error.
 | `--dotenv PATH` | `.env` | Dotenv file to load (repeatable) |
 | `--no-dotenv` | — | Do not load `.env` |
 | `--json` | — | Machine-readable JSON output |
+| `--cluster-id`, `--new-cluster`, `--spark-version`, `--node-type`, `--num-workers` | — | Databricks job compute (see above; Databricks only) |
 
 ```bash
 # Local standalone — from inside apps/my_pipeline/, or by path
@@ -597,6 +616,11 @@ kindling app run my_pipeline --local-folder path/to/app
 # Remote — deploy first, then run
 kindling app deploy my_pipeline --platform synapse
 kindling app run my_pipeline --platform synapse
+
+# Databricks — pick the job compute
+kindling app run my_pipeline --platform databricks --cluster-id 0101-123456-abcd123
+kindling app run my_pipeline --platform databricks \
+  --new-cluster --spark-version 15.4.x-scala2.12 --node-type Standard_DS4_v2 --num-workers 4
 ```
 
 ### `app status <RUN_ID>`
@@ -702,10 +726,21 @@ the definition in place (idempotent). Config overrides supplied with
 | `--config KEY=VALUE` | — | Config override baked into the job definition (repeatable) |
 | `--platform databricks\|fabric\|synapse` | auto-detected | Target platform |
 | `--json` | — | Machine-readable JSON output |
+| `--cluster-id TEXT` | `DATABRICKS_CLUSTER_ID` | Databricks only: run the job on this existing cluster |
+| `--new-cluster` | — | Databricks only: use a new job cluster even if `DATABRICKS_CLUSTER_ID` is set |
+| `--spark-version TEXT` | `13.3.x-scala2.12` | Databricks only: new job cluster runtime version |
+| `--node-type TEXT` | `Standard_DS3_v2` | Databricks only: new job cluster node type |
+| `--num-workers INT` | `1` | Databricks only: new job cluster worker count |
+
+The compute options follow the same rules as for
+[`app run`](#app-run-app): sizing options cannot be combined with
+`--cluster-id` and need `--new-cluster` when `DATABRICKS_CLUSTER_ID` is set.
 
 ```bash
 kindling runner register --app my-app --platform synapse
 kindling runner register --app my-app --config env=prod --config region=eastus
+kindling runner register --app my-app --platform databricks \
+  --new-cluster --node-type Standard_DS4_v2 --num-workers 4
 ```
 
 ### `runner status`

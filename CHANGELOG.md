@@ -26,6 +26,17 @@ All notable changes to spark-kindling are documented here.
   either option only the core wheel is uploaded, as before. `runtime deploy`
   also gains `--json`, reporting the uploaded `wheels`, `extension_wheels` and
   `scripts`.
+- **Databricks job compute from the CLI.** `kindling app run --platform
+  databricks` and `kindling runner register` take `--cluster-id`,
+  `--new-cluster`, `--spark-version`, `--node-type` and `--num-workers`.
+  Before, these commands always used `DATABRICKS_CLUSTER_ID` or a new
+  `Standard_DS3_v2` / 1-worker / 13.3 job cluster. The defaults are
+  unchanged. The options error on other platforms and for standalone runs,
+  and sizing options error instead of being ignored when
+  `DATABRICKS_CLUSTER_ID` would pick an existing cluster (add
+  `--new-cluster`). In the SDK, `submit_app_run` and `register_app_job` take
+  an optional `compute` dict; Fabric and Synapse raise `ValueError` if it is
+  non-empty. Serverless job compute is not supported yet.
 
 ### Changed
 

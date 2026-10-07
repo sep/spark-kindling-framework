@@ -328,6 +328,7 @@ class FabricAPI(PlatformAPI):
         app_name: str,
         environment: Optional[str] = None,
         parameters: Optional[Dict[str, Any]] = None,
+        compute: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Submit a one-time app run via an ephemeral SparkJobDefinition.
 
@@ -335,6 +336,7 @@ class FabricAPI(PlatformAPI):
         then immediately deletes the definition. The run continues independently.
         Fabric has no one-time run API, so this ephemeral pattern is required.
         """
+        self._reject_compute(compute)
         import time as _time
 
         config_overrides: Dict[str, Any] = dict(parameters or {})
@@ -366,8 +368,10 @@ class FabricAPI(PlatformAPI):
         self,
         app_name: str,
         config_overrides: Optional[Dict[str, Any]] = None,
+        compute: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Create or update a named SparkJobDefinition for use in Fabric Pipelines."""
+        self._reject_compute(compute)
         job_config: Dict[str, Any] = {
             "app_name": app_name,
             "config_overrides": config_overrides or {},

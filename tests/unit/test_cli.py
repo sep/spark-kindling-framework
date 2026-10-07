@@ -3568,6 +3568,189 @@ def test_runner_register_fails_when_platform_auth_missing(monkeypatch):
     assert "DATABRICKS_TOKEN" in result.output
 
 
+# --- Databricks job compute options (app run --platform / runner register) ---
+
+
+def _fake_compute_api(monkeypatch):
+    from unittest.mock import MagicMock
+
+    api = MagicMock()
+    api.submit_app_run.return_value = "run-1"
+    api.register_app_job.return_value = {"job_id": "job-1", "job_name": "my-app"}
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (api, p))
+    return api
+
+
+def test_app_run_databricks_compute_options_reach_sdk(tmp_path, monkeypatch):
+    api = _fake_compute_api(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "app",
+            "run",
+            "my_app",
+            "--platform",
+            "databricks",
+            "--no-wait",
+            "--new-cluster",
+            "--spark-version",
+            "15.4.x-scala2.12",
+            "--node-type",
+            "Standard_DS4_v2",
+            "--num-workers",
+            "4",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert api.submit_app_run.call_args.kwargs["compute"] == {
+        "force_new_cluster": True,
+        "spark_version": "15.4.x-scala2.12",
+        "node_type_id": "Standard_DS4_v2",
+        "num_workers": 4,
+    }
+
+
+def test_app_run_databricks_cluster_id_reaches_sdk(tmp_path, monkeypatch):
+    api = _fake_compute_api(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        ["app", "run", "my_app", "--platform", "databricks", "--no-wait", "--cluster-id", "0101-a"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert api.submit_app_run.call_args.kwargs["compute"] == {"existing_cluster_id": "0101-a"}
+
+
+def test_app_run_without_compute_options_passes_no_compute(tmp_path, monkeypatch):
+    """Older SDK clients without a compute parameter keep working."""
+    api = _fake_compute_api(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli, ["app", "run", "my_app", "--platform", "databricks", "--no-wait"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "compute" not in api.submit_app_run.call_args.kwargs
+
+
+def test_app_run_compute_options_rejected_on_other_platforms(tmp_path, monkeypatch):
+    def _no_api(platform):
+        raise AssertionError("platform API must not be created")
+
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", _no_api)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        ["app", "run", "my_app", "--platform", "fabric", "--no-wait", "--num-workers", "2"],
+    )
+
+    assert result.exit_code != 0
+    assert "--num-workers is only supported on Databricks, not fabric" in result.output
+
+
+def test_app_run_compute_options_rejected_for_standalone(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli, ["app", "run", "my_app", "--no-dotenv", "--new-cluster", "--cluster-id", "x"]
+    )
+
+    assert result.exit_code != 0
+    assert "--cluster-id, --new-cluster are only valid for remote app runs" in result.output
+
+
+@pytest.mark.parametrize(
+    "args, message",
+    [
+        (["--cluster-id", "a", "--new-cluster"], "mutually exclusive"),
+        (["--cluster-id", "a", "--node-type", "n"], "--node-type only apply to a new job cluster"),
+        (["--cluster-id", " "], "--cluster-id must not be empty"),
+        (["--num-workers", "0"], "x>=1"),
+    ],
+)
+def test_app_run_compute_option_conflicts(tmp_path, monkeypatch, args, message):
+    api = _fake_compute_api(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli, ["app", "run", "my_app", "--platform", "databricks", "--no-wait", *args]
+    )
+
+    assert result.exit_code != 0
+    assert message in result.output
+    api.submit_app_run.assert_not_called()
+
+
+def test_app_run_compute_sdk_value_error_is_reported(tmp_path, monkeypatch):
+    api = _fake_compute_api(monkeypatch)
+    api.submit_app_run.side_effect = ValueError("set force_new_cluster")
+    monkeypatch.chdir(tmp_path)
+
+    result = CliRunner().invoke(
+        cli, ["app", "run", "my_app", "--platform", "databricks", "--no-wait", "--num-workers", "2"]
+    )
+
+    assert result.exit_code != 0
+    assert "set force_new_cluster" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_runner_register_databricks_compute_options_reach_sdk(monkeypatch):
+    api = _fake_compute_api(monkeypatch)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "runner",
+            "register",
+            "--app",
+            "my-app",
+            "--platform",
+            "databricks",
+            "--new-cluster",
+            "--node-type",
+            "Standard_E8s_v3",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    call = api.register_app_job.call_args
+    assert call.args == ("my-app",)
+    assert call.kwargs["compute"] == {"force_new_cluster": True, "node_type_id": "Standard_E8s_v3"}
+
+
+def test_runner_register_compute_options_rejected_on_other_platforms(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+
+    result = CliRunner().invoke(
+        cli,
+        ["runner", "register", "--app", "my-app", "--platform", "synapse", "--cluster-id", "c"],
+    )
+
+    assert result.exit_code != 0
+    assert "--cluster-id is only supported on Databricks, not synapse" in result.output
+
+
+def test_runner_register_compute_with_sdk_lacking_compute_parameter(monkeypatch):
+    """An SDK whose register_app_job predates compute gets an upgrade hint."""
+    monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
+
+    result = CliRunner().invoke(
+        cli,
+        ["runner", "register", "--app", "my-app", "--platform", "databricks", "--new-cluster"],
+    )
+
+    assert result.exit_code != 0
+    assert "upgrade spark-kindling-sdk" in result.output
+
+
 def test_runner_status_summary(monkeypatch):
     monkeypatch.setattr("kindling_cli.cli._create_platform_api", lambda p: (_FakeRunnerAPI(), p))
     monkeypatch.setattr(
