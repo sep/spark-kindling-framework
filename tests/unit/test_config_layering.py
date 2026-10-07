@@ -136,3 +136,67 @@ def test_file_log_level_is_used_without_a_parameter(_spark, tmp_path):
     config = DynaconfConfig()
     config.initialize(config_files=[settings], initial_config={})
     assert config.get("log_level") == "WARN"
+
+
+def test_merge_unique_token_and_marker_dedupe_within_the_layer():
+    assert _merge({"x": ["a"]}, {"x": "@merge_unique [a, b, b]"}) == {"x": ["a", "b"]}
+    assert _merge({"x": ["a"]}, {"x": ["b", "b", "dynaconf_merge_unique"]}) == {"x": ["a", "b"]}
+
+
+def test_keys_match_case_insensitively_across_layers(tmp_path):
+    merged = _merge(
+        {"kindling": {"telemetry": {"logging": {"level": "INFO"}}}},
+        {"kindling": {"TELEMETRY": {"logging": {"level": "DEBUG"}}}},
+    )
+    assert merged == {"kindling": {"telemetry": {"logging": {"level": "DEBUG"}}}}
+    base = _write(tmp_path / "a.yaml", {"kindling": {"telemetry": {"logging": {"level": "INFO"}}}})
+    over = _write(tmp_path / "b.yaml", {"kindling": {"TELEMETRY": {"logging": {"level": "DEBUG"}}}})
+    assert peek_settings_value([base, over], "kindling.telemetry.logging.level") == "DEBUG"
+    assert peek_settings_value([base, over], "kindling.TELEMETRY.logging.level") == "DEBUG"
+
+
+def test_peek_removes_its_snapshot(tmp_path, monkeypatch):
+    import kindling.spark_config as sc
+
+    created = []
+    real = sc._merged_settings_file
+    monkeypatch.setattr(
+        sc, "_merged_settings_file", lambda files: created.append(real(files)) or created[-1]
+    )
+    base = _write(tmp_path / "settings.yaml", {"kindling": {"a": 1}})
+
+    assert peek_settings_value([base], "kindling.a") == 1
+    assert created and not __import__("os").path.exists(created[0])
+
+
+@patch(
+    "kindling.spark_config.get_or_create_spark_session",
+    side_effect=lambda: _spark_without_conf(),
+)
+def test_reload_retires_old_snapshot_and_rollback_keeps_it(_spark, tmp_path):
+    import os
+
+    settings = _write(tmp_path / "settings.yaml", {"kindling": {"a": 1}})
+    config = DynaconfConfig()
+    config.initialize(config_files=[settings], initial_config={})
+    first = config._settings_snapshot
+    assert os.path.exists(first)
+
+    assert config.reload()["status"] == "success"
+    assert not os.path.exists(first) and os.path.exists(config._settings_snapshot)
+
+    second = config._settings_snapshot
+    with patch.object(DynaconfConfig, "_translate_yaml_to_flat", side_effect=RuntimeError("boom")):
+        assert config.reload()["status"] == "failed"
+    assert config._settings_snapshot == second and os.path.exists(second)
+
+
+@patch(
+    "kindling.spark_config.get_or_create_spark_session",
+    side_effect=lambda: _spark_without_conf(),
+)
+def test_flat_alias_mirrors_list_without_appending(_spark, tmp_path):
+    settings = _write(tmp_path / "settings.yaml", {"kindling": {"extensions": ["a"]}})
+    config = DynaconfConfig()
+    config.initialize(config_files=[settings], initial_config={})
+    assert list(config.get("extensions")) == ["a"]

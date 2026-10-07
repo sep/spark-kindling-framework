@@ -1,9 +1,10 @@
 import logging
+import shutil
 import tempfile
 import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 from dynaconf import Dynaconf
 from pyspark.sql import SparkSession
@@ -69,13 +70,15 @@ def _log_settings_files_load_order(settings_files: List[str]) -> None:
 _MERGE_MARKER = "dynaconf_merge"
 _MERGE_UNIQUE_MARKER = "dynaconf_merge_unique"
 _MERGE_TOKEN = "@merge"
+_MERGE_UNIQUE_TOKEN = "@merge_unique"
 
 
-def _parse_merge_token(value: str) -> Any:
-    """`@merge X`: X as YAML (`[a, b]`, `{k: v}`), or a comma-separated list."""
+def _parse_merge_token(value: str, token: str) -> Any:
+    """`@merge X` / `@merge_unique X`: X as YAML (`[a, b]`, `{k: v}`), or a
+    comma-separated list."""
     import yaml
 
-    rest = value[len(_MERGE_TOKEN) :].strip()
+    rest = value[len(token) :].strip()
     try:
         parsed = yaml.safe_load(rest) if rest else []
     except yaml.YAMLError:
@@ -96,17 +99,18 @@ def merge_settings_layers(base: Any, override: Any) -> Any:
     mapping with `dynaconf_merge: false` replaces instead of merging.
     """
     if isinstance(override, str) and override.strip().startswith(_MERGE_TOKEN):
-        override = _parse_merge_token(override.strip())
+        stripped = override.strip()
+        unique = stripped.startswith(_MERGE_UNIQUE_TOKEN)
+        override = _parse_merge_token(stripped, _MERGE_UNIQUE_TOKEN if unique else _MERGE_TOKEN)
         if isinstance(base, list) and isinstance(override, list):
-            return base + override
+            return _append_unique(base, override) if unique else base + override
         if isinstance(base, dict) and isinstance(override, dict):
             return merge_settings_layers(base, override)
         return override
     if isinstance(override, list):
         if _MERGE_UNIQUE_MARKER in override:
             items = [item for item in override if item != _MERGE_UNIQUE_MARKER]
-            prior = base if isinstance(base, list) else []
-            return prior + [item for item in items if item not in prior]
+            return _append_unique(base if isinstance(base, list) else [], items)
         if _MERGE_MARKER in override:
             items = [item for item in override if item != _MERGE_MARKER]
             return (base if isinstance(base, list) else []) + items
@@ -118,9 +122,28 @@ def merge_settings_layers(base: Any, override: Any) -> Any:
             return {k: merge_settings_layers(None, v) for k, v in override.items()}
         merged = dict(base)
         for key, value in override.items():
-            merged[key] = merge_settings_layers(merged.get(key), value)
+            # Dynaconf keys are case-insensitive: a later layer's TELEMETRY
+            # overrides an earlier telemetry (the earlier spelling is kept).
+            existing_key = _matching_key(merged, key)
+            target = key if existing_key is None else existing_key
+            merged[target] = merge_settings_layers(merged.get(target), value)
         return merged
     return override
+
+
+def _matching_key(mapping: Dict[Any, Any], key: Any) -> Any:
+    if key in mapping or not isinstance(key, str):
+        return key if key in mapping else None
+    lowered = key.lower()
+    return next((k for k in mapping if isinstance(k, str) and k.lower() == lowered), None)
+
+
+def _append_unique(base: List[Any], items: List[Any]) -> List[Any]:
+    result = list(base)
+    for item in items:
+        if item not in result:
+            result.append(item)
+    return result
 
 
 def _merged_settings_file(config_files: List[str]) -> Optional[str]:
@@ -153,21 +176,34 @@ def _merged_settings_file(config_files: List[str]) -> Optional[str]:
     return str(target)
 
 
-def _build_dynaconf(config_files: Optional[List[str]]) -> Dynaconf:
+def _build_dynaconf(config_files: Optional[List[str]]) -> Tuple[Dynaconf, Optional[str]]:
+    """Dynaconf over the merged layers, plus the merged file's path. The file
+    must outlive the instance (Dynaconf reads it lazily and again for
+    get_fresh); callers remove it with _remove_snapshot when done."""
     merged_file = _merged_settings_file(list(config_files or []))
-    return Dynaconf(
+    settings = Dynaconf(
         settings_files=[merged_file] if merged_file else [],
         environments=False,
         MERGE_ENABLED_FOR_DYNACONF=True,
         envvar_prefix="KINDLING",
     )
+    return settings, merged_file
+
+
+def _remove_snapshot(merged_file: Optional[str]) -> None:
+    if merged_file:
+        shutil.rmtree(Path(merged_file).parent, ignore_errors=True)
 
 
 def peek_settings_value(config_files: Optional[List[str]], key: str, default: Any = None) -> Any:
     """Read one value from explicit settings files, merged as the runtime does."""
     if not config_files:
         return default
-    return _build_dynaconf(config_files).get(key, default)
+    settings, merged_file = _build_dynaconf(config_files)
+    try:
+        return settings.get(key, default)
+    finally:
+        _remove_snapshot(merged_file)
 
 
 # Nested YAML keys mirrored into the flat keys older code reads.
@@ -314,7 +350,7 @@ class DynaconfConfig(ConfigService):
         # NOTE: environments=False because Kindling uses separate files (settings.yaml, development.yaml)
         # NOT environment blocks within files (default:, development:)
         self._settings_files = list(settings_files)
-        self.dynaconf = _build_dynaconf(settings_files)
+        self.dynaconf, self._settings_snapshot = _build_dynaconf(settings_files)
 
         # Step 1: Translate YAML (new → old) and add to config
         self._translate_yaml_to_flat()
@@ -323,6 +359,12 @@ class DynaconfConfig(ConfigService):
         self._translate_bootstrap_to_nested()
 
         _CONFIG_LOGGER.debug("DynaconfConfig initialized")
+
+    def _replace_dynaconf(self, config_files: List[str]) -> None:
+        """Swap in a Dynaconf over freshly merged files. The previous snapshot
+        is left for _reload to remove once the reload succeeds, since a
+        failed reload rolls back to the previous instance."""
+        self.dynaconf, self._settings_snapshot = _build_dynaconf(config_files)
 
     def _translate_yaml_to_flat(self):
         """Translate YAML's nested keys back to flat bootstrap keys"""
@@ -338,7 +380,8 @@ class DynaconfConfig(ConfigService):
         for new_key, old_key in reverse_mappings.items():
             value = self.dynaconf.get(new_key)
             if value is not None:
-                self.dynaconf.set(old_key, value)
+                # An alias mirrors the resolved value; never list-merge into it.
+                self.dynaconf.set(old_key, value, merge=False)
                 _CONFIG_LOGGER.debug("Reverse translation: %s -> %s = %s", new_key, old_key, value)
 
         try:
@@ -395,7 +438,7 @@ class DynaconfConfig(ConfigService):
             if self._dotted_key_in(nested, nested_key):
                 value = self.dynaconf.get(nested_key)
                 if value is not None:
-                    self.dynaconf.set(flat_key, value)
+                    self.dynaconf.set(flat_key, value, merge=False)
 
     @staticmethod
     def _dotted_key_in(tree: Dict[str, Any], dotted_key: str) -> bool:
@@ -611,6 +654,7 @@ class DynaconfConfig(ConfigService):
         with self._config_lock:
             old_config = self.get_all()
             old_dynaconf = self.dynaconf
+            old_snapshot = getattr(self, "_settings_snapshot", None)
 
             # Emit pre_reload signal
             if self.pre_reload_signal:
@@ -636,7 +680,7 @@ class DynaconfConfig(ConfigService):
                     # Reload Dynaconf with fresh files
                     _log_settings_files_load_order(config_files)
                     self._settings_files = list(config_files)
-                    self.dynaconf = _build_dynaconf(config_files)
+                    self._replace_dynaconf(config_files)
 
                     # Re-run translations
                     self._translate_yaml_to_flat()
@@ -645,7 +689,7 @@ class DynaconfConfig(ConfigService):
                     # Fallback: reload from existing temp files
                     _CONFIG_LOGGER.info("Reloading configuration from temp files")
                     # Re-merge the source files (the merged file is a snapshot).
-                    self.dynaconf = _build_dynaconf(getattr(self, "_settings_files", []))
+                    self._replace_dynaconf(getattr(self, "_settings_files", []))
                     self._translate_yaml_to_flat()
                     self._translate_bootstrap_to_nested()
 
@@ -678,10 +722,16 @@ class DynaconfConfig(ConfigService):
                     except Exception as e:
                         _CONFIG_LOGGER.warning("post_reload signal handler error: %s", e)
 
+                if self._settings_snapshot != old_snapshot:
+                    _remove_snapshot(old_snapshot)
                 return result
 
             except Exception as e:
                 # Rollback on failure
+                new_snapshot = getattr(self, "_settings_snapshot", None)
+                if new_snapshot != old_snapshot:
+                    _remove_snapshot(new_snapshot)
+                self._settings_snapshot = old_snapshot
                 self.dynaconf = old_dynaconf
                 error_msg = f"Config reload failed: {e}"
                 _CONFIG_LOGGER.error(error_msg)

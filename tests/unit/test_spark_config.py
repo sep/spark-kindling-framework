@@ -648,7 +648,7 @@ class TestConfigTranslation:
         # The layers are merged by Kindling into one file Dynaconf loads.
         [merged] = kwargs["settings_files"]
         assert "kindling-settings-" in merged
-        assert "databricks" in Path(merged).read_text()
+        assert not Path(merged).exists()  # a peek removes its snapshot
         assert kwargs["environments"] is False
         assert kwargs["MERGE_ENABLED_FOR_DYNACONF"] is True
         assert kwargs["envvar_prefix"] == "KINDLING"
