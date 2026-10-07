@@ -239,6 +239,16 @@ class EntityProviderRegistry:
         except ImportError:
             self.logger.debug("Current view provider not available")
 
+        # SQL entities (DataEntities.sql_entity) carry provider_type "view".
+        # Read-only: reads evaluate the declared SQL; the catalog view itself
+        # is created by `kindling migrate apply`, not by this provider.
+        try:
+            from .entity_provider_sql import SqlEntityProvider
+
+            self.register_provider("view", SqlEntityProvider)
+        except ImportError:
+            self.logger.debug("SQL entity provider not available")
+
         # API-based ADX provider (azure-kusto SDKs; the Spark-connector
         # variant lives in kindling_ext_adx under provider_type "adx")
         try:

@@ -1,108 +1,69 @@
 """
-SQL entity provider — manages permanent Spark catalog views.
+SQL entity provider: reads SQL-defined entities by evaluating their SQL.
 
-SQL entities are registered via ``@DataEntities.sql_entity(...)`` and are
-read-only.  The provider creates/replaces the catalog view on ``ensure_destination``
-and reads it like any other catalog table.
+SQL entities are registered via ``@DataEntities.sql_entity(...)`` and tagged
+``provider_type: "view"``. The ``EntityProviderRegistry`` maps that type to
+this provider, so a SQL entity can be a pipe input in the core runner.
 
-No write operations are supported; attempting them raises ``NotImplementedError``.
+Reads evaluate the entity's declared SQL (``spark.sql(entity.sql)``) instead
+of reading the published catalog view. That keeps a read independent of
+deployment DDL: the result matches the SQL the running code declares, and it
+works where ``kindling migrate apply`` has not run (or cannot persist a view,
+e.g. a standalone session catalog, or SQL over session temp views). Creating
+and replacing the permanent catalog view stays the job of
+``kindling migrate apply``.
+
+The provider is read-only. It implements no write or destination-ensuring
+interface, so capability checks (``is_writable``, ``can_ensure_destination``)
+report it as read-only, and the runner rejects a pipe that writes to a SQL
+entity before any DDL or write is issued.
 """
 
 from injector import inject
-from pyspark.sql import DataFrame
-
 from kindling.data_entities import EntityMetadata
-from kindling.entity_provider import BaseEntityProvider, DestinationEnsuringProvider
+from kindling.entity_provider import BaseEntityProvider
 from kindling.injection import GlobalInjector
 from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
+from pyspark.sql import DataFrame
 
 
 @GlobalInjector.singleton_autobind()
-class SqlEntityProvider(BaseEntityProvider, DestinationEnsuringProvider):
+class SqlEntityProvider(BaseEntityProvider):
     """
-    Read-only entity provider backed by a permanent Spark catalog view.
+    Read-only provider for SQL-defined entities (``provider_type: "view"``).
 
-    ``ensure_destination`` issues ``CREATE OR REPLACE VIEW name AS <sql>``.
-    ``read_entity`` reads the view as a batch DataFrame via ``spark.read.table``.
+    ``read_entity`` returns ``spark.sql(entity.sql)`` as a batch DataFrame.
+    ``check_entity_exists`` reports whether that SQL resolves (every table
+    or view it references exists).
     """
 
     @inject
     def __init__(self, tp: PythonLoggerProvider):
         self._logger = tp.get_logger("SqlEntityProvider")
 
-    # ------------------------------------------------------------------
-    # BaseEntityProvider
-    # ------------------------------------------------------------------
-
     def read_entity(self, entity_metadata: EntityMetadata) -> DataFrame:
-        if not entity_metadata.is_sql_entity:
-            raise ValueError(
-                f"SqlEntityProvider cannot read non-SQL entity '{entity_metadata.entityid}'. "
-                "Use DeltaEntityProvider for Delta entities."
-            )
-        spark = get_or_create_spark_session()
-        view_name = self._view_name(entity_metadata)
-        self._logger.debug(
-            f"Reading SQL entity '{entity_metadata.entityid}' from view '{view_name}'"
-        )
-        return spark.read.table(view_name)
+        self._require_sql_entity(entity_metadata)
+        self._logger.debug(f"Reading SQL entity '{entity_metadata.entityid}' by evaluating its SQL")
+        return get_or_create_spark_session().sql(entity_metadata.sql)
 
     def check_entity_exists(self, entity_metadata: EntityMetadata) -> bool:
-        spark = get_or_create_spark_session()
-        view_name = self._view_name(entity_metadata)
+        """True when the entity's SQL resolves. Spark analyzes the query
+        eagerly in ``spark.sql`` without running a job, so a missing
+        table or view surfaces here as an analysis error."""
+        self._require_sql_entity(entity_metadata)
         try:
-            spark.sql(f"DESCRIBE {view_name}")
+            get_or_create_spark_session().sql(entity_metadata.sql)
             return True
-        except Exception:
+        except Exception as e:
+            self._logger.debug(f"SQL entity '{entity_metadata.entityid}' does not resolve: {e}")
             return False
 
-    # ------------------------------------------------------------------
-    # DestinationEnsuringProvider
-    # ------------------------------------------------------------------
-
-    def ensure_destination(self, entity_metadata: EntityMetadata) -> None:
-        """Create or replace the catalog view from the entity's SQL definition."""
+    @staticmethod
+    def _require_sql_entity(entity_metadata: EntityMetadata) -> None:
         if not entity_metadata.is_sql_entity:
             raise ValueError(
-                f"SqlEntityProvider.ensure_destination called on non-SQL entity "
-                f"'{entity_metadata.entityid}'."
+                f"SqlEntityProvider cannot read non-SQL entity '{entity_metadata.entityid}': "
+                "provider_type 'view' is reserved for entities declared with "
+                "DataEntities.sql_entity()."
             )
-        spark = get_or_create_spark_session()
-        view_name = self._view_name(entity_metadata)
-        self._logger.info(f"Ensuring view '{view_name}' for entity '{entity_metadata.entityid}'")
-        namespace = self._view_namespace(view_name)
-        if namespace:
-            try:
-                spark.sql(f"CREATE SCHEMA IF NOT EXISTS {namespace}")
-            except Exception as e:
-                self._logger.warning(
-                    f"Unable to ensure schema '{namespace}' exists for view '{view_name}': {e}"
-                )
-        spark.sql(f"CREATE OR REPLACE VIEW {view_name} AS {entity_metadata.sql}")
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
-    def _view_name(self, entity_metadata: EntityMetadata) -> str:
-        """Resolve the catalog view name from entity tags or entity name."""
-        return entity_metadata.tags.get("provider.table_name") or entity_metadata.name
-
-    def _view_namespace(self, view_name: str) -> str:
-        """Return the namespace portion of a qualified view name, or empty string if unqualified."""
-        parts = []
-        current = []
-        in_backticks = False
-        for char in view_name:
-            if char == "`":
-                in_backticks = not in_backticks
-                current.append(char)
-            elif char == "." and not in_backticks:
-                parts.append("".join(current).strip())
-                current = []
-            else:
-                current.append(char)
-        if current:
-            parts.append("".join(current).strip())
-        return ".".join(parts[:-1]) if len(parts) >= 2 else ""

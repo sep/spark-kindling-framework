@@ -362,3 +362,44 @@ def test_write_mode_insert_requires_merge_capable_provider():
     persist, _ = _make_strategy(dst_entity, out_provider)
     with pytest.raises(ValueError, match="does not support merge"):
         persist(Mock(name="df"))
+
+
+def test_sql_entity_output_rejected_as_read_only_before_probing():
+    """A SQL entity's provider (provider_type 'view') has no write
+    capability: the persist path rejects it with an error naming the
+    entity, before probing the destination or writing anything."""
+    from kindling.entity_provider_sql import SqlEntityProvider
+
+    dst_entity = Mock(
+        entityid="entity.dst",
+        tags={"provider_type": "view"},
+        merge_columns=[],
+        is_sql_entity=True,
+    )
+    out_provider = Mock(spec=SqlEntityProvider)
+
+    persist, strategy = _make_strategy(dst_entity, out_provider)
+    emitted = _capture_emitted_signals(strategy)
+    with pytest.raises(ValueError) as excinfo:
+        persist(Mock(name="df"))
+
+    message = str(excinfo.value)
+    assert "Entity 'entity.dst' is read-only" in message
+    assert "provider 'view' does not support write operations" in message
+    assert "SQL entity" in message
+    out_provider.check_entity_exists.assert_not_called()
+    assert "persist.persist_failed" in emitted
+    assert "persist.after_persist" not in emitted
+
+
+def test_read_only_provider_output_rejected_without_sql_hint():
+    dst_entity = Mock(entityid="entity.dst", tags={"provider_type": "csv"}, merge_columns=[])
+    out_provider = Mock(spec=BaseEntityProvider)
+
+    persist, _ = _make_strategy(dst_entity, out_provider)
+    with pytest.raises(ValueError) as excinfo:
+        persist(Mock(name="df"))
+
+    message = str(excinfo.value)
+    assert "provider 'csv' does not support write operations" in message
+    assert "SQL entity" not in message

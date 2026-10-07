@@ -44,6 +44,21 @@ def _is_local_execution() -> bool:
         return False
 
 
+def _read_only_output_error(output_entity) -> ValueError:
+    """Error for a pipe whose output entity's provider cannot write."""
+    provider_type = (output_entity.tags or {}).get("provider_type", "unknown")
+    message = (
+        f"Entity '{output_entity.entityid}' is read-only: provider "
+        f"'{provider_type}' does not support write operations"
+    )
+    if getattr(output_entity, "is_sql_entity", False) is True:
+        message += (
+            ". It is a SQL entity (DataEntities.sql_entity), defined by its SQL; "
+            "write to a table-backed entity and select from that in the SQL instead"
+        )
+    return ValueError(message)
+
+
 def _apply_df_transforms(results, df):
     """Return the last non-None DataFrame returned by any signal subscriber."""
     if results:
@@ -353,6 +368,14 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
 
             from kindling.entity_provider import WritableEntityProvider
 
+            # A provider with no write capability at all (SQL entities,
+            # csv, eventhub, ...) cannot take a pipe output. Reject before
+            # probing the destination.
+            if not isinstance(output_provider, WritableEntityProvider) and not hasattr(
+                output_provider, "merge_to_entity"
+            ):
+                raise _read_only_output_error(output_entity)
+
             if output_provider.check_entity_exists(output_entity):
                 # Merge (Delta-specific), fall back to append for other providers
                 if write_mode != "append" and hasattr(output_provider, "merge_to_entity"):
@@ -371,18 +394,12 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                         )
                     output_provider.append_to_entity(df, output_entity)
                 else:
-                    provider_type = (output_entity.tags or {}).get("provider_type", "unknown")
-                    raise ValueError(
-                        f"Provider '{provider_type}' does not support write operations"
-                    )
+                    raise _read_only_output_error(output_entity)
             else:
                 if isinstance(output_provider, WritableEntityProvider):
                     output_provider.write_to_entity(df, output_entity)
                 else:
-                    provider_type = (output_entity.tags or {}).get("provider_type", "unknown")
-                    raise ValueError(
-                        f"Provider '{provider_type}' does not support write operations"
-                    )
+                    raise _read_only_output_error(output_entity)
 
             duration = time.time() - start_time
             self.emit(
