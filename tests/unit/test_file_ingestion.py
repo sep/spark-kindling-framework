@@ -683,3 +683,56 @@ def test_write_table_group_rejects_provider_without_append():
         proc._write_table_group("ref.lookup", [(MagicMock(), {"filename": "a.csv"})])
 
     proc.emit.assert_not_called()
+
+
+def _parallel_processor(fail_for):
+    """A processor whose batch phase plans two destination tables and whose
+    table writes fail for the ids in fail_for."""
+    from kindling.file_ingestion import ParallelizingFileIngestionProcessor
+    from kindling.trace_ops import TracingGates
+
+    proc = object.__new__(ParallelizingFileIngestionProcessor)
+    proc.logger = MagicMock()
+    proc.tp = MagicMock()
+    proc._trace_gates = TracingGates(False, "standard")
+    proc.emit = MagicMock()
+    proc.config = MagicMock()
+    proc.config.get.return_value = 3  # max_parallel_tables
+    proc.env = MagicMock()
+    proc.env.list.return_value = ["a.csv", "b.csv"]
+    entry = _make_entry([".*"])
+    proc.fir = MagicMock()
+    proc.fir.get_entry_ids.return_value = ["e1"]
+    proc.fir.get_entry_definition.return_value = entry
+    proc._build_df_plan = lambda fn, path, transform: (f"dest_{fn[0]}", MagicMock(), {})
+    written = []
+
+    def write(dest_entity_id, df_list, movepath):
+        if dest_entity_id in fail_for:
+            raise RuntimeError(f"boom {dest_entity_id}")
+        written.append(dest_entity_id)
+
+    proc._write_table_group = write
+    proc._process_autoloader_entries = lambda path, movepath, transform: (0, 0, 0)
+    return proc, written
+
+
+def test_parallel_table_write_failure_fails_the_run():
+    """A failed table write in the parallel path used to be only logged, so
+    process_path reported success; it must raise like the sequential path."""
+    proc, written = _parallel_processor(fail_for={"dest_b"})
+
+    with pytest.raises(RuntimeError, match="failed to write 1 of 2 tables: dest_b") as excinfo:
+        proc.process_path("/data")
+
+    assert written == ["dest_a"]  # the other table still finished
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    emitted = [call.args[0] for call in proc.emit.call_args_list]
+    assert "file_ingestion.process_failed" in emitted
+    assert "file_ingestion.after_process" not in emitted
+
+
+def test_parallel_table_writes_succeed():
+    proc, written = _parallel_processor(fail_for=set())
+    proc.process_path("/data")
+    assert sorted(written) == ["dest_a", "dest_b"]

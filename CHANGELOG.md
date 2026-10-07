@@ -26,6 +26,30 @@ All notable changes to spark-kindling are documented here.
   also writes in. `--force` is gone; `--check` exits 1 when files are stale.
 ### Fixed
 
+- **`kindling app run <name> --platform` submits the deployed name.** `app
+  deploy my-app` deploys under the app folder's name (`my_app`), but `app run
+  my-app --platform` submitted `my-app`, which doesn't exist remotely. A remote
+  run now resolves its argument the way `deploy` does: the folder's name
+  (falling back to snake_case when the folder isn't available locally).
+  Docs and the agent skill use the folder name in every deploy/run example.
+- **File ingestion honours its options and the destination's provider.**
+  `FileIngestionEntries.entry(filetype=..., infer_schema=...)` were ignored on
+  the batch path; every pattern was ignored but the first; and files were
+  always appended through Delta whatever the destination entity's
+  `provider_type`. Now the format is a `filetype` named group if the pattern
+  has one, else `filetype=`, else csv; `infer_schema` is passed to the reader;
+  patterns are tried in order (first match wins; an empty list or invalid
+  regex is rejected); and data is appended through the destination entity's
+  own provider. `kindling package add ingestion` no longer tags the
+  destination entity `provider_type: csv`. **Default change**: `infer_schema`
+  now defaults to `False` (it was documented as `True` but had no effect, so
+  existing entries keep reading string columns); pass `infer_schema=True` to
+  infer types.
+- **File ingestion no longer reports success when a table write fails.** With
+  `ingestion.max_parallel_tables > 1`, a failed table write was only logged
+  and `process_path` completed normally, silently skipping that table's data.
+  It now lets the other in-flight tables finish, then raises an error naming
+  every table that failed (the sequential path already failed the run).
 - **Deployed apps register their packages' entities and pipes.** On a
   cloud platform, an app's `lake-reqs.txt` packages were installed and only
   their top-level module imported. A package laid out as `kindling package

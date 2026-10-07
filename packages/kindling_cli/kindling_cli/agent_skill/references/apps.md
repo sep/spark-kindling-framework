@@ -102,7 +102,7 @@ Rules for app.py:
 **app.yaml** is the manifest:
 
 ```yaml
-name: daily-orders        # kebab-case display/remote name; directory is apps/daily_orders
+name: daily-orders        # display name; deploy and run use the folder name, daily_orders
 entry_point: app.py       # default app.py
 # optional, read when packaging: description, version, dependencies, environment, metadata
 ```
@@ -206,9 +206,11 @@ kindling app run daily_orders --param report_date=2024-01-15 --trace
   `kindling app run apps/<app>`, or an absolute path. A name is normalized to
   snake_case and resolved by walking up from the current directory to
   `apps/<app>/`. Use `--local-folder <dir>` for other layouts.
-- With `--platform`, a name is the deployed app name, used as given; a path
-  runs the app deployed under that directory's name (what `app deploy` names it
-  by default). Nothing is uploaded, so deploy first.
+- With `--platform`, APP resolves to the name `app deploy` deploys under: the
+  app folder's name (`daily-orders` and `daily_orders` both submit
+  `daily_orders`; a path uses its directory name). Use the folder name in
+  commands. Nothing is uploaded, so deploy first; `--app-name` targets a custom
+  deployed name.
 - The `APP_NAME` argument to `app inspect` is only a display label. The app
   itself is still found through `--app` or the current directory.
 - Fixture CSVs at `tests/entities/<ns>/<name>.csv` are resolved **relative to the
@@ -227,9 +229,9 @@ Each command gets one line here. Run `--help` or see
 ```bash
 kindling package check sales-core              # metadata, src layout, wheel builds
 kindling package deploy sales-core --artifacts-path /Volumes/main/kindling/artifacts   # build wheel -> <artifacts>/packages/
-kindling app package daily-orders --platform databricks --env prod   # -> dist/<app-dir>.kda
-kindling app deploy daily-orders --platform databricks --env prod    # upload app to <artifacts>/data-apps/<name>/
-kindling app run daily-orders --platform databricks --env prod       # run the deployed app remotely
+kindling app package daily_orders --platform databricks --env prod   # -> dist/<app-dir>.kda
+kindling app deploy daily_orders --platform databricks --env prod    # upload app to <artifacts>/data-apps/<name>/
+kindling app run daily_orders --platform databricks --env prod       # run the deployed app remotely
 kindling runner register --app daily-orders --platform databricks    # named job for external orchestrators
 kindling bundle build --name sales --target dev --app daily-orders   # Databricks Lakeflow bundle (deploy with databricks CLI)
 ```

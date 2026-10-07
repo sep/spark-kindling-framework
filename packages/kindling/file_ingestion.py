@@ -570,12 +570,24 @@ class ParallelizingFileIngestionProcessor(FileIngestionProcessor, SignalEmitter)
                                 for dest_entity_id, df_list in df_plans.items()
                             }
 
+                            failures = []
                             for future in as_completed(futures):
                                 dest_entity_id = futures[future]
                                 try:
                                     future.result()
                                 except Exception as e:
                                     self.logger.error(f"Failed to write {dest_entity_id}: {e}")
+                                    failures.append((dest_entity_id, e))
+
+                        # Like the sequential path, a failed table write fails
+                        # the run (after the other tables in flight finish)
+                        # instead of reporting success.
+                        if failures:
+                            names = ", ".join(sorted(name for name, _ in failures))
+                            raise RuntimeError(
+                                f"File ingestion failed to write {len(failures)} of "
+                                f"{len(df_plans)} tables: {names}"
+                            ) from failures[0][1]
 
                     tables_written = len(df_plans)
 

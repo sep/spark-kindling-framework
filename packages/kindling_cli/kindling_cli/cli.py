@@ -4942,6 +4942,26 @@ def _resolve_app_dir_from_path(app: str) -> Path:
     return resolved
 
 
+def _remote_app_name(app: str) -> str:
+    """The deployed name for `app run --platform`'s APP argument, resolved the
+    way `app deploy` names an app: by its folder name. A path names its
+    folder; a name finds apps/<snake_name>/ by convention, and when that
+    folder isn't available locally (e.g. running outside the repo) falls back
+    to the snake_case form `app deploy` would have used. So `my-app` and
+    `my_app` both submit `my_app`."""
+    from kindling_cli.scaffold import validate_name
+
+    if _looks_like_app_path(app):
+        return _default_app_name(_resolve_app_dir_from_path(app))
+    try:
+        return _default_app_name(_resolve_by_convention(app, "apps", "app"))
+    except click.ClickException:
+        try:
+            return validate_name(app)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+
 def _resolve_app_run_dir(app: str) -> Path:
     """Resolve `app run`'s APP argument to a local app directory.
 
@@ -5669,12 +5689,10 @@ def app_run(
     if load_lake:
         raise click.ClickException("--load-lake is only valid for standalone app runs.")
 
-    # Remote runs submit an already-deployed app by name (nothing is uploaded).
-    # A path argument names the app the way `app deploy` does by default: by
-    # its directory name. --app-name, when given, wins either way.
-    remote_app_ref = app
-    if not app_name and _looks_like_app_path(app):
-        remote_app_ref = _default_app_name(_resolve_app_dir_from_path(app))
+    # Remote runs submit an already-deployed app by name (nothing is uploaded),
+    # so APP must resolve to the name `app deploy` deployed it under: the app
+    # folder's name. --app-name, when given, wins either way.
+    remote_app_ref = app if app_name else _remote_app_name(app)
     _run_remote_app(
         remote_app_ref,
         app_name,

@@ -435,7 +435,7 @@ Or from repo root, by path or by name (`apps/<name>/` by convention):
 
 ```bash
 kindling app run apps/my_domain_app --env local
-kindling app run my-domain-app --env local
+kindling app run my_domain_app --env local
 ```
 
 Pass runtime parameters:
@@ -453,7 +453,7 @@ uv run kindling app run . --env local --parameters params.yaml
 ### Package into a `.kda` archive
 
 ```bash
-kindling app package my-domain-app \
+kindling app package my_domain_app \
     --local-folder apps/my_domain_app \
     --output dist/my-domain-app.kda
 ```
@@ -461,7 +461,7 @@ kindling app package my-domain-app \
 ### Deploy to the platform
 
 ```bash
-kindling app deploy my-domain-app \
+kindling app deploy my_domain_app \
     --local-folder apps/my_domain_app \
     --platform fabric
 ```
@@ -469,7 +469,7 @@ kindling app deploy my-domain-app \
 ### Run remotely
 
 ```bash
-kindling app run my-domain-app \
+kindling app run my_domain_app \
     --platform fabric \
     --env prod
 ```
@@ -559,9 +559,9 @@ kindling pipeline run silver.orders --app apps/my_domain_app/app.py --env local
 kindling app run apps/my_domain_app --env local
 
 # 7 — Ship
-kindling app package my-domain-app --local-folder apps/my_domain_app --output dist/my-domain-app.kda
-kindling app deploy my-domain-app --local-folder apps/my_domain_app --platform fabric
-kindling app run my-domain-app --platform fabric --env prod
+kindling app package my_domain_app --local-folder apps/my_domain_app --output dist/my-domain-app.kda
+kindling app deploy my_domain_app --local-folder apps/my_domain_app --platform fabric
+kindling app run my_domain_app --platform fabric --env prod
 ```
 
 ---

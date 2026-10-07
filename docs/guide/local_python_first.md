@@ -197,19 +197,19 @@ standalone platform. The positional argument is the app name; kindling discovers
 
 ```bash
 # From the repo root — convention lookup finds apps/my_pipeline/
-kindling app run my-pipeline
-kindling app run my-pipeline --env local
+kindling app run my_pipeline
+kindling app run my_pipeline --env local
 
 # Non-standard layout: override the lookup with --local-folder
-kindling app run my-pipeline --local-folder path/to/app-dir
+kindling app run my_pipeline --local-folder path/to/app-dir
 ```
 
 When you want the app to import checked-out package code instead of an installed
 or artifact-backed wheel, pass one or more local package roots:
 
 ```bash
-kindling app run my-pipeline --local-package packages/my_pipeline
-kindling app run my-pipeline --local-package packages/my_pipeline --local-package packages/shared_domain
+kindling app run my_pipeline --local-package packages/my_pipeline
+kindling app run my_pipeline --local-package packages/my_pipeline --local-package packages/shared_domain
 ```
 
 Each `--local-package` path may point at a package root with a `src/` directory
@@ -371,17 +371,17 @@ The CLI covers the full local-to-remote app lifecycle using app names as convent
 
 ```bash
 # Package apps/my_pipeline/ into a .kda archive
-kindling app package my-pipeline
+kindling app package my_pipeline
 
 # Deploy apps/my_pipeline/ to a remote platform
-kindling app deploy my-pipeline --platform fabric
+kindling app deploy my_pipeline --platform fabric
 
 # Run all registered pipes locally with standalone Spark
-kindling app run my-pipeline
+kindling app run my_pipeline
 
 # Run an already-deployed app remotely (deploy must come first)
-kindling app deploy my-pipeline --platform synapse
-kindling app run my-pipeline --platform synapse
+kindling app deploy my_pipeline --platform synapse
+kindling app run my_pipeline --platform synapse
 kindling app status <run-id> --platform synapse
 kindling app logs <run-id> --platform synapse
 ```
@@ -389,7 +389,7 @@ kindling app logs <run-id> --platform synapse
 Non-standard layouts can always override convention lookup with `--local-folder`:
 
 ```bash
-kindling app deploy my-pipeline --local-folder path/to/app --platform fabric
+kindling app deploy my_pipeline --local-folder path/to/app --platform fabric
 kindling package deploy my-package --local-folder path/to/package
 ```
 

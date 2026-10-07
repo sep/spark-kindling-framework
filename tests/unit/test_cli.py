@@ -2926,16 +2926,43 @@ class TestAppRunTargetResolution:
         assert api.submit_app_run.call_args.args[0] == "my_app"
         api.deploy_app.assert_not_called()
 
-    def test_remote_name_is_submitted_verbatim(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("typed", ["my-app", "my_app"])
+    def test_remote_name_matches_deployed_folder_name(self, tmp_path, monkeypatch, typed):
+        """`app deploy my-app` deploys under the folder name (my_app), so
+        `app run my-app --platform` must submit my_app, not my-app."""
+        repo, _app_dir = self._repo_with_app(tmp_path)
         api = self._fake_remote(monkeypatch)
-        monkeypatch.chdir(tmp_path)
+        monkeypatch.chdir(repo)
+
+        result = CliRunner().invoke(cli, ["app", "run", typed, "--platform", "fabric", "--no-wait"])
+
+        assert result.exit_code == 0, result.output
+        assert api.submit_app_run.call_args.args[0] == "my_app"
+
+    def test_remote_name_without_local_repo_uses_snake_case(self, tmp_path, monkeypatch):
+        api = self._fake_remote(monkeypatch)
+        monkeypatch.chdir(tmp_path)  # no apps/ folder here
 
         result = CliRunner().invoke(
-            cli, ["app", "run", "orders", "--platform", "fabric", "--no-wait"]
+            cli, ["app", "run", "daily-orders", "--platform", "fabric", "--no-wait"]
         )
 
         assert result.exit_code == 0, result.output
-        assert api.submit_app_run.call_args.args[0] == "orders"
+        assert api.submit_app_run.call_args.args[0] == "daily_orders"
+
+    def test_remote_name_matches_deploy_default(self, tmp_path, monkeypatch):
+        """deploy and run agree on the remote name for the same typed name."""
+        from kindling_cli.cli import (
+            _default_app_name,
+            _remote_app_name,
+            _resolve_by_convention,
+        )
+
+        repo, _app_dir = self._repo_with_app(tmp_path)
+        monkeypatch.chdir(repo)
+        for typed in ("my-app", "my_app"):
+            deployed = _default_app_name(_resolve_by_convention(typed, "apps", "app"))
+            assert _remote_app_name(typed) == deployed == "my_app"
 
     def test_remote_app_name_overrides_path(self, tmp_path, monkeypatch):
         api = self._fake_remote(monkeypatch)

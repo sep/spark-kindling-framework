@@ -335,18 +335,19 @@ match = re.match(r"sales_(?P<region>[a-z]+)_(?P<report_date>\d{8})\.csv", "sales
 assert match.groupdict() == {"region": "west", "report_date": "20260101"}
 ```
 
-- Only `patterns[0]` is used. It is matched with `re.match`, so it is anchored at
-  the start, against the **file name** and not the full path.
+- Every pattern is tried in order with `re.match` (anchored at the start)
+  against the **file name**, not the full path; the first match wins. An empty
+  list, a bare string or an invalid regex is rejected.
 - Each named group becomes a string column, `static_values={...}` adds constant
   columns, and an `ingestion_timestamp` column is always added.
   `dest_entity_id` is `.format(**groups)`, so a single entry can route to
   several entities.
-- Files are read with `header=true` and `inferSchema=false`. The format is taken
-  from a `filetype` named group, and defaults to `csv`. In the batch path the
-  `filetype=` and `infer_schema=` arguments are recorded but not used.
+- Files are read with `header=true`; `inferSchema` follows `infer_schema=`
+  (default `False`, batch path only). The format is a `filetype` named group if
+  the pattern has one, else the `filetype=` argument, else `csv`.
 - Files bound for the same entity are unioned by name and then **appended**
-  through the default `EntityProvider` (Delta). Declare the destination entity
-  before running.
+  through the destination entity's own provider (its `provider_type` tag,
+  default delta). Declare the destination entity before running.
 - `discovery="autoloader"` requires `source_glob` plus the
   `kindling_ext_databricks_autoloader` extension and
   `kindling.storage.checkpoint_root`.
@@ -369,9 +370,9 @@ kindling app validate --app apps/sales_batch/app.py
   command also writes skip-marked test stubs and `tests/entities/<ns>/<name>.csv`
   fixture stubs for the inputs.
 - `package add ingestion` writes `pipes/<ns>_<name>_ingestion.py`, even though
-  `ingestion/` is also auto-imported. It also writes a destination entity with
-  `provider_type: csv`. Ingestion appends through the default Delta provider
-  anyway, so set the entity's provider to match where the data really lands.
+  `ingestion/` is also auto-imported. It also declares the destination entity
+  with no `provider_type` (default delta); ingestion writes through whatever
+  provider that entity declares.
 - `pipeline run` runs exactly one pipe with `run_datapipes` (batch, no DAG) and
   needs `settings.yaml` in the cwd, `--app` or `--config`. `--env` only selects
   the config overlay. It always runs locally.

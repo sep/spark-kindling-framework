@@ -533,8 +533,10 @@ convention (walking up from the current directory); a path runs that directory. 
 with embedded Spark. Use `--local-folder` to override for non-standard layouts.
 
 **Remote** (`--platform databricks|fabric|synapse`): submits a run of the already-deployed app;
-nothing is uploaded. A name is the deployed app name, used as given. A path selects the app
-deployed under that directory's name (the name `kindling app deploy` uses by default).
+nothing is uploaded. APP resolves to the name `kindling app deploy` deploys under: the app
+folder's name. A name finds `apps/<snake_name>/` (so `my-app` and `my_app` both submit
+`my_app`), falling back to the snake_case form when the folder isn't available locally; a
+path uses that directory's name. Use `--app-name` for an app deployed under a custom name.
 The app must have been deployed first with `kindling app deploy`. `--local-folder` has no meaning
 for remote runs and will error.
 
@@ -564,15 +566,15 @@ kindling app run .
 kindling app run apps/my_pipeline
 
 # Local standalone — convention lookup
-kindling app run my-pipeline
-kindling app run my-pipeline --local-package packages/my_pipeline --env local
+kindling app run my_pipeline
+kindling app run my_pipeline --local-package packages/my_pipeline --env local
 
 # Local standalone — non-standard layout
-kindling app run my-pipeline --local-folder path/to/app
+kindling app run my_pipeline --local-folder path/to/app
 
 # Remote — deploy first, then run
-kindling app deploy my-pipeline --platform synapse
-kindling app run my-pipeline --platform synapse
+kindling app deploy my_pipeline --platform synapse
+kindling app run my_pipeline --platform synapse
 ```
 
 ### `app status <RUN_ID>`

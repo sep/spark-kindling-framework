@@ -227,7 +227,7 @@ uv run kindling app run . --env local
 Or from the repo root (`kindling app run` finds `apps/my_domain_app/` by convention):
 
 ```bash
-kindling app run my-domain-app --env local
+kindling app run my_domain_app --env local
 ```
 
 Pass runtime parameters:
