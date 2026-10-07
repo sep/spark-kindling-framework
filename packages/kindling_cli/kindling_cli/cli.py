@@ -3005,6 +3005,22 @@ def _uv_add_url(
 
 
 _KINDLING_SOURCE_CHOICES = ("auto", "pypi", "github")
+# Distributions this repository publishes to PyPI; must match
+# scripts/select_pypi_dists.sh (a unit test checks). Every other Kindling
+# name is pinned to its release wheel URL whatever --source says: a matching
+# name on PyPI that this repository does not own must never be installed.
+_PYPI_PUBLISHED_DISTRIBUTIONS = frozenset(
+    {
+        "spark-kindling",
+        "spark-kindling-cli",
+        "spark-kindling-sdk",
+        "spark-kindling-ext-databricks",
+        "spark-kindling-ext-sdp",
+        "spark-kindling-ext-cosmos",
+        "spark-kindling-ext-temporal",
+        "spark-kindling-ext-otel-azure",
+    }
+)
 _pypi_release_cache: Dict[Tuple[str, str], bool] = {}
 
 
@@ -3043,15 +3059,19 @@ def _uv_pin_kindling(
     """Pin one Kindling package from a release in project_path's pyproject.
 
     `wheel` is a release asset entry ({"distribution", "version", "url"}).
-    With source "pypi" -- or "auto" when that version is on PyPI -- this
-    writes a version pin (`uv add <dist>==<version>`), first removing any
+    For a distribution this repository publishes to PyPI, with source "pypi"
+    -- or "auto" when that version is on PyPI -- this writes a version pin (`uv add <dist>==<version>`), first removing any
     [tool.uv.sources] URL override, which `uv add` would otherwise keep and
-    let win. Otherwise it pins the release wheel URL. Returns "pypi" or
+    let win. Otherwise (including any GitHub-only distribution) it pins the
+    release wheel URL. Returns "pypi" or
     "github" for the caller's message.
     """
     distribution = wheel["distribution"]
     version = wheel["version"]
-    use_pypi = source == "pypi" or (source == "auto" and _published_on_pypi(distribution, version))
+    official = _canonical_distribution_name(distribution) in _PYPI_PUBLISHED_DISTRIBUTIONS
+    use_pypi = official and (
+        source == "pypi" or (source == "auto" and _published_on_pypi(distribution, version))
+    )
     if not use_pypi:
         if not wheel.get("url"):
             raise click.ClickException(

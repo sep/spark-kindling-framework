@@ -15,6 +15,8 @@ All notable changes to spark-kindling are documented here.
   through PyPI trusted publishing; release candidates go to TestPyPI.
   GitHub Releases keep carrying the same wheels; sdists are published to
   PyPI only.
+  The upload refuses a package whose files changed under an already
+  published version (bump the extension's version when its code changes).
 - `kindling env update` / `env add` / `env bootstrap` take `--source
   auto|pypi|github`.
 
@@ -26,6 +28,8 @@ All notable changes to spark-kindling are documented here.
   by URL. `kindling env update` / `env add` / `env bootstrap` write version
   pins for any package version on PyPI and fall back to the release wheel URL
   otherwise; running `kindling env update` on a URL-pinned project converts it.
+  Only the packages this repository publishes are ever pinned from PyPI; the
+  GitHub-only extensions always pin their release wheel URL.
 - The devcontainer image's lazy `kindling` shim installs the CLI from PyPI,
   falling back to the GitHub release.
 - Package metadata on PyPI: project URLs, classifiers and keywords; README

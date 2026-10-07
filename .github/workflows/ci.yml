@@ -1071,6 +1071,11 @@ jobs:
       - name: Select distributions published to PyPI
         run: bash scripts/select_pypi_dists.sh dist pypi-dist
 
+      - name: Refuse changed files under an existing version
+        run: >-
+          python3 scripts/check_pypi_artifacts.py pypi-dist
+          ${{ needs.publish-release.outputs.is_prerelease == 'true' && 'https://test.pypi.org' || 'https://pypi.org' }}
+
       - name: Publish to TestPyPI
         if: needs.publish-release.outputs.is_prerelease == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1

@@ -141,8 +141,10 @@ job and set up its trusted publisher (below).
   stored anywhere.
 - **Unchanged extensions**: extensions keep their version across Kindling
   releases, so an unchanged one is already on the index and is skipped
-  (`skip-existing`), not an error. That also means a changed extension whose
-  version was not bumped is silently not uploaded: bump the extension's
+  (`skip-existing`), not an error. Builds are reproducible, so the job first
+  compares every file against the one already on the index
+  (`scripts/check_pypi_artifacts.py`) and fails if they differ: an
+  extension whose code changed without a version bump. Bump the extension's
   version whenever its code changes.
 - **If the job fails** after the GitHub release is published, fix the cause
   and re-run the failed job; the GitHub release is not affected. Until it
@@ -160,7 +162,8 @@ keep PyPI as an extra index):
 ```bash
 pip install --index-url https://test.pypi.org/simple/ \
     --extra-index-url https://pypi.org/simple/ \
-    'spark-kindling[standalone]==0.14.0rc1' spark-kindling-cli==0.14.0rc1
+    'spark-kindling[standalone]==0.14.0rc1' spark-kindling-cli==0.14.0rc1 \
+    spark-kindling-sdk==0.14.0rc1
 ```
 
 `KINDLING_PYPI_URL=https://test.pypi.org` points the CLI's "is this version
@@ -223,8 +226,9 @@ projects). Do this once, before tagging that candidate.
    on.
 
 Then `poe release` the candidate as usual. Its `publish-pypi` job finds the
-files already uploaded and skips them (`skip-existing`), so the candidate's
-files on PyPI are the locally built ones; every later release is uploaded by
+files already uploaded and skips them (`skip-existing`; builds are
+reproducible, so its files match the ones you uploaded); every later release
+is uploaded by
 CI. A package added to PyPI later needs the same bootstrap: one manual upload,
 then the publisher.
 
