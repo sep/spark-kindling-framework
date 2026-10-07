@@ -115,7 +115,7 @@ class SynapseAPI(PlatformAPI):
             - SYNAPSE_SPARK_POOL_NAME
             - AZURE_STORAGE_ACCOUNT (for file uploads)
             - AZURE_CONTAINER (default: "artifacts")
-            - AZURE_BASE_PATH (default: "system-tests")
+            - AZURE_BASE_PATH (default: "", the container root -- same as the CLI)
 
         Returns:
             SynapseAPI client instance
@@ -135,7 +135,7 @@ class SynapseAPI(PlatformAPI):
             spark_pool_name=os.getenv("SYNAPSE_SPARK_POOL_NAME"),
             storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
             container=os.getenv("AZURE_CONTAINER", "artifacts"),
-            base_path=os.getenv("AZURE_BASE_PATH", "system-tests"),
+            base_path=os.getenv("AZURE_BASE_PATH", ""),
         )
 
     def get_platform_name(self) -> str:

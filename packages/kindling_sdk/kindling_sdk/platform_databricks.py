@@ -190,7 +190,7 @@ class DatabricksAPI(PlatformAPI):
               <volume>/kindling; takes precedence over AZURE_STORAGE_ACCOUNT)
             - AZURE_STORAGE_ACCOUNT (for file uploads)
             - AZURE_CONTAINER (default: "artifacts")
-            - AZURE_BASE_PATH (default: "system-tests")
+            - AZURE_BASE_PATH (default: "", the container root -- same as the CLI)
             - DATABRICKS_CLUSTER_ID (default existing cluster for jobs)
             - AZURE_TENANT_ID (for service principal auth)
             - AZURE_CLIENT_ID (for service principal auth)
@@ -214,7 +214,7 @@ class DatabricksAPI(PlatformAPI):
             token=os.getenv("DATABRICKS_TOKEN"),
             storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
             container=os.getenv("AZURE_CONTAINER", "artifacts"),
-            base_path=os.getenv("AZURE_BASE_PATH", "system-tests"),
+            base_path=os.getenv("AZURE_BASE_PATH", ""),
             artifacts_path=os.getenv("KINDLING_ARTIFACTS_STORAGE_PATH"),
             default_cluster_id=os.getenv("DATABRICKS_CLUSTER_ID"),
             azure_tenant_id=os.getenv("AZURE_TENANT_ID"),

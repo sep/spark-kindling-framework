@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from urllib.parse import urlparse
 
 from kindling.features import get_feature_bool
 from kindling.injection import *
@@ -930,6 +931,23 @@ def _get_workspace_id_for_platform(platform: str) -> Optional[str]:
         _BOOTSTRAP_LOGGER.warning("Error getting workspace ID for %s: %s", platform, e)
 
     return None
+
+
+def _overlay_workspace_id(workspace_id: Optional[str], platform: Optional[str]) -> Optional[str]:
+    """The id that names the workspace_<id>.yaml overlay.
+
+    On Databricks the ``workspace_id`` setting doubles as the REST API host,
+    so it may be a URL (the SDK passes the workspace URL). A URL never names
+    an overlay file: use the detected workspace id instead, else the host
+    with dots replaced by underscores (the same fallback detection uses).
+    """
+    if not workspace_id or not str(workspace_id).startswith(("http://", "https://")):
+        return workspace_id
+    detected = _get_workspace_id_for_platform(platform) if platform else None
+    if detected and not str(detected).startswith(("http://", "https://")):
+        return str(detected)
+    host = urlparse(str(workspace_id)).netloc
+    return host.replace(".", "_") if host else None
 
 
 def _get_minimal_default_config() -> str:
@@ -2130,7 +2148,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                     artifacts_storage_path=artifacts_storage_path,
                     environment=environment,
                     platform=platform,
-                    workspace_id=workspace_id,
+                    workspace_id=_overlay_workspace_id(workspace_id, platform),
                     app_name=app_name,
                     temp_path=initial_temp_path,
                 )
@@ -2147,7 +2165,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             settings_app_dir,
             environment,
             platform=platform,
-            workspace_id=workspace_id,
+            workspace_id=_overlay_workspace_id(workspace_id, platform),
         )
         explicit_files = [str(path) for path in (config.get("config_files") or [])]
         if isinstance(config.get("config_files"), (str, Path)):
@@ -2182,7 +2200,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                     environment=environment,
                     artifacts_storage_path=artifacts_storage_path,
                     platform=platform,
-                    workspace_id=workspace_id,
+                    workspace_id=_overlay_workspace_id(workspace_id, platform),
                     app_name=app_name,
                 )
                 config_service = get_kindling_service(ConfigService)
@@ -2194,7 +2212,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                 environment=environment,
                 artifacts_storage_path=artifacts_storage_path,
                 platform=platform,
-                workspace_id=workspace_id,
+                workspace_id=_overlay_workspace_id(workspace_id, platform),
                 app_name=app_name,
             )
             config_service = get_kindling_service(ConfigService)
