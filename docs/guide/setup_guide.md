@@ -36,7 +36,8 @@ pip install 'spark-kindling[standalone]' spark-kindling-cli
 
 The CLI requires the SDK, so installing the CLI brings it along, even for
 local-only use. All three are versioned together; to pin a release, pin each
-one to it (`pip install 'spark-kindling[standalone]==0.14.0' spark-kindling-cli==0.14.0`).
+one to it (`pip install 'spark-kindling[standalone]==0.14.0' spark-kindling-cli==0.14.0
+spark-kindling-sdk==0.14.0`; the CLI alone only requires a minimum SDK).
 
 For CI or cloud environments where PySpark is already provided by the
 platform, drop the `standalone` extra:

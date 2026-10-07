@@ -1024,7 +1024,9 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "| Package | File |" >> $GITHUB_STEP_SUMMARY
             echo "|---------|------|" >> $GITHUB_STEP_SUMMARY
-            for asset in dist/*; do
+            # Only what the release action attaches; sdists are PyPI-only.
+            for asset in dist/*.whl dist/kindling_bootstrap.py dist/spark_kindling-current-*.txt; do
+              [ -e "$asset" ] || continue
               filename=$(basename "$asset")
               size=$(du -h "$asset" | cut -f1)
               echo "| ${filename%.*} | $filename ($size) |" >> $GITHUB_STEP_SUMMARY

@@ -108,7 +108,7 @@ Design-time tooling ships separately:
 pip install spark-kindling-cli
 ```
 
-Pin one release across every Kindling package (`==0.14.0`); they are versioned together. Projects scaffolded with `kindling repo init` / `kindling package init` pin these versions in `pyproject.toml` for you, and `kindling env update` moves them to a newer release.
+The runtime, CLI and SDK are versioned together: pin all three to one release (`spark-kindling[...]==0.14.0 spark-kindling-cli==0.14.0 spark-kindling-sdk==0.14.0`; the CLI alone only requires a minimum SDK). Extensions keep their own versions; each GitHub release lists the extension versions that go with it, and `kindling env add` picks them. Projects scaffolded with `kindling repo init` / `kindling package init` pin these versions in `pyproject.toml` for you, and `kindling env update` moves them to a newer release.
 
 ### Without PyPI access
 

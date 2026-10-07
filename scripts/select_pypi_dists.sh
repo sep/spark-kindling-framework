@@ -18,6 +18,12 @@ PUBLISHED=(
   spark_kindling_ext_otel_azure
 )
 
+# Refuse to mix in files from an earlier run: `uv publish <out-dir>/*` would
+# upload whatever is there.
+if [ -e "$OUT_DIR" ] && [ -n "$(ls -A "$OUT_DIR")" ]; then
+  echo "❌ $OUT_DIR is not empty; remove it first." >&2
+  exit 1
+fi
 mkdir -p "$OUT_DIR"
 for name in "${PUBLISHED[@]}"; do
   shopt -s nullglob

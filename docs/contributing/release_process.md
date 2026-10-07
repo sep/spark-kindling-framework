@@ -238,7 +238,7 @@ From 0.14.0 on, install a release from PyPI and pin the version:
 
 ```bash
 pip install 'spark-kindling[synapse]==<version>'
-pip install spark-kindling-cli==<version>   # brings spark-kindling-sdk
+pip install spark-kindling-cli==<version> spark-kindling-sdk==<version>
 ```
 
 ```txt
