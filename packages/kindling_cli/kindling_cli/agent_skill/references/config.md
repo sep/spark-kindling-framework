@@ -29,8 +29,9 @@ live in [entities.md](entities.md) and [pipes.md](pipes.md); app layout in
 
 ## Files and layering
 
-Config is Dynaconf (`environments=False`, `MERGE_ENABLED_FOR_DYNACONF=True`,
-`envvar_prefix="KINDLING"`; `packages/kindling/spark_config.py`). Bootstrap
+Kindling merges the settings files itself (`merge_settings_layers` in
+`packages/kindling/spark_config.py`) and hands the result to Dynaconf
+(`envvar_prefix="KINDLING"`), which resolves `@format`, secrets and env vars. Bootstrap
 discovers files by convention (`settings_hierarchy` / `resolve_settings_files`
 in `packages/kindling/bootstrap.py`), lowest precedence first:
 
@@ -75,17 +76,21 @@ Lowest to highest:
 
 1. Settings files in the order above (artifacts-storage, then local dirs,
    then any legacy `config_files`).
-2. `settings.local.yaml` files that Dynaconf auto-loads (see Gotchas).
-3. `KINDLING_`-prefixed environment variables (Dynaconf env loader).
-4. `spark.kindling.*` SparkConf keys (merged into the bootstrap dict).
-5. The bootstrap dict passed to `initialize_framework` / `kindling.initialize`,
+2. `KINDLING_`-prefixed environment variables (Dynaconf env loader).
+3. `spark.kindling.*` SparkConf keys (merged into the bootstrap dict).
+4. The bootstrap dict passed to `initialize_framework` / `kindling.initialize`,
    which includes `kindling app run` parameters (`CONFIG__*` env vars, then
    the `--parameters` file, then `--param`).
-6. Runtime only: `ConfigService.set()`, entity `tag_overrides`, and call
+5. Runtime only: `ConfigService.set()`, entity `tag_overrides`, and call
    arguments such as `run_datapipes(parallel=...)`.
 
-Merging is deep for mappings: a later layer that sets one leaf keeps its
-siblings. Scalars replace. **Lists concatenate** (see Gotchas).
+Between files, mappings deep-merge (a later layer that sets one leaf keeps
+its siblings) and **lists and scalars replace** -- the same rule as config
+overlays and `kindling bundle build`. Keys match case-insensitively. To append
+to a list on purpose, add `dynaconf_merge` to it or write `"@merge [x]"`
+(`"@merge_unique [x]"` skips items already present). `settings.local.yaml` is
+the `local` environment's layer and applies only when `environment` is
+`local`.
 
 ## Keys worth setting
 
@@ -257,20 +262,13 @@ Other methods: `get_all()`, `set(key, value)` (runtime only, not persisted),
 
 ## Gotchas
 
-- **`settings.local.yaml` loads in every environment.** Dynaconf auto-loads
-  `settings.local.yaml` next to any loaded `settings.yaml`, after all other
-  files. It overrides the app's `settings.yaml` even with `--env dev`, and with
-  `environment: local` it also loads as the environment file. Keep it
-  gitignored and local-only. It is never deployed.
-- **Lists concatenate across layers.** Overlaying
-  `required_packages: [c]` on `[a, b]` gives `[a, b, c]`, and
-  `settings.local.yaml` loading twice under `env=local` gives `[a, b, c, c]`.
-  Put each list in exactly one layer.
-- **Log level via parameters**: the logger reads the flat `log_level`, which is
-  copied from `kindling.telemetry.logging.level` while files and env vars
-  load. `--param kindling.telemetry.logging.level=DEBUG` does not change
-  logging. Use `--param log_level=DEBUG`, the `KINDLING_KINDLING__...` env var,
-  or a settings file.
+- **A list in a later layer replaces the earlier one.** Overlaying
+  `required_packages: [c]` on `[a, b]` gives `[c]`. Add the `dynaconf_merge`
+  marker (or `"@merge [c]"`) when a layer should add to the list instead.
+- **Lists passed as parameters still append** to the files' value (Dynaconf
+  merges the bootstrap dict itself); prefer setting lists in settings files.
+- **`settings.local.yaml` is gitignored and never deployed**; it only affects
+  runs with `environment: local`.
 - **Strings starting with `@` are Dynaconf directives** (`@format`, `@json`,
   `@int`, `@secret`). `@format {this.kindling.x}` is evaluated lazily and raises
   `DynaconfFormatError` if its target is missing. Avoid plain values that
