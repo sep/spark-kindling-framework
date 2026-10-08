@@ -71,9 +71,13 @@ EXPECTED_RUN2_TESTS = [
 
 # The wheel this checkout builds (deployed with the runtime); a hard-coded
 # version went stale when the extension was bumped.
-TEMPORAL_EXTENSION_SPEC = (
-    f"spark-kindling-ext-temporal=={get_extension_version('kindling_ext_temporal')}"
-)
+_TEMPORAL_VERSION = get_extension_version("kindling_ext_temporal")
+if not _TEMPORAL_VERSION:
+    raise RuntimeError(
+        "Could not read the Temporal extension version from "
+        "packages/extensions/kindling_ext_temporal/pyproject.toml"
+    )
+TEMPORAL_EXTENSION_SPEC = f"spark-kindling-ext-temporal=={_TEMPORAL_VERSION}"
 
 
 def _run_scenario(

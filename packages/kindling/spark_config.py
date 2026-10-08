@@ -577,6 +577,19 @@ class DynaconfConfig(ConfigService):
                 current = current[part]
             current[parts[-1]] = value
 
+        # The legacy flat keys for these lists land on root aliases above,
+        # but the bootstrap reads kindling.<key>: mirror them there, so a
+        # flat parameter replaces the settings files' list too. An explicit
+        # kindling.<key> parameter (dotted or nested) still wins.
+        nested_kindling = bootstrap_config.get("kindling")
+        for flat_key in ("extensions", "required_packages"):
+            canonical = f"kindling.{flat_key}"
+            explicit = canonical in bootstrap_config or (
+                isinstance(nested_kindling, dict) and flat_key in nested_kindling
+            )
+            if flat_key in bootstrap_config and not explicit:
+                _set_transformed_dot_key(canonical, bootstrap_config[flat_key])
+
         # Provider/global configs should be available under kindling.* as canonical keys,
         # even if bootstrap passes legacy flat keys.
         if "DELTA_ACCESS_MODE" in bootstrap_config:

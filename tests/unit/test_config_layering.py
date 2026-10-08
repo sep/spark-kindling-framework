@@ -228,6 +228,7 @@ def test_explicit_flat_log_level_wins_over_nested(_spark, tmp_path):
     [
         {"kindling.extensions": ["temporal==0.2.7", "otel==0.4.0"]},
         {"kindling": {"extensions": ["temporal==0.2.7", "otel==0.4.0"]}},
+        {"extensions": ["temporal==0.2.7", "otel==0.4.0"]},  # legacy flat key
     ],
 )
 @patch(
@@ -268,3 +269,17 @@ def test_parameter_list_append_is_opt_in(_spark, tmp_path):
         config_files=[settings], initial_config={"kindling.items": ["dynaconf_merge", "b"]}
     )
     assert list(config.get("kindling.items")) == ["a", "b"]
+
+
+@patch(
+    "kindling.spark_config.get_or_create_spark_session",
+    side_effect=lambda: _spark_without_conf(),
+)
+def test_explicit_kindling_list_beats_flat_alias(_spark, tmp_path):
+    settings = _write(tmp_path / "settings.yaml", {"kindling": {"extensions": ["file"]}})
+    config = DynaconfConfig()
+    config.initialize(
+        config_files=[settings],
+        initial_config={"extensions": ["flat"], "kindling.extensions": ["dotted"]},
+    )
+    assert list(config.get("kindling.extensions")) == ["dotted"]
