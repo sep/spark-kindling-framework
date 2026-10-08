@@ -10,12 +10,27 @@ authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 # Phase 1 is a pure-metadata declaration layer: it consumes the Kindling
 # registries (kindling.data_entities / kindling.data_pipes) and produces a
 # validated DeclarationPlan. It deliberately has NO dependency on
 # pyspark.pipelines — the Spark 4.1+ `pyspark[pipelines]` extra becomes a
 # dependency only in Phase 2, when a concrete engine emits declarations.
 dependencies = ["spark-kindling>=0.12.39"]
+
+[project.urls]
+Homepage = "https://github.com/sep/spark-kindling-framework"
+Documentation = "https://github.com/sep/spark-kindling-framework/tree/main/docs"
+Changelog = "https://github.com/sep/spark-kindling-framework/blob/main/CHANGELOG.md"
+Issues = "https://github.com/sep/spark-kindling-framework/issues"
 
 [tool.uv.build-backend]
 module-root = ""

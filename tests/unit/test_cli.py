@@ -531,6 +531,223 @@ def test_env_update_fails_without_pyproject_toml(tmp_path):
     assert "No pyproject.toml found" in result.output
 
 
+from kindling_cli.cli import _published_on_pypi as _REAL_PUBLISHED_ON_PYPI  # noqa: E402
+from kindling_cli.cli import (  # noqa: E402
+    _release_wheel_extension_requirements as _REAL_EXTENSION_REQUIREMENTS,
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_pypi_lookups(monkeypatch):
+    """Keep env-command tests offline: nothing is "on PyPI" unless a test
+    says so, so URL-pin behavior is the default here."""
+    monkeypatch.setattr("kindling_cli.cli._published_on_pypi", lambda dist, version: False)
+    monkeypatch.setattr("kindling_cli.cli._release_wheel_extension_requirements", lambda wheel: [])
+
+
+def test_env_add_pins_pypi_version_when_release_is_published(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    _write_pyproject(
+        project_dir,
+        "[project]\nname = 'demo'\nversion = '0.1.0'\ndependencies = []\n",
+    )
+    commands = []
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets(
+            "spark_kindling-1.2.3-py3-none-any.whl",
+            "spark_kindling_ext_databricks-0.1.9-py3-none-any.whl",
+        ),
+    )
+    monkeypatch.setattr("kindling_cli.cli._published_on_pypi", lambda dist, version: True)
+    monkeypatch.setattr(
+        "kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append((cmd, cwd))
+    )
+
+    result = CliRunner().invoke(
+        cli, ["env", "add", "spark-kindling-ext-databricks", "--project", str(project_dir)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert commands == [
+        (["uv", "add", "spark-kindling-ext-databricks==0.1.9"], project_dir.resolve())
+    ]
+    assert "(pypi)" in result.output
+
+
+def test_env_update_moves_url_pins_to_pypi_versions(monkeypatch, tmp_path):
+    """A project pinned to release wheel URLs is converted: the URL source is
+    removed (uv add would keep it and let it win) and a version pin added,
+    keeping each package's group and extras."""
+    project_dir = tmp_path / "project"
+    _write_pyproject(
+        project_dir,
+        "[project]\nname = 'demo'\nversion = '0.1.0'\n"
+        "dependencies = ['spark-kindling[standalone]']\n\n"
+        "[dependency-groups]\ndev = ['spark-kindling-cli']\n\n"
+        "[tool.uv.sources]\n"
+        f"spark-kindling = {{ url = '{_wheel_url('spark_kindling-1.0.0-py3-none-any.whl')}' }}\n"
+        f"spark-kindling-cli = {{ url = '{_wheel_url('spark_kindling_cli-1.0.0-py3-none-any.whl')}' }}\n",
+    )
+    commands = []
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets(
+            "spark_kindling-1.2.3-py3-none-any.whl",
+            "spark_kindling_cli-1.2.3-py3-none-any.whl",
+        ),
+    )
+    monkeypatch.setattr("kindling_cli.cli._published_on_pypi", lambda dist, version: True)
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append(cmd))
+
+    result = CliRunner().invoke(cli, ["env", "update", "--project", str(project_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert ["uv", "remove", "spark-kindling", "--frozen"] in commands
+    assert ["uv", "add", "spark-kindling==1.2.3", "--extra", "standalone"] in commands
+    assert ["uv", "remove", "spark-kindling-cli", "--frozen", "--group", "dev"] in commands
+    assert ["uv", "add", "spark-kindling-cli==1.2.3", "--group", "dev"] in commands
+    assert not any(cmd[:2] == ["uv", "add"] and cmd[2].startswith("https://") for cmd in commands)
+
+
+def test_env_update_source_github_keeps_url_pins(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    _write_pyproject(
+        project_dir,
+        "[project]\nname = 'demo'\nversion = '0.1.0'\n"
+        "dependencies = ['spark-kindling==1.0.0']\n",
+    )
+    commands = []
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets("spark_kindling-1.2.3-py3-none-any.whl"),
+    )
+    monkeypatch.setattr("kindling_cli.cli._published_on_pypi", lambda dist, version: True)
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append(cmd))
+
+    result = CliRunner().invoke(
+        cli, ["env", "update", "--source", "github", "--project", str(project_dir)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert ["uv", "add", _wheel_url("spark_kindling-1.2.3-py3-none-any.whl")] in commands
+
+
+def test_published_on_pypi_queries_json_api_and_degrades_to_false(monkeypatch):
+    import kindling_cli.cli as cli_module
+
+    # Undo the autouse stub for this test only.
+    monkeypatch.setattr(cli_module, "_published_on_pypi", _REAL_PUBLISHED_ON_PYPI)
+    monkeypatch.setattr(cli_module, "_pypi_release_cache", {})
+    monkeypatch.setenv("KINDLING_PYPI_URL", "https://test.pypi.org/")
+    calls = []
+
+    class _Response:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+    def fake_get(url, timeout):
+        calls.append(url)
+        if "boom" in url:
+            raise OSError("offline")
+        return _Response(200 if "0.14.0" in url else 404)
+
+    import requests
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    assert cli_module._published_on_pypi("Spark_Kindling", "0.14.0") is True
+    assert cli_module._published_on_pypi("spark-kindling", "0.14.0") is True  # cached
+    assert cli_module._published_on_pypi("spark-kindling", "0.13.1") is False
+    assert cli_module._published_on_pypi("spark-kindling", "boom") is False
+    assert calls[0] == "https://test.pypi.org/pypi/spark-kindling/0.14.0/json"
+    assert len(calls) == 3
+
+
+def test_env_bootstrap_rejects_nested_projects_with_mixed_pin_forms(monkeypatch, tmp_path):
+    root = tmp_path / "repo"
+    _write_pyproject(root, "[project]\nname = 'repo'\nversion = '0.1.0'\ndependencies = []\n")
+    _write_pyproject(
+        root / "packages" / "a",
+        "[project]\nname = 'a'\nversion = '0.1.0'\ndependencies = ['spark-kindling']\n\n"
+        f"[tool.uv.sources]\nspark-kindling = {{ url = '{_wheel_url('spark_kindling-1.2.3-py3-none-any.whl')}' }}\n",
+    )
+    _write_pyproject(
+        root / "packages" / "b",
+        "[project]\nname = 'b'\nversion = '0.1.0'\ndependencies = ['spark-kindling==1.2.3']\n",
+    )
+    commands = []
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append(cmd))
+
+    result = CliRunner().invoke(cli, ["env", "bootstrap", "--project", str(root)])
+
+    assert result.exit_code != 0
+    assert "two forms" in result.output
+    assert "kindling env update" in result.output
+    assert commands == []
+
+
+def test_env_bootstrap_allows_different_forms_for_different_packages(monkeypatch, tmp_path):
+    """A PyPI-pinned runtime beside a URL-pinned (GitHub-only) extension is valid."""
+    root = tmp_path / "repo"
+    _write_pyproject(root, "[project]\nname = 'repo'\nversion = '0.1.0'\ndependencies = []\n")
+    _write_pyproject(
+        root / "packages" / "a",
+        "[project]\nname = 'a'\nversion = '0.1.0'\n"
+        "dependencies = ['spark-kindling==1.2.3', 'spark-kindling-ext-adx']\n\n"
+        f"[tool.uv.sources]\nspark-kindling-ext-adx = {{ url = '{_wheel_url('spark_kindling_ext_adx-0.1.0-py3-none-any.whl')}' }}\n",
+    )
+    commands = []
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append(cmd))
+
+    result = CliRunner().invoke(cli, ["env", "bootstrap", "--project", str(root)])
+
+    assert result.exit_code == 0, result.output
+    # The root adopts the runtime pin with the standalone extra (local Spark).
+    assert ["uv", "add", "spark-kindling==1.2.3", "--extra", "standalone"] in commands
+    assert ["uv", "add", _wheel_url("spark_kindling_ext_adx-0.1.0-py3-none-any.whl")] in commands
+
+
+def test_reconcile_compares_versions_per_package_with_extensions_present(tmp_path):
+    """Projects that also pin an independently versioned extension are still
+    checked: two members pinning different runtime releases must fail."""
+    from kindling_cli.cli import _reconcile_root_kindling_dependencies
+
+    root = tmp_path / "repo"
+    _write_pyproject(root, "[project]\nname = 'repo'\nversion = '0.1.0'\ndependencies = []\n")
+    for member, runtime in (("a", "0.14.0"), ("b", "0.15.0")):
+        _write_pyproject(
+            root / "packages" / member,
+            f"[project]\nname = '{member}'\nversion = '0.1.0'\n"
+            f"dependencies = ['spark-kindling=={runtime}', 'spark-kindling-ext-sdp==0.3.4']\n",
+        )
+
+    with pytest.raises(click.ClickException, match="disagree") as excinfo:
+        _reconcile_root_kindling_dependencies(root / "pyproject.toml", root)
+    assert "spark-kindling 0.14.0" in str(excinfo.value.message)
+    assert "spark-kindling 0.15.0" in str(excinfo.value.message)
+
+
+def test_version_pinned_dependency_reports_its_version(tmp_path):
+    from kindling_cli.cli import (
+        _declared_kindling_version,
+        _iter_kindling_dependency_entries,
+    )
+
+    _write_pyproject(
+        tmp_path,
+        "[project]\nname = 'demo'\nversion = '0.1.0'\n"
+        "dependencies = ['spark-kindling[standalone]==0.14.0']\n",
+    )
+    [(name, group, entry)] = list(_iter_kindling_dependency_entries(tmp_path / "pyproject.toml"))
+    assert (name, group) == ("spark-kindling", None)
+    assert entry == {"version": "0.14.0", "extras": ["standalone"]}
+    assert _declared_kindling_version(entry) == "0.14.0"
+
+
 # ---------------------------------------------------------------------------
 # env add
 # ---------------------------------------------------------------------------
@@ -5802,3 +6019,337 @@ class TestRuntimeDeployExtensions:
 
         [legacy] = _select_extension_wheels(tmp_path, ["spark-kindling-ext-legacy"], False, "dist")
         assert legacy.name == "kindling_ext_legacy-0.1.0-py3-none-any.whl"
+
+
+from kindling_cli.cli import _load_pyproject_toml  # noqa: E402
+
+_PACKAGE_HEAD = (
+    "[project]\nname = 'orders'\nversion = '0.1.0'\n"
+    "dependencies = [\n    {runtime},\n]\n\n"
+    "[build-system]\nrequires = ['uv_build']\nbuild-backend = 'uv_build'\n\n"
+)
+
+
+def _pin_release(monkeypatch, commands, *, on_pypi):
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets(
+            "spark_kindling-1.2.3-py3-none-any.whl",
+            "spark_kindling_sdk-1.2.3-py3-none-any.whl",
+            "spark_kindling_cli-1.2.3-py3-none-any.whl",
+        ),
+    )
+    monkeypatch.setattr("kindling_cli.cli._published_on_pypi", lambda dist, version: on_pypi)
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append(cmd))
+
+
+@pytest.mark.parametrize(
+    "runtime, dev_extras",
+    [("'spark-kindling'", []), ("'spark-kindling[standalone]'", ["--extra", "standalone"])],
+)
+def test_env_update_package_pins_pypi_version_in_dev_group(
+    monkeypatch, tmp_path, runtime, dev_extras
+):
+    """A package's wheel goes onto managed Spark runtimes: moving it to PyPI
+    pins keeps its runtime spark-kindling plain (moving a [standalone] extra
+    to the dev pin, where it still gives local Spark), removes only the URL
+    source, and pins the version in `dev`."""
+    package = tmp_path / "orders"
+    _write_pyproject(
+        package,
+        _PACKAGE_HEAD.format(runtime=runtime)
+        + "[tool.uv.sources]\n"
+        + f"spark-kindling = {{ url = '{_wheel_url('spark_kindling-1.0.0-py3-none-any.whl')}' }}\n",
+    )
+    commands = []
+    _pin_release(monkeypatch, commands, on_pypi=True)
+
+    result = CliRunner().invoke(cli, ["env", "update", "--project", str(package)])
+
+    assert result.exit_code == 0, result.output
+    assert ["uv", "add", "spark-kindling==1.2.3", "--group", "dev", *dev_extras] in commands
+    assert not any(cmd[:2] == ["uv", "remove"] for cmd in commands)
+    data = _load_pyproject_toml(package / "pyproject.toml")
+    assert data["project"]["dependencies"] == ["spark-kindling"]
+    assert "spark-kindling" not in data.get("tool", {}).get("uv", {}).get("sources", {})
+
+
+def test_env_update_package_moves_existing_dev_pin(monkeypatch, tmp_path):
+    package = tmp_path / "orders"
+    _write_pyproject(
+        package,
+        _PACKAGE_HEAD.format(runtime="'spark-kindling'")
+        + "[dependency-groups]\ndev = ['spark-kindling==1.0.0']\n",
+    )
+    commands = []
+    _pin_release(monkeypatch, commands, on_pypi=True)
+
+    result = CliRunner().invoke(cli, ["env", "update", "--project", str(package)])
+
+    assert result.exit_code == 0, result.output
+    assert commands[0] == ["uv", "add", "spark-kindling==1.2.3", "--group", "dev"]
+    assert _load_pyproject_toml(package / "pyproject.toml")["project"]["dependencies"] == [
+        "spark-kindling"
+    ]
+
+
+def test_env_update_package_back_to_url_pin(monkeypatch, tmp_path):
+    """--source github on a PyPI-pinned package drops the dev pin and pins the
+    runtime entry by URL, the pre-PyPI form."""
+    package = tmp_path / "orders"
+    _write_pyproject(
+        package,
+        _PACKAGE_HEAD.format(runtime="'spark-kindling'")
+        + "[dependency-groups]\ndev = ['spark-kindling==1.0.0']\n",
+    )
+    commands = []
+    _pin_release(monkeypatch, commands, on_pypi=True)
+
+    result = CliRunner().invoke(
+        cli, ["env", "update", "--source", "github", "--project", str(package)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert commands[0] == ["uv", "remove", "spark-kindling", "--group", "dev", "--frozen"]
+    assert ["uv", "add", _wheel_url("spark_kindling-1.2.3-py3-none-any.whl")] in commands
+
+
+def test_root_adopts_package_dev_pin_as_standalone_runtime(tmp_path):
+    from kindling_cli.cli import _reconcile_root_kindling_dependencies
+
+    root = tmp_path / "repo"
+    _write_pyproject(
+        root,
+        "[project]\nname = 'repo-workspace'\nversion = '0.1.0'\ndependencies = []\n\n"
+        "[tool.uv]\npackage = false\n",
+    )
+    _write_pyproject(
+        root / "packages" / "orders",
+        _PACKAGE_HEAD.format(runtime="'spark-kindling'")
+        + "[dependency-groups]\ndev = ['spark-kindling==1.2.3', 'spark-kindling-cli==1.2.3']\n",
+    )
+
+    adopted = _reconcile_root_kindling_dependencies(root / "pyproject.toml", root)
+
+    group, extras, entry = adopted["spark-kindling"]
+    assert (group, extras, entry["version"]) == (None, ["standalone"], "1.2.3")
+    assert adopted["spark-kindling-cli"][0] == "dev"
+
+
+def test_env_bootstrap_buildable_project_gets_plain_runtime_and_standalone_dev_pin(
+    monkeypatch, tmp_path
+):
+    """Bootstrapping a standalone package (no workspace root) adds a plain
+    runtime spark-kindling and puts the pin, with the standalone extra for
+    local Spark, in `dev`."""
+    package = tmp_path / "orders"
+    _write_pyproject(package, _PACKAGE_HEAD.format(runtime="").replace("    ,\n", ""))
+    commands = []
+    _pin_release(monkeypatch, commands, on_pypi=True)
+
+    result = CliRunner().invoke(cli, ["env", "bootstrap", "--project", str(package)])
+
+    assert result.exit_code == 0, result.output
+    assert ["uv", "add", "spark-kindling", "--raw", "--frozen"] in commands
+    assert [
+        "uv",
+        "add",
+        "spark-kindling==1.2.3",
+        "--group",
+        "dev",
+        "--extra",
+        "standalone",
+    ] in commands
+
+
+@pytest.mark.parametrize(
+    "requirement, version",
+    [
+        ("spark-kindling==0.14.0", "0.14.0"),
+        ("spark-kindling[standalone]==0.14.0", "0.14.0"),
+        ("spark-kindling == 0.14.0rc1 ; sys_platform == 'linux'", "0.14.0rc1"),
+        ("spark-kindling; python_version == '3.11'", None),
+        ("spark-kindling==0.14.*", None),
+        ("spark-kindling===0.14.0", None),
+        ("spark-kindling", None),
+    ],
+)
+def test_exact_pin_version_ignores_markers_and_wildcards(requirement, version):
+    from kindling_cli.cli import _exact_pin_version
+
+    assert _exact_pin_version(requirement) == version
+
+
+def test_env_add_core_url_pin_to_package_without_it_skips_remove(monkeypatch, tmp_path):
+    """Adding spark-kindling by URL to a package that doesn't declare it yet
+    must not try to `uv remove` a dev pin that isn't there."""
+    package = tmp_path / "orders"
+    _write_pyproject(package, _PACKAGE_HEAD.format(runtime="").replace("    ,\n", ""))
+    commands = []
+    _pin_release(monkeypatch, commands, on_pypi=False)
+
+    result = CliRunner().invoke(
+        cli,
+        ["env", "add", "spark-kindling", "--group", "dev", "--project", str(package)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not any(cmd[:2] == ["uv", "remove"] for cmd in commands)
+    assert ["uv", "add", _wheel_url("spark_kindling-1.2.3-py3-none-any.whl")] in commands
+
+
+def test_env_update_package_back_to_url_keeps_standalone_out_of_runtime(monkeypatch, tmp_path):
+    """A dev pin's local-only extra (standalone) stays in `dev` when the
+    package moves back to URL pins; the runtime URL entry has no extra."""
+    package = tmp_path / "orders"
+    _write_pyproject(
+        package,
+        _PACKAGE_HEAD.format(runtime="'spark-kindling'")
+        + "[dependency-groups]\ndev = ['spark-kindling[standalone]==1.0.0']\n",
+    )
+    commands = []
+    _pin_release(monkeypatch, commands, on_pypi=True)
+
+    result = CliRunner().invoke(
+        cli, ["env", "update", "--source", "github", "--project", str(package)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert commands[:2] == [
+        ["uv", "remove", "spark-kindling", "--group", "dev", "--frozen"],
+        [
+            "uv",
+            "add",
+            "spark-kindling",
+            "--group",
+            "dev",
+            "--raw",
+            "--frozen",
+            "--extra",
+            "standalone",
+        ],
+    ]
+    url_adds = [
+        cmd for cmd in commands if cmd[:2] == ["uv", "add"] and cmd[2].startswith("https://")
+    ]
+    assert url_adds == [["uv", "add", _wheel_url("spark_kindling-1.2.3-py3-none-any.whl")]]
+
+
+@pytest.mark.parametrize(
+    "source_block, removable",
+    [
+        ("[tool.uv.sources]\nspark-kindling = {{ url = '{url}' }}\n", True),
+        ("[tool.uv.sources]\n'spark-kindling' = {{ url = '{url}' }}\n", True),
+        ('[tool.uv.sources]\n"spark-kindling" = {{ url = "{url}" }}\n', True),
+        ("[tool.uv.sources.spark-kindling]\nurl = '{url}'\n", False),
+    ],
+)
+def test_remove_uv_source_handles_toml_key_spellings(tmp_path, source_block, removable):
+    from kindling_cli.cli import _remove_uv_source
+
+    url = _wheel_url("spark_kindling-1.0.0-py3-none-any.whl")
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[project]\nname = 'x'\nversion = '0.1.0'\ndependencies = ['spark-kindling']\n\n"
+        + source_block.format(url=url),
+        encoding="utf-8",
+    )
+
+    if removable:
+        _remove_uv_source(pyproject, "spark-kindling")
+        data = _load_pyproject_toml(pyproject)
+        assert "spark-kindling" not in data.get("tool", {}).get("uv", {}).get("sources", {})
+        assert data["project"]["dependencies"] == ["spark-kindling"]
+    else:
+        with pytest.raises(click.ClickException, match="delete it by hand"):
+            _remove_uv_source(pyproject, "spark-kindling")
+
+
+def test_env_add_pins_required_extensions_from_the_same_release(monkeypatch, tmp_path):
+    """Databricks requires SDP: both come from the release, so uv never looks
+    SDP up on an index (which fails for GitHub-only pins)."""
+    project_dir = tmp_path / "project"
+    _write_pyproject(
+        project_dir, "[project]\nname = 'demo'\nversion = '0.1.0'\ndependencies = []\n"
+    )
+    commands = []
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets(
+            "spark_kindling_ext_databricks-0.2.0-py3-none-any.whl",
+            "spark_kindling_ext_sdp-0.3.4-py3-none-any.whl",
+        ),
+    )
+    monkeypatch.setattr(
+        "kindling_cli.cli._release_wheel_extension_requirements",
+        lambda wheel: (
+            ["spark-kindling-ext-sdp"]
+            if wheel["distribution"] == "spark-kindling-ext-databricks"
+            else []
+        ),
+    )
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append(cmd))
+
+    result = CliRunner().invoke(
+        cli, ["env", "add", "spark-kindling-ext-databricks", "--project", str(project_dir)]
+    )
+
+    assert result.exit_code == 0, result.output
+    # The dependency first: uv locks on every add.
+    assert commands == [
+        ["uv", "add", _wheel_url("spark_kindling_ext_sdp-0.3.4-py3-none-any.whl")],
+        ["uv", "add", _wheel_url("spark_kindling_ext_databricks-0.2.0-py3-none-any.whl")],
+    ]
+    assert "required by spark-kindling-ext-databricks" in result.output
+
+
+def test_env_add_warns_when_dependency_metadata_is_unreadable(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    _write_pyproject(
+        project_dir, "[project]\nname = 'demo'\nversion = '0.1.0'\ndependencies = []\n"
+    )
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets("spark_kindling_ext_databricks-0.2.0-py3-none-any.whl"),
+    )
+
+    def offline(wheel):
+        raise OSError("offline")
+
+    monkeypatch.setattr("kindling_cli.cli._release_wheel_extension_requirements", offline)
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: None)
+
+    result = CliRunner().invoke(
+        cli, ["env", "add", "spark-kindling-ext-databricks", "--project", str(project_dir)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "could not read spark-kindling-ext-databricks's Kindling dependencies" in result.output
+
+
+def test_release_wheel_extension_requirements_reads_metadata(monkeypatch):
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "x-0.1.dist-info/METADATA",
+            "Name: x\nRequires-Dist: spark-kindling>=0.14.0,<0.15\n"
+            "Requires-Dist: spark-kindling-ext-sdp>=0.14.0,<0.15\n"
+            'Requires-Dist: spark-kindling-ext-temporal; extra == "temporal"\n'
+            "Requires-Dist: requests>=2\n",
+        )
+
+    class Response:
+        content = buffer.getvalue()
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr("requests.get", lambda url, timeout: Response())
+
+    assert _REAL_EXTENSION_REQUIREMENTS({"url": "https://x/y.whl"}) == ["spark-kindling-ext-sdp"]

@@ -344,23 +344,44 @@ def test_package_scaffold_is_buildable_by_uv_build(tmp_path):
     assert 'module-name = "sales_ops"' in pyproject
 
 
+def test_package_pyproject_github_source_pins_release_wheel_urls(tmp_path):
+    cfg = PackageScaffoldConfig(
+        name="proj", repo_root=tmp_path, kindling_version="0.13.1", kindling_source="github"
+    )
+    generate_package(cfg)
+
+    data = _load_pyproject_toml(_package_root(tmp_path, "proj") / "pyproject.toml")
+    assert data["project"]["dependencies"] == ["spark-kindling"]
+    assert not any(r.startswith("spark-kindling==") for r in data["dependency-groups"]["dev"])
+    sources = data["tool"]["uv"]["sources"]
+    assert sources["spark-kindling"]["url"].endswith(
+        "/v0.13.1/spark_kindling-0.13.1-py3-none-any.whl"
+    )
+    assert set(sources) == {"spark-kindling", "spark-kindling-cli", "spark-kindling-sdk"}
+
+
 def test_package_pyproject_uses_spark_kindling_dependency_and_poe_tasks(tmp_path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    cfg = PackageScaffoldConfig(name="proj", repo_root=repo_root, integration=True)
+    cfg = PackageScaffoldConfig(
+        name="proj", repo_root=repo_root, integration=True, kindling_version="0.14.0"
+    )
     generate_package(cfg)
 
     pyproject = (_package_root(repo_root, "proj") / "pyproject.toml").read_text()
+    data = _load_pyproject_toml(_package_root(repo_root, "proj") / "pyproject.toml")
     assert 'build-backend = "uv_build"' in pyproject
+    # Runtime dependency plain and unpinned; PyPI version pins, one release
+    # for every Kindling package, in the dev group; no URL sources.
+    assert data["project"]["dependencies"] == ["spark-kindling"]
+    dev = data["dependency-groups"]["dev"]
+    assert "spark-kindling==0.14.0" in dev
+    assert "spark-kindling-sdk==0.14.0" in dev
+    assert "spark-kindling-cli==0.14.0" in dev
     assert "spark-kindling[" not in pyproject
-    assert "spark-kindling = { url = " in pyproject
-    assert "/spark_kindling-" in pyproject  # pinned to a release wheel URL
+    assert "sources" not in data.get("tool", {}).get("uv", {})
     assert '"poethepoet>=0.24.0",' in pyproject
     assert "[tool.poetry" not in pyproject
-    assert "spark-kindling-cli = { url = " in pyproject
-    assert "/spark_kindling_cli-" in pyproject
-    assert "spark-kindling-sdk = { url = " in pyproject
-    assert "/spark_kindling_sdk-" in pyproject
     assert "kindling-local" not in pyproject  # no local PEP 503 index source anymore
     assert 'test = { sequence = ["test-unit", "test-component"] }' in pyproject
     assert 'test-unit = "pytest tests/unit -v"' in pyproject
@@ -385,23 +406,33 @@ def test_package_runtime_dependency_is_plain_spark_kindling(tmp_path):
         assert requirement in dev
 
 
-def test_package_declares_each_kindling_distribution_once(tmp_path):
-    """The env commands key Kindling dependencies by distribution name, so
-    spark-kindling must not also appear in a dependency group."""
+@pytest.mark.parametrize(
+    "source, core_entries, core_found",
+    [
+        # PyPI pins: plain runtime entry plus the dev-group version pin, and
+        # the env commands report (and move) the pinned one.
+        ("pypi", [("spark-kindling", None), ("spark-kindling", "dev")], ("dev", [])),
+        # URL pins: one runtime entry, pinned through [tool.uv.sources].
+        ("github", [("spark-kindling", None)], (None, [])),
+    ],
+)
+def test_package_kindling_entries_per_pin_form(tmp_path, source, core_entries, core_found):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
-    generate_package(PackageScaffoldConfig(name="proj", repo_root=repo_root))
+    generate_package(
+        PackageScaffoldConfig(
+            name="proj", repo_root=repo_root, kindling_version="0.14.0", kindling_source=source
+        )
+    )
 
     pyproject_path = _package_root(repo_root, "proj") / "pyproject.toml"
     entries = [
         (name, group) for name, group, _ in _iter_kindling_dependency_entries(pyproject_path)
     ]
-    assert sorted(entries, key=lambda e: e[0]) == [
-        ("spark-kindling", None),
-        ("spark-kindling-cli", "dev"),
-        ("spark-kindling-sdk", "dev"),
-    ]
-    assert _find_kindling_dependencies(pyproject_path)["spark-kindling"] == (None, [])
+    assert [e for e in entries if e[0] == "spark-kindling"] == core_entries
+    assert ("spark-kindling-cli", "dev") in entries
+    assert ("spark-kindling-sdk", "dev") in entries
+    assert _find_kindling_dependencies(pyproject_path)["spark-kindling"] == core_found
 
 
 def test_local_spark_requirements_match_standalone_extra():
@@ -486,6 +517,13 @@ def test_repo_devcontainer_uses_root_workspace_venv(tmp_path):
     assert "postCreateCommand" in dcj
 
 
+@pytest.fixture(autouse=True)
+def _offline_pypi(monkeypatch):
+    """No network in scaffold tests: every release counts as on PyPI unless
+    a test says otherwise (package init --source auto checks)."""
+    monkeypatch.setattr("kindling_cli.cli._published_on_pypi", lambda dist, version: True)
+
+
 class TestScaffoldCommands:
     def test_repo_init_initializes_output_directory(self, tmp_path):
         runner = CliRunner()
@@ -539,8 +577,31 @@ class TestScaffoldCommands:
 
         assert result.exit_code == 0, result.output
         package_pyproject = (tmp_path / "packages" / "orders" / "pyproject.toml").read_text()
+        # The root pins by URL, so the new member does too (one package, one form).
         assert "/v0.9.1/spark_kindling-0.9.1-py3-none-any.whl" in package_pyproject
         assert "/v0.9.1/spark_kindling_cli-0.9.1-py3-none-any.whl" in package_pyproject
+
+    def test_package_init_adopts_root_version_pin(self, tmp_path):
+        runner = CliRunner()
+        assert (
+            runner.invoke(cli, ["repo", "init", "shop", "--output-dir", str(tmp_path)]).exit_code
+            == 0
+        )
+        root = tmp_path / "pyproject.toml"
+        root.write_text(
+            root.read_text().replace(
+                "dependencies = []", 'dependencies = ["spark-kindling[standalone]==0.14.2"]'
+            ),
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(cli, ["package", "init", "orders", "--repo-root", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        data = _load_pyproject_toml(tmp_path / "packages" / "orders" / "pyproject.toml")
+        assert data["project"]["dependencies"] == ["spark-kindling"]
+        assert "spark-kindling==0.14.2" in data["dependency-groups"]["dev"]
+        assert "sources" not in data.get("tool", {}).get("uv", {})
 
     def test_repo_init_reports_kept_root_pyproject(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\n', encoding="utf-8")
@@ -592,6 +653,36 @@ class TestScaffoldCommands:
         assert result.exit_code == 0, result.output
         assert '"Kindling Domain Development"' in devcontainer.read_text()
         assert (tmp_path / "packages").is_dir()
+
+    @pytest.mark.parametrize(
+        "source, on_pypi, expect_url",
+        [
+            ("auto", True, False),
+            ("auto", False, True),
+            ("github", True, True),
+            ("pypi", False, False),
+        ],
+    )
+    def test_package_init_source_without_root_pin(
+        self, monkeypatch, tmp_path, source, on_pypi, expect_url
+    ):
+        """With no root pin, auto writes PyPI pins only for a release that is
+        on PyPI; --source forces either form."""
+        monkeypatch.setattr("kindling_cli.cli._published_on_pypi", lambda dist, version: on_pypi)
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+
+        result = CliRunner().invoke(
+            cli,
+            ["package", "init", "orders", "--repo-root", str(repo_root), "--source", source],
+        )
+
+        assert result.exit_code == 0, result.output
+        data = _load_pyproject_toml(repo_root / "packages" / "orders" / "pyproject.toml")
+        sources = data.get("tool", {}).get("uv", {}).get("sources", {})
+        assert ("spark-kindling" in sources) is expect_url
+        dev_pins = [r for r in data["dependency-groups"]["dev"] if r.startswith("spark-kindling==")]
+        assert bool(dev_pins) is not expect_url
 
     def test_package_init_creates_package_under_repo(self, tmp_path):
         repo_root = tmp_path / "repo"

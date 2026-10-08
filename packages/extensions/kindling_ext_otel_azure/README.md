@@ -2,7 +2,7 @@
 
 Azure Monitor OpenTelemetry integration for the Kindling Spark framework.
 
-See [CHANGELOG.md](CHANGELOG.md) for version history.
+> See [CHANGELOG.md](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_otel_azure/CHANGELOG.md) for release history.
 
 ## Overview
 
@@ -11,6 +11,10 @@ This package provides Azure Monitor-backed implementations of Kindling's telemet
 - `AzureMonitorTraceProvider` - Sends distributed traces to Azure Monitor
 
 ## Installation
+
+```bash
+pip install spark-kindling-ext-otel-azure
+```
 
 In a Kindling domain project, add it with `kindling env add spark-kindling-ext-otel-azure`.
 On a cluster, the runtime installs it from `<artifacts>/packages/` when it is listed in

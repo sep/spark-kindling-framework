@@ -11,6 +11,16 @@ license = "MIT"
 license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = ["spark", "pyspark", "databricks", "microsoft-fabric", "azure-synapse", "delta-lake", "data-engineering"]
 # Core framework (required on every platform). Kept as a minimal base
 # dependency set with no Spark runtime deps so the wheel installs cleanly
 # on cloud Spark runtimes (Synapse, Fabric, Databricks) without pip trying
@@ -55,6 +65,12 @@ dependencies = [
     "azure-identity>=1.12.0",
     "azure-storage-file-datalake>=12.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/sep/spark-kindling-framework"
+Documentation = "https://github.com/sep/spark-kindling-framework/tree/main/docs"
+Changelog = "https://github.com/sep/spark-kindling-framework/blob/main/CHANGELOG.md"
+Issues = "https://github.com/sep/spark-kindling-framework/issues"
 
 [project.optional-dependencies]
 synapse = ["azure-synapse-artifacts>=0.17.0"]
@@ -136,7 +152,7 @@ dev = [
 
 [tool.poe.tasks]
 # Version management
-version = { script = "scripts.bump_version:main", help = "Bump version and optionally build/deploy", args = [{name = "bump_type", default = "alpha", positional = false, help = "Version bump type: alpha (default), patch, minor, major"}, {name = "platform", default = "", positional = false, help = "Platform to deploy after bump (fabric, synapse, databricks). Implies build+deploy"}, {name = "build", type = "boolean", default = false, positional = false, help = "Build wheels after version bump"}, {name = "deploy", type = "boolean", default = false, positional = false, help = "Deploy all platforms after build"}] }
+version = { script = "scripts.bump_version:main", help = "Bump version and optionally build/deploy", args = [{name = "bump_type", default = "alpha", positional = false, help = "Version bump type: alpha (default), rc, release, patch, minor, major"}, {name = "platform", default = "", positional = false, help = "Platform to deploy after bump (fabric, synapse, databricks). Implies build+deploy"}, {name = "build", type = "boolean", default = false, positional = false, help = "Build wheels after version bump"}, {name = "deploy", type = "boolean", default = false, positional = false, help = "Deploy all platforms after build"}] }
 
 # Build and deploy tasks
 build = { script = "scripts.build:main" }
@@ -150,6 +166,7 @@ upload-release = { shell = "bash scripts/upload_to_storage.sh --release" }
 
 # Release tasks
 release = { shell = "bash scripts/release.sh ${version}", help = "Tag and release a version. Run 'poe version --bump_type patch' first.", args = [{name = "version", positional = true, help = "Version to release (e.g. 0.9.4)"}] }
+pypi-bootstrap = { cmd = "bash scripts/pypi_bootstrap.sh", help = "One-time first PyPI upload (release candidate on main), then print the trusted-publisher forms. --links prints only the forms." }
 
 # Development environment setup
 init-azure = { shell = "source scripts/init_azure_dev.sh" }

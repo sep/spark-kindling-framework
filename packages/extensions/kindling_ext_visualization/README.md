@@ -10,9 +10,17 @@ Kindling entities through the existing entity provider registry.
 
 ## Installation
 
+This extension is not on PyPI. Install its wheel from a
+[GitHub Release](https://github.com/sep/spark-kindling-framework/releases): the
+extension keeps its own version, so take the `spark_kindling_ext_visualization-*.whl` asset
+attached to the release that matches your Kindling version.
+
 ```bash
-pip install spark-kindling-ext-visualization
+pip install "https://github.com/sep/spark-kindling-framework/releases/download/v0.14.0/spark_kindling_ext_visualization-0.1.0-py3-none-any.whl"
 ```
+
+In a uv project, `kindling env add spark-kindling-ext-visualization` resolves it from
+the release and pins that wheel URL for you.
 
 In a Kindling app, add the extension to your settings:
 

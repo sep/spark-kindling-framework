@@ -5,6 +5,20 @@ Azure Data Explorer entity provider extension for Kindling.
 This extension registers `provider_type: adx` as an append-oriented materialization
 target backed by the Azure Data Explorer Spark connector.
 
+## Installation
+
+This extension is not on PyPI. Install its wheel from a
+[GitHub Release](https://github.com/sep/spark-kindling-framework/releases): the
+extension keeps its own version, so take the `spark_kindling_ext_adx-*.whl` asset
+attached to the release that matches your Kindling version.
+
+```bash
+pip install "https://github.com/sep/spark-kindling-framework/releases/download/v0.14.0/spark_kindling_ext_adx-0.1.0-py3-none-any.whl"
+```
+
+In a uv project, `kindling env add spark-kindling-ext-adx` resolves it from
+the release and pins that wheel URL for you.
+
 ## Spark Runtime Package
 
 Install the Kusto Spark connector on the Spark pool or cluster:

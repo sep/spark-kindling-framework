@@ -18,8 +18,8 @@ This guide explains how to install, configure, and start using the Spark Kindlin
 
 ## Installation
 
-Kindling is distributed as three pip packages, published as wheel assets on
-each [GitHub Release](https://github.com/sep/spark-kindling-framework/releases):
+Kindling is distributed as three pip packages on
+[PyPI](https://pypi.org/project/spark-kindling/):
 
 | Package | Purpose |
 |---|---|
@@ -27,35 +27,49 @@ each [GitHub Release](https://github.com/sep/spark-kindling-framework/releases):
 | `spark-kindling-cli` | CLI tooling (`kindling` command) |
 | `spark-kindling-sdk` | Platform API clients (deploy, status, logs) |
 
-The packages are not on PyPI yet, so install them by release wheel URL.
-`kindling repo init` / `kindling package init` projects pin these URLs for you
+`kindling repo init` / `kindling package init` projects pin these for you
 (see `kindling env update`); for a one-off install:
 
 ```bash
-V=0.13.0  # any release tag, without the leading v
+pip install 'spark-kindling[standalone]' spark-kindling-cli
+```
+
+The CLI requires the SDK, so installing the CLI brings it along, even for
+local-only use. All three are versioned together; to pin a release, pin each
+one to it (`pip install 'spark-kindling[standalone]==0.14.0' spark-kindling-cli==0.14.0
+spark-kindling-sdk==0.14.0`; the CLI alone only requires a minimum SDK).
+
+For CI or cloud environments where PySpark is already provided by the
+platform, drop the `standalone` extra:
+
+```bash
+pip install spark-kindling spark-kindling-cli
+```
+
+The SDK is what deploys to and manages remote platform workspaces, so the
+same packages cover that too.
+
+### Installing from a GitHub Release
+
+Every [GitHub Release](https://github.com/sep/spark-kindling-framework/releases)
+also attaches the wheels. Install by wheel URL where PyPI is unreachable (a
+locked-down workspace) or for a release before 0.14.0, which exists only on
+GitHub:
+
+```bash
+V=0.14.0  # any release tag, without the leading v
 BASE=https://github.com/sep/spark-kindling-framework/releases/download/v$V
 pip install "spark-kindling[standalone] @ $BASE/spark_kindling-$V-py3-none-any.whl" \
     "$BASE/spark_kindling_sdk-$V-py3-none-any.whl" \
     "$BASE/spark_kindling_cli-$V-py3-none-any.whl"
 ```
 
-The CLI requires the SDK, which is why it is listed even for local-only use.
-
-For CI or cloud environments where PySpark is already provided by the
-platform, drop the `standalone` extra:
-
-```bash
-pip install "spark-kindling @ $BASE/spark_kindling-$V-py3-none-any.whl" \
-    "$BASE/spark_kindling_sdk-$V-py3-none-any.whl" \
-    "$BASE/spark_kindling_cli-$V-py3-none-any.whl"
-```
-
-The SDK is what deploys to and manages remote platform workspaces, so the
-same three wheels cover that too.
+`kindling env update` / `env add` / `env bootstrap` fall back to these URLs on
+their own when a version is not on PyPI; `--source github` forces them.
 
 ### Devcontainer (recommended)
 
-`kindling repo init` generates a `.devcontainer/devcontainer.json` that uses the published image `ghcr.io/sep/spark-kindling-framework/devcontainer:latest`. The image ships Python 3.11, Java 21, uv, poe, the Databricks CLI and the Hadoop Azure JARs (at `/opt/hadoop-jars`, symlinked to `/tmp/hadoop-jars`). It bakes in no Kindling packages: PySpark 3.5 and Delta Lake come from the project's own dependencies (the repo root's `spark-kindling[standalone]` and each package's `dev` group), and `kindling` is a shim that runs `./.venv/bin/kindling` when the current directory has one, else a system-installed CLI, else installs the latest release CLI.
+`kindling repo init` generates a `.devcontainer/devcontainer.json` that uses the published image `ghcr.io/sep/spark-kindling-framework/devcontainer:latest`. The image ships Python 3.11, Java 21, uv, poe, the Databricks CLI and the Hadoop Azure JARs (at `/opt/hadoop-jars`, symlinked to `/tmp/hadoop-jars`). It bakes in no Kindling packages: PySpark 3.5 and Delta Lake come from the project's own dependencies (the repo root's `spark-kindling[standalone]` and each package's `dev` group), and `kindling` is a shim that runs `./.venv/bin/kindling` when the current directory has one, else a system-installed CLI, else installs the latest CLI from PyPI (falling back to the latest GitHub release).
 
 Open the repo in VS Code and choose **Dev Containers: Reopen in Container**. The `postCreateCommand` runs `kindling env bootstrap` at the repo root: if the root `pyproject.toml` declares no Kindling dependency, it adopts the release your packages pin (failing if they disagree), or pins the latest release for an empty repo, then runs `uv sync --all-packages`. You end up with one repo-wide `.venv/` and `uv.lock` at the root with every package installed editable (including the `dev` group), and VS Code's interpreter set to `.venv/bin/python`. It then runs `kindling agent setup`, installing the Kindling skill for the coding agents the repo uses (`repo init --agents`; see the CLI reference).
 
@@ -155,7 +169,7 @@ kindling env bootstrap                 # repo-wide .venv/ (the devcontainer runs
 
 The root `pyproject.toml` is a uv workspace root, not a package (`[tool.uv] package = false`, `[tool.uv.workspace] members = ["packages/*"]`). If the repo already had a root `pyproject.toml`, `repo init` keeps it; add `[tool.uv.workspace] members = ["packages/*"]` to it. Repos created before `repo init` wrote this file have none — add one with the content shown in [Local Python-First Development](./local_python_first.md#what-the-scaffold-creates), then run `kindling env bootstrap` at the root.
 
-Each package is a uv workspace member with its own `pyproject.toml` (uv_build, `src/<pkg>/` layout, Kindling pinned by release wheel URL to the CLI's version) and poe tasks. Every package must pin the same Kindling release as the root; `kindling env update` moves them together. Work in a package with:
+Each package is a uv workspace member with its own `pyproject.toml` (uv_build, `src/<pkg>/` layout, a plain, unpinned `spark-kindling` runtime dependency, and a `dev` group pinning `spark-kindling==X.Y.Z`, the SDK and the CLI to the CLI's version alongside the local Spark stack; only the workspace root, which is never built, uses `spark-kindling[standalone]`) and poe tasks. Every package must pin the same Kindling release as the root; `kindling env update` moves them together. Work in a package with:
 
 ```bash
 cd packages/my_domain_app
@@ -328,7 +342,7 @@ kindling env check --local --platform fabric
 | `kindling env check` reports missing JARs | Run `kindling env ensure --cloud azure` |
 | Spark session fails to start | Java 11+ must be on PATH (the devcontainer ships Java 21): `java -version`; set `JAVA_HOME` if wrong |
 | `kindling` / `import kindling` not found | Run `kindling env bootstrap` at the repo root; from a subdirectory use `uv run kindling` |
-| `uv sync` fails with conflicting URLs for `spark-kindling` | Packages pin different Kindling releases; run `kindling env update` at the repo root |
+| `uv sync` fails with conflicting URLs or unsatisfiable requirements for `spark-kindling` | Packages pin different Kindling releases (or pin one by URL and another by version); run `kindling env update` at the repo root |
 | ABFSS access denied locally | Run `az login`; confirm `kindling-abfss-local-auth.jar` is in `/tmp/hadoop-jars/` |
 | `entity not found` at runtime | Ensure the package defining the entity is listed in the app's `lake-reqs.txt` and installed (`uv sync --all-packages` at the repo root) |
 | Merge fails with schema mismatch | Run `kindling migrate plan` to inspect pending schema changes |
