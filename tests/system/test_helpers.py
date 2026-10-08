@@ -312,13 +312,13 @@ def _get_repo_version() -> Optional[str]:
         return None
 
 
-def _get_otel_extension_version() -> Optional[str]:
-    """Return the version from the spark-kindling-ext-otel-azure package for deterministic installs."""
+def get_extension_version(package_dir: str) -> Optional[str]:
+    """Return the version in packages/extensions/<package_dir>/pyproject.toml,
+    so a system test installs exactly the extension wheel this checkout builds
+    (extension versions move with Kindling's minor; a hard-coded pin goes stale)."""
     try:
         repo_root = Path(__file__).resolve().parents[2]
-        pyproject_path = (
-            repo_root / "packages" / "extensions" / "kindling_ext_otel_azure" / "pyproject.toml"
-        )
+        pyproject_path = repo_root / "packages" / "extensions" / package_dir / "pyproject.toml"
         content = pyproject_path.read_text(encoding="utf-8")
         match = re.search(r'^version\s*=\s*"([^"]+)"\s*$', content, re.MULTILINE)
         if not match:
@@ -376,7 +376,7 @@ def _get_system_test_azure_monitor_defaults(
     connection_string = (
         os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING") or DEFAULT_APP_INSIGHTS_CONNECTION_STRING
     ).strip()
-    extension_version = _get_otel_extension_version()
+    extension_version = get_extension_version("kindling_ext_otel_azure")
     extension_spec = (
         f"spark-kindling-ext-otel-azure=={extension_version}"
         if extension_version
