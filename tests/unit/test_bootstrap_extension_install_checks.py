@@ -174,6 +174,7 @@ def test_extension_install_uses_explicit_dbfs_temp_path_for_databricks():
         patch("os.path.exists", return_value=True),
         patch("os.path.getsize", return_value=1234),
         patch("kindling.bootstrap.subprocess.run") as subprocess_run,
+        patch("kindling.bootstrap._extension_requirements", return_value=([], [])),
         patch("kindling.bootstrap.importlib.import_module", return_value=object()),
     ):
         subprocess_run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -221,6 +222,7 @@ def test_extension_install_accepts_platform_suffixed_extension_wheel_names():
         patch("os.path.exists", return_value=True),
         patch("os.path.getsize", return_value=1234),
         patch("kindling.bootstrap.subprocess.run") as subprocess_run,
+        patch("kindling.bootstrap._extension_requirements", return_value=([], [])),
         patch("kindling.bootstrap.importlib.import_module", return_value=object()),
     ):
         subprocess_run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -273,6 +275,7 @@ def test_extension_install_prioritizes_new_site_packages_and_clears_stale_depend
             patch("os.path.exists", return_value=True),
             patch("os.path.getsize", return_value=1234),
             patch("kindling.bootstrap.subprocess.run") as subprocess_run,
+            patch("kindling.bootstrap._extension_requirements", return_value=([], [])),
             patch.object(site, "getusersitepackages", return_value="/user/site"),
             patch.object(site, "getsitepackages", return_value=["/venv/site"]),
             patch("kindling.bootstrap.importlib.import_module", return_value=object()),
@@ -303,3 +306,102 @@ def test_extension_install_prioritizes_new_site_packages_and_clears_stale_depend
         if original_opentelemetry is not None:
             sys.modules["opentelemetry"] = original_opentelemetry
         sys.path[:] = [path for path in sys.path if path not in {"/user/site", "/venv/site"}]
+
+
+def _wheel_with_requirements(tmp_path, requirements):
+    import zipfile
+
+    path = tmp_path / "kindling_ext_demo-0.14.0-py3-none-any.whl"
+    metadata = "Metadata-Version: 2.1\nName: kindling-ext-demo\nVersion: 0.14.0\n" + "".join(
+        f"Requires-Dist: {requirement}\n" for requirement in requirements
+    )
+    with zipfile.ZipFile(path, "w") as wheel:
+        wheel.writestr("kindling_ext_demo-0.14.0.dist-info/METADATA", metadata)
+    return path
+
+
+def test_extension_requirements_split_kindling_from_others(tmp_path):
+    from kindling.bootstrap import _extension_requirements
+
+    wheel = _wheel_with_requirements(
+        tmp_path,
+        [
+            "spark-kindling<0.15,>=0.14.0",
+            "spark-kindling-ext-sdp<0.15,>=0.14.0",
+            "azure-monitor-opentelemetry<1.7.0,>=1.6.0",
+            'pyspark<4.0.0,>=3.4.0; extra == "spark_3_x"',
+            'tomli>=2; python_version < "3.0"',
+        ],
+    )
+
+    others, kindling = _extension_requirements(wheel)
+
+    assert others == ["azure-monitor-opentelemetry<1.7.0,>=1.6.0"]
+    assert [r.name for r in kindling] == ["spark-kindling", "spark-kindling-ext-sdp"]
+
+
+def test_require_installed_kindling_accepts_matching_minor():
+    from kindling.bootstrap import _require_installed_kindling
+    from packaging.requirements import Requirement
+
+    with patch("importlib.metadata.version", return_value="0.14.2"):
+        _require_installed_kindling("ext", [Requirement("spark-kindling>=0.14.0,<0.15")])
+
+
+def test_require_installed_kindling_rejects_other_minor_with_both_versions():
+    import pytest
+    from kindling.bootstrap import _require_installed_kindling
+    from packaging.requirements import Requirement
+
+    with patch("importlib.metadata.version", return_value="0.15.0"):
+        with pytest.raises(RuntimeError, match="spark-kindling 0.15.0 is installed"):
+            _require_installed_kindling("ext", [Requirement("spark-kindling>=0.14.0,<0.15")])
+
+
+def _only_kindling_installed(kindling_version):
+    from importlib.metadata import PackageNotFoundError
+
+    def version(name):
+        if name.replace("_", "-").lower() == "spark-kindling":
+            return kindling_version
+        raise PackageNotFoundError(name)
+
+    return version
+
+
+def test_extension_install_never_installs_kindling_from_an_index(tmp_path):
+    """The extension wheel is installed with --no-deps and only its other
+    requirements follow, so pip never reinstalls the Kindling runtime the
+    bootstrap installed."""
+    logger = MagicMock()
+    storage_utils = MagicMock()
+    storage_utils.fs = MagicMock()
+    wheel = _wheel_with_requirements(
+        tmp_path, ["spark-kindling<0.15,>=0.14.0", "typing-extensions>=4.6.0"]
+    )
+    storage_utils.fs.ls.return_value = [
+        SimpleNamespace(path=f"abfss://artifacts@acct/path/packages/{wheel.name}")
+    ]
+    storage_utils.fs.cp.side_effect = lambda src, dst, *a, **k: __import__("shutil").copy(
+        wheel, dst.replace("file://", "")
+    )
+
+    with (
+        patch("kindling.bootstrap._get_storage_utils", return_value=storage_utils),
+        patch("kindling.bootstrap.importlib.util.find_spec", return_value=None),
+        patch("importlib.metadata.version", side_effect=_only_kindling_installed("0.14.1")),
+        patch("kindling.bootstrap.subprocess.run") as subprocess_run,
+        patch("kindling.bootstrap.importlib.import_module", return_value=object()),
+    ):
+        subprocess_run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+        install_bootstrap_dependencies(
+            logger,
+            {"required_packages": [], "extensions": ["kindling-ext-demo"]},
+            artifacts_storage_path="abfss://artifacts@acct/path",
+        )
+
+    calls = [c.args[0] for c in subprocess_run.call_args_list]
+    assert len(calls) == 2, logger.error.call_args_list
+    assert "--no-deps" in calls[0] and calls[0][-1].endswith(wheel.name)
+    assert calls[1][-1] == "typing-extensions>=4.6.0"
+    assert not any("spark-kindling" in arg for call in calls for arg in call[1:])

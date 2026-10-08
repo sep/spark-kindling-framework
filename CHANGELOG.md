@@ -35,10 +35,21 @@ All notable changes to spark-kindling are documented here.
 - The devcontainer image's lazy `kindling` shim installs the latest GitHub
   release's exact CLI and SDK version from PyPI, falling back to that
   release's wheels while PyPI doesn't have it yet.
-- **Extension versions for their first PyPI upload:** Databricks 0.2.1, SDP
-  0.3.5, Cosmos DB 0.2.1, Temporal 0.2.8, OpenTelemetry Azure 0.4.1. Only
-  their package metadata and READMEs changed; the bump keeps each version
-  number tied to one set of files across GitHub releases and PyPI.
+- **Extensions follow Kindling's major.minor.** An extension's major.minor
+  states which Kindling major.minor it works with; its patch number counts
+  its own fixes and additions. At the start of each minor line (X.Y.0 and its
+  release candidates) `poe version` gives every extension Kindling's version
+  and declares `spark-kindling>=X.Y.0,<X.(Y+1)` (and the same range for an
+  extension it builds on). From 0.14.0 every extension is 0.14.x, so each
+  version number is tied to one set of files across GitHub releases and PyPI.
+- **The cluster bootstrap never reinstalls Kindling for an extension.** It
+  installed extension wheels with `pip install --ignore-installed --upgrade`
+  and their dependencies, so an extension declaring `spark-kindling` would
+  make pip fetch Kindling from the package index over the runtime the
+  bootstrap installed from the artifacts store (or fail where no index has
+  it). Extensions are now installed with `--no-deps`; their other
+  requirements are installed separately, and their Kindling requirements are
+  checked against the installed runtime, failing with both versions named.
 - `kindling package init --source auto|pypi|github`: with no Kindling pin at
   the repo root, `auto` writes PyPI version pins only when the release is on
   PyPI, and release wheel URLs otherwise.

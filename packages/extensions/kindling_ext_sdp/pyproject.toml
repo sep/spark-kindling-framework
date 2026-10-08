@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "spark-kindling-ext-sdp"
-version = "0.3.5"
+version = "0.3.4"
 description = "Spark Declarative Pipelines (SDP) declaration engine for Kindling"
 authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
 license = "MIT"

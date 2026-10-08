@@ -32,10 +32,28 @@ to the GitHub release is the same file PyPI receives:
 | `spark_kindling-<v>` | root `pyproject.toml`, module `packages/kindling` | The runtime. Contains every `platform_*.py`; platform dependencies are extras. |
 | `spark_kindling_cli-<v>` | `packages/kindling_cli` | Design-time CLI, including the scaffolding templates. |
 | `spark_kindling_sdk-<v>` | `packages/kindling_sdk` | Design-time platform SDK. |
-| `spark_kindling_ext_<name>-<v>` | `packages/extensions/kindling_ext_<name>` | Each extension, at its own version. |
+| `spark_kindling_ext_<name>-<v>` | `packages/extensions/kindling_ext_<name>` | Each extension; its major.minor is Kindling's. |
 
-Runtime, CLI and SDK share one version (bumped together by `poe version`);
-extensions version independently.
+Runtime, CLI and SDK share one version (bumped together by `poe version`).
+
+**Extensions follow Kindling's major.minor.** An extension's major.minor
+states which Kindling major.minor it works with, and its patch number counts
+its own fixes and additions (extension 0.14.3 works with any Kindling 0.14.x).
+
+- At the start of each minor line (X.Y.0 and its release candidates),
+  `poe version` gives every extension Kindling's version and rewrites its
+  Kindling requirements to `spark-kindling>=X.Y.0,<X.(Y+1)` (and the same
+  range for another extension it builds on, such as Databricks on SDP). An
+  extension without changes still moves, since the version states
+  compatibility.
+- Within a minor line, Kindling patch releases leave extensions alone, and an
+  extension's patch is bumped by hand when its code changes. A Kindling patch
+  release must therefore not break an extension; breaking changes wait for
+  the next minor.
+- On a cluster, the bootstrap installs an extension without its Kindling
+  dependencies and checks them against the installed runtime instead, so pip
+  never replaces the runtime with an index copy, and a mismatched extension
+  fails with both versions named.
 
 Where they are published: every wheel is attached to the GitHub release. The
 `publish-pypi` job also uploads the wheel and sdist of `spark-kindling`,

@@ -141,8 +141,10 @@ CLI (a unit test keeps the two in step), then bootstrap it on PyPI (below).
 - **Authentication**: trusted publishing. PyPI accepts the job's GitHub OIDC
   identity (this repository, `ci.yml`, the environment); no API token is
   stored anywhere.
-- **Unchanged extensions**: extensions keep their version across Kindling
-  releases, so an unchanged one is already on the index and is skipped
+- **Unchanged extensions**: within a minor line, an extension keeps its
+  version across Kindling patch releases (see
+  [Build System](build_system.md): extensions follow Kindling's
+  major.minor), so an unchanged one is already on the index and is skipped
   (`skip-existing`), not an error. Builds are reproducible, so the job first
   compares every file against the one already on the index
   (`scripts/check_pypi_artifacts.py`) and fails if they differ: an
