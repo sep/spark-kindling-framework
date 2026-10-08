@@ -28,6 +28,16 @@ def test_cli_published_set_matches_publish_script():
     assert names == set(_PYPI_PUBLISHED_DISTRIBUTIONS)
 
 
+def test_bootstrap_script_covers_the_published_set():
+    """The one-time bootstrap prints a trusted-publisher form per published
+    project; a project missing there would never get its publisher."""
+    from kindling_cli.cli import _PYPI_PUBLISHED_DISTRIBUTIONS
+
+    script = (_REPO_ROOT / "scripts" / "pypi_bootstrap.sh").read_text()
+    block = re.search(r"PROJECTS=\((.*?)\)", script, re.S).group(1)
+    assert set(block.split()) == set(_PYPI_PUBLISHED_DISTRIBUTIONS)
+
+
 def _fake_index(monkeypatch, files_by_project):
     def fake_urlopen(url, timeout):
         for (name, version), files in files_by_project.items():

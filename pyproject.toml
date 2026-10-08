@@ -166,6 +166,7 @@ upload-release = { shell = "bash scripts/upload_to_storage.sh --release" }
 
 # Release tasks
 release = { shell = "bash scripts/release.sh ${version}", help = "Tag and release a version. Run 'poe version --bump_type patch' first.", args = [{name = "version", positional = true, help = "Version to release (e.g. 0.9.4)"}] }
+pypi-bootstrap = { cmd = "bash scripts/pypi_bootstrap.sh", help = "One-time first PyPI upload (release candidate on main), then print the trusted-publisher forms. --links prints only the forms." }
 
 # Development environment setup
 init-azure = { shell = "source scripts/init_azure_dev.sh" }

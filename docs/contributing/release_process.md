@@ -193,28 +193,24 @@ projects). Do this once, before tagging that candidate.
 1. **GitHub environments.** In **Settings → Environments**, create `pypi` and
    `testpypi`. Add required reviewers to `pypi` to gate every upload behind
    an approval, and restrict it to `v*` tags if desired.
-2. **Build the candidate locally.** After the rc version bump is merged, from
-   an up-to-date `main`:
+2. **Upload the candidate yourself.** After the rc version bump is merged
+   (`poe version --bump_type rc`), from an up-to-date `main`:
 
    ```bash
-   uv sync
-   poe build
-   bash scripts/select_pypi_dists.sh dist pypi-dist   # the 8 published packages
+   poe pypi-bootstrap
    ```
 
-3. **Upload it with a personal API token** (account settings → API tokens,
-   scoped to the whole account, since the projects do not exist yet):
-
-   ```bash
-   UV_PUBLISH_TOKEN=<test.pypi.org token> uv publish \
-       --publish-url https://test.pypi.org/legacy/ pypi-dist/*
-   UV_PUBLISH_TOKEN=<pypi.org token> uv publish pypi-dist/*
-   ```
-
-   Uploading the candidate to PyPI as well claims the names now; prerelease
-   versions are not installed unless asked for by version.
-4. **Attach the trusted publisher** to each of the eight projects, on both
-   sites (**Manage → Publishing → Add a new publisher → GitHub**):
+   It builds, selects the 8 published packages, asks you to type the version
+   to confirm, and uploads them to TestPyPI and then PyPI with account-wide API
+   tokens (account settings → API tokens; set `TESTPYPI_TOKEN` and
+   `PYPI_TOKEN`, or type them at the prompt). Uploading the candidate to PyPI
+   claims the names now; prerelease versions are not installed unless asked
+   for by version. A rerun skips files already uploaded.
+3. **Attach the trusted publisher** to each of the eight projects, on both
+   sites. PyPI has no API for this, so it is one web form per project and
+   site; `poe pypi-bootstrap` prints the 16 links at the end
+   (`poe pypi-bootstrap --links` prints them again). In each form choose
+   **GitHub** and enter:
 
    | Field | PyPI | TestPyPI |
    |---|---|---|
@@ -223,7 +219,7 @@ projects). Do this once, before tagging that candidate.
    | Workflow | `ci.yml` | `ci.yml` |
    | Environment | `pypi` | `testpypi` |
 
-5. **Revoke the API tokens.** CI publishes with trusted publishing from here
+4. **Revoke the API tokens.** CI publishes with trusted publishing from here
    on.
 
 Then `poe release` the candidate as usual. Its `publish-pypi` job finds the
