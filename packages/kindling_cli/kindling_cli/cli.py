@@ -3119,23 +3119,33 @@ def _remove_uv_source(pyproject_path: Path, distribution: str) -> None:
     dependency itself in place (`uv remove` would delete both)."""
     text = pyproject_path.read_text(encoding="utf-8")
     header = re.search(r"(?m)^\[tool\.uv\.sources\]\s*$", text)
-    if not header:
-        return
-    next_header = re.search(r"(?m)^\[", text[header.end() :])
-    end = header.end() + next_header.start() if next_header else len(text)
-    canonical = _canonical_distribution_name(distribution)
-    lines = text[header.end() : end].splitlines(keepends=True)
-    kept = [
-        line
-        for line in lines
-        if not (
-            "=" in line
-            and _canonical_distribution_name(line.split("=", 1)[0].strip().strip('"')) == canonical
-        )
-    ]
-    if len(kept) != len(lines):
-        pyproject_path.write_text(
-            text[: header.end()] + "".join(kept) + text[end:], encoding="utf-8"
+    if header:
+        next_header = re.search(r"(?m)^\[", text[header.end() :])
+        end = header.end() + next_header.start() if next_header else len(text)
+        canonical = _canonical_distribution_name(distribution)
+        lines = text[header.end() : end].splitlines(keepends=True)
+        kept = [
+            line
+            for line in lines
+            if not (
+                "=" in line
+                # A TOML key may be bare, "double-" or 'single-quoted'.
+                and _canonical_distribution_name(line.split("=", 1)[0].strip().strip("\"'"))
+                == canonical
+            )
+        ]
+        if len(kept) != len(lines):
+            pyproject_path.write_text(
+                text[: header.end()] + "".join(kept) + text[end:], encoding="utf-8"
+            )
+    # Any other TOML spelling (a [tool.uv.sources.<name>] table, a dotted
+    # key) is left alone above; refuse rather than keep an override that
+    # would silently win over the new pin.
+    sources = _load_pyproject_toml(pyproject_path).get("tool", {}).get("uv", {}).get("sources", {})
+    if isinstance(sources, dict) and _uv_source_for(sources, distribution) is not None:
+        raise click.ClickException(
+            f"Could not remove the [tool.uv.sources] entry for {distribution} in "
+            f"{pyproject_path}; delete it by hand and rerun."
         )
 
 

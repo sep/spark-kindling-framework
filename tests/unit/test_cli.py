@@ -6230,3 +6230,33 @@ def test_env_update_package_back_to_url_keeps_standalone_out_of_runtime(monkeypa
         cmd for cmd in commands if cmd[:2] == ["uv", "add"] and cmd[2].startswith("https://")
     ]
     assert url_adds == [["uv", "add", _wheel_url("spark_kindling-1.2.3-py3-none-any.whl")]]
+
+
+@pytest.mark.parametrize(
+    "source_block, removable",
+    [
+        ("[tool.uv.sources]\nspark-kindling = {{ url = '{url}' }}\n", True),
+        ("[tool.uv.sources]\n'spark-kindling' = {{ url = '{url}' }}\n", True),
+        ('[tool.uv.sources]\n"spark-kindling" = {{ url = "{url}" }}\n', True),
+        ("[tool.uv.sources.spark-kindling]\nurl = '{url}'\n", False),
+    ],
+)
+def test_remove_uv_source_handles_toml_key_spellings(tmp_path, source_block, removable):
+    from kindling_cli.cli import _remove_uv_source
+
+    url = _wheel_url("spark_kindling-1.0.0-py3-none-any.whl")
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        "[project]\nname = 'x'\nversion = '0.1.0'\ndependencies = ['spark-kindling']\n\n"
+        + source_block.format(url=url),
+        encoding="utf-8",
+    )
+
+    if removable:
+        _remove_uv_source(pyproject, "spark-kindling")
+        data = _load_pyproject_toml(pyproject)
+        assert "spark-kindling" not in data.get("tool", {}).get("uv", {}).get("sources", {})
+        assert data["project"]["dependencies"] == ["spark-kindling"]
+    else:
+        with pytest.raises(click.ClickException, match="delete it by hand"):
+            _remove_uv_source(pyproject, "spark-kindling")
