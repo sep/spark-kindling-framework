@@ -1031,11 +1031,11 @@ wheels = [
 
 [[package]]
 name = "dynaconf"
-version = "3.2.13"
+version = "3.3.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/57/0e/05927cf459e73f8bf9a9277cbea6f2d5b7db8a5cc9dc1e20e7a5fbac1b90/dynaconf-3.2.13.tar.gz", hash = "sha256:d79e0189d97b3f226b8ebb1717e2ce05d1a05cdf6ea05de66d24625fdb5a0cbd", size = 283507, upload-time = "2026-03-17T19:38:47.632Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c1/f9/87b0637f470cd517378d0f71b58a755cc853ab5f08822e55e399ecd5bef6/dynaconf-3.3.1.tar.gz", hash = "sha256:6be6b3970dfe9c3a66647ded973952a8600582a8c55e2c1842e5b21aa12ef5e1", size = 326330, upload-time = "2026-06-26T20:14:14.906Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/97/43/11d6e5d2c00bf000b5329717c74563bf76a9193f4a41cb0c4ef277dde4fa/dynaconf-3.2.13-py2.py3-none-any.whl", hash = "sha256:4305527aef4834bdba3e39479b23c005186e83fb85f65bcaa4bcea58fa26759b", size = 238041, upload-time = "2026-03-17T19:38:45.337Z" },
+    { url = "https://files.pythonhosted.org/packages/48/b4/026f7f93be9dd6de846bfe07a32ac2e3cf4562896bf23e58a4b9daee4043/dynaconf-3.3.1-py3-none-any.whl", hash = "sha256:cb5b36e92de8f3b64e5fbf22e7be49ecc4ecafb946d86e0a9d2e13a7b7faf82f", size = 270045, upload-time = "2026-06-26T20:14:13.397Z" },
 ]
 
 [[package]]

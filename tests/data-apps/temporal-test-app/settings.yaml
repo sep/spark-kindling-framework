@@ -1,3 +1,3 @@
 kindling:
   extensions:
-    - spark-kindling-ext-temporal==0.2.4
+    - spark-kindling-ext-temporal  # the system test passes the exact version as a job parameter

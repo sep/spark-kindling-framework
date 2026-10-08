@@ -65,6 +65,9 @@ All notable changes to spark-kindling are documented here.
   not replace the app's list: the extension dedup then kept the file's pin.
   Parameter lists now replace, like every other layer, and Dynaconf's
   `dynaconf_merge` marker still appends.
+- The agent skill's Databricks reference no longer says the devcontainer
+  image lacks the Azure CLI. The image includes `az`, so `az login` auth
+  works there.
 
 ## [0.13.2] - 2026-10-07
 
