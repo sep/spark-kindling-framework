@@ -6193,3 +6193,40 @@ def test_env_add_core_url_pin_to_package_without_it_skips_remove(monkeypatch, tm
     assert result.exit_code == 0, result.output
     assert not any(cmd[:2] == ["uv", "remove"] for cmd in commands)
     assert ["uv", "add", _wheel_url("spark_kindling-1.2.3-py3-none-any.whl")] in commands
+
+
+def test_env_update_package_back_to_url_keeps_standalone_out_of_runtime(monkeypatch, tmp_path):
+    """A dev pin's local-only extra (standalone) stays in `dev` when the
+    package moves back to URL pins; the runtime URL entry has no extra."""
+    package = tmp_path / "orders"
+    _write_pyproject(
+        package,
+        _PACKAGE_HEAD.format(runtime="'spark-kindling'")
+        + "[dependency-groups]\ndev = ['spark-kindling[standalone]==1.0.0']\n",
+    )
+    commands = []
+    _pin_release(monkeypatch, commands, on_pypi=True)
+
+    result = CliRunner().invoke(
+        cli, ["env", "update", "--source", "github", "--project", str(package)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert commands[:2] == [
+        ["uv", "remove", "spark-kindling", "--group", "dev", "--frozen"],
+        [
+            "uv",
+            "add",
+            "spark-kindling",
+            "--group",
+            "dev",
+            "--raw",
+            "--frozen",
+            "--extra",
+            "standalone",
+        ],
+    ]
+    url_adds = [
+        cmd for cmd in commands if cmd[:2] == ["uv", "add"] and cmd[2].startswith("https://")
+    ]
+    assert url_adds == [["uv", "add", _wheel_url("spark_kindling-1.2.3-py3-none-any.whl")]]

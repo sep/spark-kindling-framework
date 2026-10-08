@@ -3209,15 +3209,26 @@ def _uv_pin_kindling(
         # Back from a `dev` version pin to the URL form: drop the dev pin, if
         # there is one, and pin the runtime entry by URL, as before PyPI.
         group_requirements = project_data.get("dependency-groups", {}).get(group, []) or []
-        if any(
-            isinstance(requirement, str)
+        dev_entries = [
+            _parse_pep508_name_extras(requirement)[1]
+            for requirement in group_requirements
+            if isinstance(requirement, str)
             and _canonical_distribution_name(_parse_pep508_name_extras(requirement)[0])
             == _KINDLING_DISTRIBUTION_PREFIX
-            for requirement in group_requirements
-        ):
+        ]
+        if dev_entries:
             command = ["uv", "remove", distribution, "--group", group, "--frozen"]
             _run_checked(command, cwd=project_path)
-        group = None
+            local_extras = sorted({extra for entry_extras in dev_entries for extra in entry_extras})
+            if local_extras:
+                # Local-only extras (standalone) stay in the group, unpinned:
+                # the URL source pins every reference to the package.
+                command = ["uv", "add", distribution, "--group", group, "--raw", "--frozen"]
+                for extra in local_extras:
+                    command.extend(["--extra", extra])
+                _run_checked(command, cwd=project_path)
+        # The runtime entry never carries an extra (it reaches the wheel).
+        group, extras = None, []
     if not use_pypi:
         if not wheel.get("url"):
             raise click.ClickException(
