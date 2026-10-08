@@ -34,7 +34,7 @@ troubleshooting. Layering, `@secret` and `entity_tags` rules are in
 `DATABRICKS_HOST` is always required. The Kindling SDK, and `kindling env check
 --platform databricks`, try auth in this order: `DATABRICKS_TOKEN`, then the
 Azure service principal (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
-`AZURE_CLIENT_SECRET`), then `az login`. The devcontainer image has no `az`.
+`AZURE_CLIENT_SECRET`), then `az login` (the devcontainer image includes `az`).
 
 - The last two work only on Azure, and Databricks OAuth M2M
   (`DATABRICKS_CLIENT_ID`) is never read, so on AWS or GCP use a token. If
