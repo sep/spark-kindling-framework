@@ -16,7 +16,7 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 from urllib.parse import quote, urlparse
 
 import click
@@ -3319,6 +3319,113 @@ def _package_init_source(source: str, version: Optional[str]) -> str:
     return "pypi" if _published_on_pypi(_KINDLING_DISTRIBUTION_PREFIX, resolved) else "github"
 
 
+def _release_wheel_extension_requirements(wheel: Dict[str, str]) -> List[str]:
+    """Kindling extensions a release wheel requires (e.g. Databricks -> SDP),
+    read from its METADATA. These must come from the same release: uv would
+    otherwise look them up on an index, which fails for GitHub-only pins and
+    can pick a version outside the release."""
+    import io
+    import zipfile
+
+    import requests
+
+    url = wheel.get("url")
+    if not url:
+        return []
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        metadata_name = next(
+            (name for name in archive.namelist() if name.endswith(".dist-info/METADATA")), None
+        )
+        if metadata_name is None:
+            return []
+        metadata = archive.read(metadata_name).decode("utf-8")
+    required: List[str] = []
+    for line in metadata.splitlines():
+        if not line.startswith("Requires-Dist:"):
+            continue
+        requirement = line.split(":", 1)[1].strip()
+        if "extra ==" in requirement.replace("extra==", "extra =="):
+            continue
+        name = _canonical_distribution_name(_parse_pep508_name_extras(requirement)[0])
+        if name.startswith(f"{_KINDLING_DISTRIBUTION_PREFIX}-ext-") and name not in required:
+            required.append(name)
+    return required
+
+
+def _missing_extension_dependencies(
+    roots: Iterable[str],
+    wheels_by_distribution: Dict[str, Dict[str, str]],
+    declared: Iterable[str],
+) -> List[Tuple[str, str]]:
+    """Kindling extensions the `roots` require (transitively) that the
+    project doesn't declare, as (distribution, required_by), ordered so each
+    comes after everything it requires: uv locks on every `uv add`, so a
+    dependency has to be pinned before the package that needs it."""
+    known = {_canonical_distribution_name(name) for name in declared}
+    found: Dict[str, str] = {}
+    order: List[str] = []
+
+    def visit(current: str) -> None:
+        wheel = wheels_by_distribution.get(current)
+        if wheel is None or not current.startswith(f"{_KINDLING_DISTRIBUTION_PREFIX}-ext-"):
+            return
+        try:
+            requirements = _release_wheel_extension_requirements(wheel)
+        except Exception as exc:  # noqa: BLE001 -- offline or a bad asset
+            click.echo(
+                f"  warning: could not read {current}'s Kindling dependencies ({exc}); "
+                "pin them with `kindling env add` if uv cannot resolve them.",
+                err=True,
+            )
+            return
+        for required in requirements:
+            if required in known or required in found:
+                continue
+            if required not in wheels_by_distribution:
+                raise click.ClickException(
+                    f"{current} requires {required}, which is not among the release's wheels."
+                )
+            found[required] = current
+            visit(required)
+            order.append(required)
+
+    for root in roots:
+        visit(_canonical_distribution_name(root))
+    return [(name, found[name]) for name in order]
+
+
+def _pin_extension_dependencies(
+    project_path: Path,
+    roots: Iterable[str],
+    wheels_by_distribution: Dict[str, Dict[str, str]],
+    declared: Iterable[str],
+    *,
+    group: Optional[str],
+    frozen: bool,
+    source: str,
+) -> List[str]:
+    """Pin, from the same release, every Kindling extension the `roots`
+    require that the project doesn't declare. Call before pinning the roots.
+    Returns the distributions added."""
+    added: List[str] = []
+    for required, required_by in _missing_extension_dependencies(
+        roots, wheels_by_distribution, declared
+    ):
+        dependency = wheels_by_distribution[required]
+        pinned_from = _uv_pin_kindling(
+            project_path, dependency, group=group, frozen=frozen, source=source
+        )
+        location = f" [{group}]" if group else ""
+        click.echo(
+            f"  [{project_path}] {required} -> {dependency['version']}{location} "
+            f"({pinned_from}; required by {required_by})"
+        )
+        added.append(required)
+    return added
+
+
 def _source_option(func):
     return click.option(
         "--source",
@@ -3740,6 +3847,21 @@ def env_update(
     click.echo(f"Updating Kindling packages to {resolved_version} ({repo})")
     updated = False
     for target_dir, target_declared in sorted(targets.items()):
+        # Extensions a declared extension requires come from this release
+        # too, pinned first (uv locks on every add).
+        extension_groups: Dict[Optional[str], List[str]] = {}
+        for distribution, (group, _extras) in target_declared.items():
+            extension_groups.setdefault(group, []).append(distribution)
+        for group, roots in sorted(extension_groups.items(), key=lambda item: str(item[0])):
+            _pin_extension_dependencies(
+                target_dir,
+                roots,
+                wheels_by_distribution,
+                target_declared,
+                group=group,
+                frozen=frozen_add,
+                source=source,
+            )
         for distribution, (group, extras) in sorted(target_declared.items()):
             match = wheels_by_distribution.get(_canonical_distribution_name(distribution))
             if match is None:
@@ -3861,6 +3983,15 @@ def env_add(
         group, extras = dependency_group, []
 
     click.echo(f"Resolving {package} {match['version']} from Kindling {resolved_version} ({repo})")
+    _pin_extension_dependencies(
+        project_path,
+        [normalized_target],
+        {wheel["distribution"]: wheel for wheel in wheels},
+        declared,
+        group=group,
+        frozen=False,
+        source=source,
+    )
     pinned_from = _uv_pin_kindling(project_path, match, group=group, extras=extras, source=source)
 
     location = f" [{group}]" if group else ""

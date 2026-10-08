@@ -532,6 +532,9 @@ def test_env_update_fails_without_pyproject_toml(tmp_path):
 
 
 from kindling_cli.cli import _published_on_pypi as _REAL_PUBLISHED_ON_PYPI  # noqa: E402
+from kindling_cli.cli import (  # noqa: E402
+    _release_wheel_extension_requirements as _REAL_EXTENSION_REQUIREMENTS,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -539,6 +542,7 @@ def _no_pypi_lookups(monkeypatch):
     """Keep env-command tests offline: nothing is "on PyPI" unless a test
     says so, so URL-pin behavior is the default here."""
     monkeypatch.setattr("kindling_cli.cli._published_on_pypi", lambda dist, version: False)
+    monkeypatch.setattr("kindling_cli.cli._release_wheel_extension_requirements", lambda wheel: [])
 
 
 def test_env_add_pins_pypi_version_when_release_is_published(monkeypatch, tmp_path):
@@ -6260,3 +6264,92 @@ def test_remove_uv_source_handles_toml_key_spellings(tmp_path, source_block, rem
     else:
         with pytest.raises(click.ClickException, match="delete it by hand"):
             _remove_uv_source(pyproject, "spark-kindling")
+
+
+def test_env_add_pins_required_extensions_from_the_same_release(monkeypatch, tmp_path):
+    """Databricks requires SDP: both come from the release, so uv never looks
+    SDP up on an index (which fails for GitHub-only pins)."""
+    project_dir = tmp_path / "project"
+    _write_pyproject(
+        project_dir, "[project]\nname = 'demo'\nversion = '0.1.0'\ndependencies = []\n"
+    )
+    commands = []
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets(
+            "spark_kindling_ext_databricks-0.2.0-py3-none-any.whl",
+            "spark_kindling_ext_sdp-0.3.4-py3-none-any.whl",
+        ),
+    )
+    monkeypatch.setattr(
+        "kindling_cli.cli._release_wheel_extension_requirements",
+        lambda wheel: (
+            ["spark-kindling-ext-sdp"]
+            if wheel["distribution"] == "spark-kindling-ext-databricks"
+            else []
+        ),
+    )
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append(cmd))
+
+    result = CliRunner().invoke(
+        cli, ["env", "add", "spark-kindling-ext-databricks", "--project", str(project_dir)]
+    )
+
+    assert result.exit_code == 0, result.output
+    # The dependency first: uv locks on every add.
+    assert commands == [
+        ["uv", "add", _wheel_url("spark_kindling_ext_sdp-0.3.4-py3-none-any.whl")],
+        ["uv", "add", _wheel_url("spark_kindling_ext_databricks-0.2.0-py3-none-any.whl")],
+    ]
+    assert "required by spark-kindling-ext-databricks" in result.output
+
+
+def test_env_add_warns_when_dependency_metadata_is_unreadable(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    _write_pyproject(
+        project_dir, "[project]\nname = 'demo'\nversion = '0.1.0'\ndependencies = []\n"
+    )
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets("spark_kindling_ext_databricks-0.2.0-py3-none-any.whl"),
+    )
+
+    def offline(wheel):
+        raise OSError("offline")
+
+    monkeypatch.setattr("kindling_cli.cli._release_wheel_extension_requirements", offline)
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: None)
+
+    result = CliRunner().invoke(
+        cli, ["env", "add", "spark-kindling-ext-databricks", "--project", str(project_dir)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "could not read spark-kindling-ext-databricks's Kindling dependencies" in result.output
+
+
+def test_release_wheel_extension_requirements_reads_metadata(monkeypatch):
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "x-0.1.dist-info/METADATA",
+            "Name: x\nRequires-Dist: spark-kindling>=0.14.0,<0.15\n"
+            "Requires-Dist: spark-kindling-ext-sdp>=0.14.0,<0.15\n"
+            'Requires-Dist: spark-kindling-ext-temporal; extra == "temporal"\n'
+            "Requires-Dist: requests>=2\n",
+        )
+
+    class Response:
+        content = buffer.getvalue()
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr("requests.get", lambda url, timeout: Response())
+
+    assert _REAL_EXTENSION_REQUIREMENTS({"url": "https://x/y.whl"}) == ["spark-kindling-ext-sdp"]
