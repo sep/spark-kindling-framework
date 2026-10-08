@@ -2,7 +2,7 @@
 
 All notable changes to spark-kindling are documented here.
 
-## Unreleased
+## [0.13.2] - 2026-10-07
 
 ### Added
 
@@ -50,6 +50,17 @@ All notable changes to spark-kindling are documented here.
   `.kindling-agent.json`), removes its own files for agents dropped from the
   selection, and edits only its marked block in instruction files the team
   also writes in. `--force` is gone; `--check` exits 1 when files are stale.
+- **Scaffolded packages depend on plain `spark-kindling`.** `kindling package
+  init` used to put `spark-kindling[standalone]` in a package's runtime
+  `dependencies`, so its wheel declared pyspark, delta-spark, pandas and
+  pyarrow, and pip pulled them onto Databricks, Fabric and Synapse clusters
+  that already supply Spark and Delta. Generated packages now depend on plain
+  `spark-kindling` and list the local Spark stack in their `dev` group; the
+  root workspace keeps `spark-kindling[standalone]`, and `env bootstrap` adds
+  that extra when it adopts a package's pin. **Existing packages**: change
+  `"spark-kindling[standalone]"` to `"spark-kindling"` in `dependencies` and
+  add `pyspark`, `delta-spark`, `pandas` and `pyarrow` to the `dev` group.
+
 ### Fixed
 
 - **`kindling app run --platform` uses `KINDLING_ENV`.** `app deploy` defaults
@@ -114,8 +125,7 @@ All notable changes to spark-kindling are documented here.
   steps and the quickstart already suggested. It used to fail with "Project
   name '.' cannot be converted to a valid Python identifier". With
   `--platform`, a path runs the app deployed under that directory's name (the
-  name `kindling app deploy` gives it by default); a name is still used as
-  given.
+  name `kindling app deploy` gives it by default).
 - **A freshly scaffolded entity no longer breaks local reads.** A
   `tests/entities/` fixture with no data rows (empty, header-only, or only `#`
   comment lines) is now ignored with a warning naming the file, and the
@@ -137,6 +147,17 @@ All notable changes to spark-kindling are documented here.
   provider is an error. The SQL must be a single read-only query; DDL, DML,
   session commands and multiple statements are rejected when the entity is
   declared and when it is read.
+- **Databricks workspace overlay.** When `workspace_id` holds the workspace
+  URL (it doubles as the REST API host), bootstrap looked for
+  `workspace_https://....yaml`, which can't exist. The overlay is now keyed
+  by the workspace's numeric ID, or its host with dots replaced by
+  underscores when the ID isn't available.
+- **SDK storage root.** The Databricks and Synapse SDK clients defaulted
+  `AZURE_BASE_PATH` to `system-tests`, while the CLI defaults it to empty, so
+  uploads and job reads could resolve different roots. Both now default to
+  empty.
+- `kindling entity show` / `validate` skip `#` comment lines and blank
+  records in fixture CSVs, as the runtime does.
 
 ## [0.13.1] - 2026-10-06
 
