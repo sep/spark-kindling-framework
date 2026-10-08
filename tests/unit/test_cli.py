@@ -6175,3 +6175,21 @@ def test_exact_pin_version_ignores_markers_and_wildcards(requirement, version):
     from kindling_cli.cli import _exact_pin_version
 
     assert _exact_pin_version(requirement) == version
+
+
+def test_env_add_core_url_pin_to_package_without_it_skips_remove(monkeypatch, tmp_path):
+    """Adding spark-kindling by URL to a package that doesn't declare it yet
+    must not try to `uv remove` a dev pin that isn't there."""
+    package = tmp_path / "orders"
+    _write_pyproject(package, _PACKAGE_HEAD.format(runtime="").replace("    ,\n", ""))
+    commands = []
+    _pin_release(monkeypatch, commands, on_pypi=False)
+
+    result = CliRunner().invoke(
+        cli,
+        ["env", "add", "spark-kindling", "--group", "dev", "--project", str(package)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not any(cmd[:2] == ["uv", "remove"] for cmd in commands)
+    assert ["uv", "add", _wheel_url("spark_kindling-1.2.3-py3-none-any.whl")] in commands

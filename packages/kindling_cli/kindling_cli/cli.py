@@ -3206,10 +3206,17 @@ def _uv_pin_kindling(
     if package_core and use_pypi:
         return _uv_pin_package_kindling_version(project_path, version, extras=extras, frozen=frozen)
     if package_core and group:
-        # Back from a `dev` version pin to the URL form: drop the dev pin
-        # and pin the runtime entry by URL, as before PyPI.
-        command = ["uv", "remove", distribution, "--group", group, "--frozen"]
-        _run_checked(command, cwd=project_path)
+        # Back from a `dev` version pin to the URL form: drop the dev pin, if
+        # there is one, and pin the runtime entry by URL, as before PyPI.
+        group_requirements = project_data.get("dependency-groups", {}).get(group, []) or []
+        if any(
+            isinstance(requirement, str)
+            and _canonical_distribution_name(_parse_pep508_name_extras(requirement)[0])
+            == _KINDLING_DISTRIBUTION_PREFIX
+            for requirement in group_requirements
+        ):
+            command = ["uv", "remove", distribution, "--group", group, "--frozen"]
+            _run_checked(command, cwd=project_path)
         group = None
     if not use_pypi:
         if not wheel.get("url"):

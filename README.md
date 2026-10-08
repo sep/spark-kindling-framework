@@ -82,7 +82,7 @@ The framework consists of several modular components:
 - **[spark-kindling-ext-cosmos](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_cosmos)** - Azure Cosmos DB entity provider (idempotent upsert writes)
 - **[spark-kindling-ext-visualization](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_visualization)** - Matplotlib visualization helpers
 
-Install an extension with `pip install <name>` or `kindling env add <name>`. The ADX, Auto Loader and visualization extensions are not on PyPI; they are attached to each [GitHub Release](https://github.com/sep/spark-kindling-framework/releases) as wheels (`kindling env add` pins those by URL).
+In a Kindling project, add any extension with `kindling env add <name>`. The Databricks, SDP, Cosmos DB, Temporal and OpenTelemetry Azure extensions are also on PyPI (`pip install <name>`). The ADX, Auto Loader and visualization extensions are not; they are attached to each [GitHub Release](https://github.com/sep/spark-kindling-framework/releases) as wheels, which `kindling env add` pins by URL (or `pip install` the wheel's release URL).
 
 ## Install
 

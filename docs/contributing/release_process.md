@@ -17,8 +17,9 @@ take the runtime lane. Unknown paths also take the runtime lane.
 
 Once the GitHub release is published, the `publish-pypi` job uploads the
 packages to PyPI (prerelease tags go to TestPyPI instead); see
-[Publishing to PyPI](#-publishing-to-pypi). Docs-only releases publish nothing
-to PyPI.
+[Publishing to PyPI](#-publishing-to-pypi). Every `v*` tag builds wheels (the
+classifier never treats a tag as docs-only), so every release publishes; files
+already on PyPI under an unchanged version are skipped.
 
 ## 🚀 Creating a Release
 
