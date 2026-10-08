@@ -2693,7 +2693,22 @@ def _uv_source_for(sources: Dict[str, Any], name: str) -> Any:
     return None
 
 
-_PEP508_EXACT_VERSION_RE = re.compile(r"==\s*([A-Za-z0-9][A-Za-z0-9.+!_-]*)")
+_PEP508_EXACT_VERSION_RE = re.compile(r"(?<![=!<>~])==\s*([A-Za-z0-9][A-Za-z0-9.+!_-]*)")
+
+
+def _exact_pin_version(requirement: str) -> Optional[str]:
+    """The version of an exact `==X` specifier in a PEP 508 requirement, or
+    None. Only the specifier part counts -- a marker such as
+    `; python_version == '3.11'` is not a pin -- and `==1.2.*` (a wildcard)
+    and `===X` are not exact pins."""
+    specifier = requirement.split(";", 1)[0]
+    match = _PEP508_EXACT_VERSION_RE.search(specifier)
+    if not match:
+        return None
+    rest = specifier[match.end() :].lstrip()
+    if match.group(1).endswith(".") or rest.startswith("*"):
+        return None
+    return match.group(1)
 
 
 def _uv_synthetic_entry(
@@ -2709,9 +2724,9 @@ def _uv_synthetic_entry(
     if isinstance(source, dict) and isinstance(source.get("url"), str):
         entry["url"] = source["url"]
     else:
-        version_match = _PEP508_EXACT_VERSION_RE.search(requirement)
-        if version_match:
-            entry["version"] = version_match.group(1)
+        version = _exact_pin_version(requirement)
+        if version:
+            entry["version"] = version
     if extras:
         entry["extras"] = extras
     return entry
@@ -3189,7 +3204,7 @@ def _uv_pin_kindling(
         distribution
     ) == _KINDLING_DISTRIBUTION_PREFIX and _builds_wheel(project_data)
     if package_core and use_pypi:
-        return _uv_pin_package_kindling_version(project_path, version, frozen=frozen)
+        return _uv_pin_package_kindling_version(project_path, version, extras=extras, frozen=frozen)
     if package_core and group:
         # Back from a `dev` version pin to the URL form: drop the dev pin
         # and pin the runtime entry by URL, as before PyPI.
@@ -3226,9 +3241,24 @@ def _uv_pin_kindling(
     return "pypi"
 
 
-def _uv_pin_package_kindling_version(project_path: Path, version: str, *, frozen: bool) -> str:
+def _declares_runtime_kindling(pyproject_path: Path) -> bool:
+    data = _load_pyproject_toml(pyproject_path)
+    return any(
+        isinstance(requirement, str)
+        and _canonical_distribution_name(_parse_pep508_name_extras(requirement)[0])
+        == _KINDLING_DISTRIBUTION_PREFIX
+        for requirement in data.get("project", {}).get("dependencies", []) or []
+    )
+
+
+def _uv_pin_package_kindling_version(
+    project_path: Path, version: str, *, extras: Optional[List[str]] = None, frozen: bool
+) -> str:
     """Pin spark-kindling==version in a package's `dev` group, keeping its
-    runtime dependency plain: no URL source, no extra, no version."""
+    runtime dependency plain: no URL source, no extra, no version.
+
+    Requested extras (e.g. `standalone` for local Spark) go on the dev pin,
+    which never reaches the wheel's Requires-Dist."""
     pyproject_path = project_path / "pyproject.toml"
     _remove_uv_source(pyproject_path, _KINDLING_DISTRIBUTION_PREFIX)
     replaced = _set_plain_runtime_kindling(pyproject_path)
@@ -3237,7 +3267,12 @@ def _uv_pin_package_kindling_version(project_path: Path, version: str, *, frozen
             f"  [{project_path}] runtime dependency {replaced!r} -> 'spark-kindling' "
             "(a package's wheel must not pin Kindling or pull in local Spark)"
         )
+    if not _declares_runtime_kindling(pyproject_path):
+        command = ["uv", "add", _KINDLING_DISTRIBUTION_PREFIX, "--raw", "--frozen"]
+        _run_checked(command, cwd=project_path)
     command = ["uv", "add", f"{_KINDLING_DISTRIBUTION_PREFIX}=={version}", "--group", "dev"]
+    for extra in extras or []:
+        command.extend(["--extra", extra])
     if frozen:
         command.append("--frozen")
     _run_checked(command, cwd=project_path)

@@ -6030,17 +6030,27 @@ def _pin_release(monkeypatch, commands, *, on_pypi):
     monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
     monkeypatch.setattr(
         "kindling_cli.cli._github_release_for_tag",
-        lambda tag, repo: _release_assets("spark_kindling-1.2.3-py3-none-any.whl"),
+        lambda tag, repo: _release_assets(
+            "spark_kindling-1.2.3-py3-none-any.whl",
+            "spark_kindling_sdk-1.2.3-py3-none-any.whl",
+            "spark_kindling_cli-1.2.3-py3-none-any.whl",
+        ),
     )
     monkeypatch.setattr("kindling_cli.cli._published_on_pypi", lambda dist, version: on_pypi)
     monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append(cmd))
 
 
-@pytest.mark.parametrize("runtime", ["'spark-kindling'", "'spark-kindling[standalone]'"])
-def test_env_update_package_pins_pypi_version_in_dev_group(monkeypatch, tmp_path, runtime):
+@pytest.mark.parametrize(
+    "runtime, dev_extras",
+    [("'spark-kindling'", []), ("'spark-kindling[standalone]'", ["--extra", "standalone"])],
+)
+def test_env_update_package_pins_pypi_version_in_dev_group(
+    monkeypatch, tmp_path, runtime, dev_extras
+):
     """A package's wheel goes onto managed Spark runtimes: moving it to PyPI
-    pins keeps its runtime spark-kindling plain (dropping a [standalone]
-    extra), removes only the URL source, and pins the version in `dev`."""
+    pins keeps its runtime spark-kindling plain (moving a [standalone] extra
+    to the dev pin, where it still gives local Spark), removes only the URL
+    source, and pins the version in `dev`."""
     package = tmp_path / "orders"
     _write_pyproject(
         package,
@@ -6054,7 +6064,7 @@ def test_env_update_package_pins_pypi_version_in_dev_group(monkeypatch, tmp_path
     result = CliRunner().invoke(cli, ["env", "update", "--project", str(package)])
 
     assert result.exit_code == 0, result.output
-    assert ["uv", "add", "spark-kindling==1.2.3", "--group", "dev"] in commands
+    assert ["uv", "add", "spark-kindling==1.2.3", "--group", "dev", *dev_extras] in commands
     assert not any(cmd[:2] == ["uv", "remove"] for cmd in commands)
     data = _load_pyproject_toml(package / "pyproject.toml")
     assert data["project"]["dependencies"] == ["spark-kindling"]
@@ -6121,3 +6131,47 @@ def test_root_adopts_package_dev_pin_as_standalone_runtime(tmp_path):
     group, extras, entry = adopted["spark-kindling"]
     assert (group, extras, entry["version"]) == (None, ["standalone"], "1.2.3")
     assert adopted["spark-kindling-cli"][0] == "dev"
+
+
+def test_env_bootstrap_buildable_project_gets_plain_runtime_and_standalone_dev_pin(
+    monkeypatch, tmp_path
+):
+    """Bootstrapping a standalone package (no workspace root) adds a plain
+    runtime spark-kindling and puts the pin, with the standalone extra for
+    local Spark, in `dev`."""
+    package = tmp_path / "orders"
+    _write_pyproject(package, _PACKAGE_HEAD.format(runtime="").replace("    ,\n", ""))
+    commands = []
+    _pin_release(monkeypatch, commands, on_pypi=True)
+
+    result = CliRunner().invoke(cli, ["env", "bootstrap", "--project", str(package)])
+
+    assert result.exit_code == 0, result.output
+    assert ["uv", "add", "spark-kindling", "--raw", "--frozen"] in commands
+    assert [
+        "uv",
+        "add",
+        "spark-kindling==1.2.3",
+        "--group",
+        "dev",
+        "--extra",
+        "standalone",
+    ] in commands
+
+
+@pytest.mark.parametrize(
+    "requirement, version",
+    [
+        ("spark-kindling==0.14.0", "0.14.0"),
+        ("spark-kindling[standalone]==0.14.0", "0.14.0"),
+        ("spark-kindling == 0.14.0rc1 ; sys_platform == 'linux'", "0.14.0rc1"),
+        ("spark-kindling; python_version == '3.11'", None),
+        ("spark-kindling==0.14.*", None),
+        ("spark-kindling===0.14.0", None),
+        ("spark-kindling", None),
+    ],
+)
+def test_exact_pin_version_ignores_markers_and_wildcards(requirement, version):
+    from kindling_cli.cli import _exact_pin_version
+
+    assert _exact_pin_version(requirement) == version

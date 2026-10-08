@@ -169,7 +169,7 @@ kindling env bootstrap                 # repo-wide .venv/ (the devcontainer runs
 
 The root `pyproject.toml` is a uv workspace root, not a package (`[tool.uv] package = false`, `[tool.uv.workspace] members = ["packages/*"]`). If the repo already had a root `pyproject.toml`, `repo init` keeps it; add `[tool.uv.workspace] members = ["packages/*"]` to it. Repos created before `repo init` wrote this file have none — add one with the content shown in [Local Python-First Development](./local_python_first.md#what-the-scaffold-creates), then run `kindling env bootstrap` at the root.
 
-Each package is a uv workspace member with its own `pyproject.toml` (uv_build, `src/<pkg>/` layout, Kindling pinned to the CLI's version: `spark-kindling[standalone]==X.Y.Z`, plus the SDK and CLI in the `dev` group) and poe tasks. Every package must pin the same Kindling release as the root; `kindling env update` moves them together. Work in a package with:
+Each package is a uv workspace member with its own `pyproject.toml` (uv_build, `src/<pkg>/` layout, a plain, unpinned `spark-kindling` runtime dependency, and a `dev` group pinning `spark-kindling==X.Y.Z`, the SDK and the CLI to the CLI's version alongside the local Spark stack; only the workspace root, which is never built, uses `spark-kindling[standalone]`) and poe tasks. Every package must pin the same Kindling release as the root; `kindling env update` moves them together. Work in a package with:
 
 ```bash
 cd packages/my_domain_app
