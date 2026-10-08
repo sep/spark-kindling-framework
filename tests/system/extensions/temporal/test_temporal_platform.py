@@ -42,6 +42,7 @@ import pytest
 
 from tests.system.test_helpers import (
     cleanup_test_storage,
+    get_extension_version,
     get_system_test_poll_interval,
     get_system_test_stream_max_wait,
 )
@@ -68,7 +69,15 @@ EXPECTED_RUN2_TESTS = [
     "run2_gold_aggregation",
 ]
 
-TEMPORAL_EXTENSION_SPEC = "spark-kindling-ext-temporal==0.2.4"
+# The wheel this checkout builds (deployed with the runtime); a hard-coded
+# version went stale when the extension was bumped.
+_TEMPORAL_VERSION = get_extension_version("kindling_ext_temporal")
+if not _TEMPORAL_VERSION:
+    raise RuntimeError(
+        "Could not read the Temporal extension version from "
+        "packages/extensions/kindling_ext_temporal/pyproject.toml"
+    )
+TEMPORAL_EXTENSION_SPEC = f"spark-kindling-ext-temporal=={_TEMPORAL_VERSION}"
 
 
 def _run_scenario(
