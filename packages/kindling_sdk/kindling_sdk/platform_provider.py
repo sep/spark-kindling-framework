@@ -165,12 +165,17 @@ class PlatformAPI(ABC):
         app_name: str,
         environment: Optional[str] = None,
         parameters: Optional[Dict[str, Any]] = None,
+        compute: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Submit a one-time app run directly on the platform.
 
         No persistent job definition is required (except Fabric, which uses an
         ephemeral definition that is deleted after the run is submitted).
         Config overrides flow through as config:k=v bootstrap args.
+
+        ``compute`` optionally selects the run's compute. Its keys are
+        platform-specific; a platform raises ``ValueError`` for keys it does
+        not support (currently only Databricks accepts any).
         """
 
     @abstractmethod
@@ -178,8 +183,11 @@ class PlatformAPI(ABC):
         self,
         app_name: str,
         config_overrides: Optional[Dict[str, Any]] = None,
+        compute: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Create or update a named job definition for pipeline/workflow integration.
+
+        ``compute`` is as for ``submit_app_run``.
 
         The resulting definition can be triggered by name from the platform's
         orchestration layer (Synapse Pipeline, Databricks Workflow, Fabric Pipeline).
@@ -187,6 +195,15 @@ class PlatformAPI(ABC):
 
         Returns a dict with at minimum: job_id, job_name, platform.
         """
+
+    def _reject_compute(self, compute: Optional[Dict[str, Any]]) -> None:
+        """Raise for a non-empty ``compute`` on a platform that accepts none."""
+        if compute:
+            raise ValueError(
+                f"Compute settings ({', '.join(sorted(compute))}) are not supported on "
+                f"{self.get_platform_name()}; compute selection is only available on "
+                "Databricks."
+            )
 
     def get_app_run_status(self, run_id: str) -> Dict[str, Any]:
         return self.get_job_status(run_id)

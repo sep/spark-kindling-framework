@@ -1,9 +1,10 @@
 import logging
+import shutil
 import tempfile
 import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 from dynaconf import Dynaconf
 from pyspark.sql import SparkSession
@@ -48,8 +49,8 @@ def _log_settings_files_load_order(settings_files: List[str]) -> None:
     """Log the Dynaconf settings_files list in merge order (lowest -> highest precedence).
 
     Files listed later in ``settings_files`` win when the same key appears in
-    more than one (MERGE_ENABLED_FOR_DYNACONF=True does a deep merge, not a
-    replace). Missing files are silently skipped by Dynaconf with no
+    more than one: mappings deep-merge, lists and scalars replace (see
+    ``merge_settings_layers``). Missing files are silently skipped by Dynaconf with no
     complaint, which is easy to mistake for "the key isn't set anywhere" when
     it's really "this file never loaded" — flagging that here up front saves
     a debug cycle.
@@ -66,17 +67,163 @@ def _log_settings_files_load_order(settings_files: List[str]) -> None:
     )
 
 
-def peek_settings_value(config_files: Optional[List[str]], key: str, default: Any = None) -> Any:
-    """Read one value from explicit settings files using the normal Dynaconf loader."""
-    if not config_files:
-        return default
+_MERGE_MARKER = "dynaconf_merge"
+_MERGE_UNIQUE_MARKER = "dynaconf_merge_unique"
+_MERGE_TOKEN = "@merge"
+_MERGE_UNIQUE_TOKEN = "@merge_unique"
+
+
+def _parse_merge_token(value: str, token: str) -> Any:
+    """`@merge X` / `@merge_unique X`: X as YAML (`[a, b]`, `{k: v}`), or a
+    comma-separated list."""
+    import yaml
+
+    rest = value[len(token) :].strip()
+    try:
+        parsed = yaml.safe_load(rest) if rest else []
+    except yaml.YAMLError:
+        parsed = rest
+    if isinstance(parsed, str):
+        parsed = [item.strip() for item in parsed.split(",") if item.strip()]
+    elif not isinstance(parsed, (list, dict)):
+        parsed = [parsed]  # `@merge 3` appends one item
+    return parsed
+
+
+def merge_settings_layers(base: Any, override: Any) -> Any:
+    """Merge one settings layer over the layers below it.
+
+    Mappings deep-merge; lists and scalars replace -- the same rule as
+    Kindling's config overlays (config_patterns) and `kindling bundle build`,
+    so a setting resolves identically everywhere. A layer can append to a list
+    on purpose with Dynaconf's markers: a `dynaconf_merge` (or
+    `dynaconf_merge_unique`) item in the list, or an `@merge [...]` string. A
+    mapping with `dynaconf_merge: false` replaces instead of merging.
+    """
+    if isinstance(override, str) and override.strip().startswith(_MERGE_TOKEN):
+        stripped = override.strip()
+        unique = stripped.startswith(_MERGE_UNIQUE_TOKEN)
+        override = _parse_merge_token(stripped, _MERGE_UNIQUE_TOKEN if unique else _MERGE_TOKEN)
+        if isinstance(base, list) and isinstance(override, list):
+            return _append_unique(base, override) if unique else base + override
+        if isinstance(base, dict) and isinstance(override, dict):
+            return merge_settings_layers(base, override)
+        return override
+    if isinstance(override, list):
+        if _MERGE_UNIQUE_MARKER in override:
+            items = [item for item in override if item != _MERGE_UNIQUE_MARKER]
+            return _append_unique(base if isinstance(base, list) else [], items)
+        if _MERGE_MARKER in override:
+            items = [item for item in override if item != _MERGE_MARKER]
+            return (base if isinstance(base, list) else []) + items
+        return list(override)
+    if isinstance(override, dict):
+        override = dict(override)
+        merge_flag = override.pop(_MERGE_MARKER, True)
+        if not isinstance(base, dict) or merge_flag is False:
+            return {k: merge_settings_layers(None, v) for k, v in override.items()}
+        merged = dict(base)
+        for key, value in override.items():
+            # Dynaconf keys are case-insensitive: a later layer's TELEMETRY
+            # overrides an earlier telemetry (the earlier spelling is kept).
+            existing_key = _matching_key(merged, key)
+            target = key if existing_key is None else existing_key
+            merged[target] = merge_settings_layers(merged.get(target), value)
+        return merged
+    return override
+
+
+def _matching_key(mapping: Dict[Any, Any], key: Any) -> Any:
+    if key in mapping or not isinstance(key, str):
+        return key if key in mapping else None
+    lowered = key.lower()
+    return next((k for k in mapping if isinstance(k, str) and k.lower() == lowered), None)
+
+
+def _append_unique(base: List[Any], items: List[Any]) -> List[Any]:
+    result = list(base)
+    for item in items:
+        if item not in result:
+            result.append(item)
+    return result
+
+
+def _merged_settings_file(config_files: List[str]) -> Optional[str]:
+    """Merge the YAML settings layers (lowest precedence first) into one file
+    for Dynaconf, in a private temp directory.
+
+    Kindling merges the layers itself rather than handing Dynaconf the file
+    list because Dynaconf (a) appends lists across files, unlike every other
+    Kindling merge, and (b) silently loads a `<name>.local.yaml` beside every
+    file it loads, which made a developer's settings.local.yaml override
+    every environment, and load twice when env=local. `@format`, secrets and
+    KINDLING_ environment variables are still resolved by Dynaconf.
+    """
+    import yaml
+
+    merged: Any = {}
+    for path in config_files:
+        file_path = Path(path)
+        if not file_path.is_file():
+            continue
+        layer = yaml.safe_load(file_path.read_text(encoding="utf-8")) or {}
+        if not isinstance(layer, dict):
+            raise ValueError(f"Settings file {path} must contain a mapping at the top level")
+        merged = merge_settings_layers(merged, layer)
+    if not merged:
+        return None
+    directory = Path(tempfile.mkdtemp(prefix="kindling-settings-"))
+    target = directory / "merged-settings.yaml"
+    target.write_text(yaml.safe_dump(merged, sort_keys=False), encoding="utf-8")
+    return str(target)
+
+
+def _build_dynaconf(config_files: Optional[List[str]]) -> Tuple[Dynaconf, Optional[str]]:
+    """Dynaconf over the merged layers, plus the merged file's path. The file
+    must outlive the instance (Dynaconf reads it lazily and again for
+    get_fresh); callers remove it with _remove_snapshot when done."""
+    merged_file = _merged_settings_file(list(config_files or []))
     settings = Dynaconf(
-        settings_files=config_files,
+        settings_files=[merged_file] if merged_file else [],
         environments=False,
         MERGE_ENABLED_FOR_DYNACONF=True,
         envvar_prefix="KINDLING",
     )
-    return settings.get(key, default)
+    return settings, merged_file
+
+
+def _remove_snapshot(merged_file: Optional[str]) -> None:
+    if merged_file:
+        shutil.rmtree(Path(merged_file).parent, ignore_errors=True)
+
+
+def peek_settings_value(config_files: Optional[List[str]], key: str, default: Any = None) -> Any:
+    """Read one value from explicit settings files, merged as the runtime does."""
+    if not config_files:
+        return default
+    settings, merged_file = _build_dynaconf(config_files)
+    try:
+        return settings.get(key, default)
+    finally:
+        _remove_snapshot(merged_file)
+
+
+# Nested YAML keys mirrored into the flat keys older code reads.
+_NESTED_TO_FLAT_KEYS = {
+    "kindling.TELEMETRY.logging.level": "log_level",
+    "kindling.TELEMETRY.logging.print": "print_logging",
+    "kindling.TELEMETRY.tracing.print": "print_trace",
+    "kindling.DELTA.access_mode": "DELTA_ACCESS_MODE",
+    "kindling.BOOTSTRAP.load_local": "load_local_packages",  # deprecated alias
+    "kindling.BOOTSTRAP.load_workspace_packages": "load_workspace_packages",
+    "kindling.BOOTSTRAP.load_lake": "use_lake_packages",
+    "kindling.BOOTSTRAP.declaration_only": "declaration_only",
+    "kindling.BOOTSTRAP.discover_config_files": "discover_config_files",
+    "kindling.REQUIRED_PACKAGES": "required_packages",
+    "kindling.extensions": "extensions",  # lowercase - matches YAML
+    "kindling.EXTENSIONS": "extensions",  # uppercase - backwards compat
+    "kindling.IGNORED_FOLDERS": "ignored_folders",
+}
 
 
 class ConfigService(ABC):
@@ -201,15 +348,11 @@ class DynaconfConfig(ConfigService):
         _warn_missing_explicit_config_files(self.initial_config, config_files_source_key)
         _log_settings_files_load_order(settings_files)
 
-        # Load YAML configs first
+        # Load YAML configs first, merged by Kindling (see _merged_settings_file).
         # NOTE: environments=False because Kindling uses separate files (settings.yaml, development.yaml)
         # NOT environment blocks within files (default:, development:)
-        self.dynaconf = Dynaconf(
-            settings_files=settings_files,
-            environments=False,
-            MERGE_ENABLED_FOR_DYNACONF=True,
-            envvar_prefix="KINDLING",
-        )
+        self._settings_files = list(settings_files)
+        self.dynaconf, self._settings_snapshot = _build_dynaconf(settings_files)
 
         # Step 1: Translate YAML (new → old) and add to config
         self._translate_yaml_to_flat()
@@ -218,6 +361,12 @@ class DynaconfConfig(ConfigService):
         self._translate_bootstrap_to_nested()
 
         _CONFIG_LOGGER.debug("DynaconfConfig initialized")
+
+    def _replace_dynaconf(self, config_files: List[str]) -> None:
+        """Swap in a Dynaconf over freshly merged files. The previous snapshot
+        is left for _reload to remove once the reload succeeds, since a
+        failed reload rolls back to the previous instance."""
+        self.dynaconf, self._settings_snapshot = _build_dynaconf(config_files)
 
     def _translate_yaml_to_flat(self):
         """Translate YAML's nested keys back to flat bootstrap keys"""
@@ -228,26 +377,13 @@ class DynaconfConfig(ConfigService):
         except Exception as e:
             _CONFIG_LOGGER.debug("Error reading Dynaconf keys: %s", e)
 
-        reverse_mappings = {
-            "kindling.TELEMETRY.logging.level": "log_level",
-            "kindling.TELEMETRY.logging.print": "print_logging",
-            "kindling.TELEMETRY.tracing.print": "print_trace",
-            "kindling.DELTA.access_mode": "DELTA_ACCESS_MODE",
-            "kindling.BOOTSTRAP.load_local": "load_local_packages",  # deprecated alias
-            "kindling.BOOTSTRAP.load_workspace_packages": "load_workspace_packages",
-            "kindling.BOOTSTRAP.load_lake": "use_lake_packages",
-            "kindling.BOOTSTRAP.declaration_only": "declaration_only",
-            "kindling.BOOTSTRAP.discover_config_files": "discover_config_files",
-            "kindling.REQUIRED_PACKAGES": "required_packages",
-            "kindling.extensions": "extensions",  # lowercase - matches YAML
-            "kindling.EXTENSIONS": "extensions",  # uppercase - backwards compat
-            "kindling.IGNORED_FOLDERS": "ignored_folders",
-        }
+        reverse_mappings = _NESTED_TO_FLAT_KEYS
 
         for new_key, old_key in reverse_mappings.items():
             value = self.dynaconf.get(new_key)
             if value is not None:
-                self.dynaconf.set(old_key, value)
+                # An alias mirrors the resolved value; never list-merge into it.
+                self.dynaconf.set(old_key, value, merge=False)
                 _CONFIG_LOGGER.debug("Reverse translation: %s -> %s = %s", new_key, old_key, value)
 
         try:
@@ -295,6 +431,36 @@ class DynaconfConfig(ConfigService):
 
         for top_level_key, value in nested.items():
             self.dynaconf.set(top_level_key, value)
+
+        # A parameter that sets a nested key (e.g. --param
+        # kindling.telemetry.logging.level=DEBUG) must also update the flat
+        # key code reads (log_level), which _translate_yaml_to_flat copied
+        # from the files before parameters applied.
+        explicit_flat = {str(k).lower() for k in merged_initial} | {
+            str(k).lower() for k in self.initial_config
+        }
+        for nested_key, flat_key in _NESTED_TO_FLAT_KEYS.items():
+            # An explicitly supplied flat key (e.g. spark.kindling.bootstrap.
+            # log_level) keeps its own value.
+            if flat_key.lower() in explicit_flat:
+                continue
+            if self._dotted_key_in(nested, nested_key):
+                value = self.dynaconf.get(nested_key)
+                if value is not None:
+                    self.dynaconf.set(flat_key, value, merge=False)
+
+    @staticmethod
+    def _dotted_key_in(tree: Dict[str, Any], dotted_key: str) -> bool:
+        """Whether dotted_key (case-insensitive) is present in a nested tree."""
+        node: Any = tree
+        for part in dotted_key.split("."):
+            if not isinstance(node, dict):
+                return False
+            match = next((k for k in node if str(k).lower() == part.lower()), None)
+            if match is None:
+                return False
+            node = node[match]
+        return True
 
     @staticmethod
     def _merge_dotted_key(target: Dict[str, Any], dotted_key: str, value: Any) -> None:
@@ -497,6 +663,7 @@ class DynaconfConfig(ConfigService):
         with self._config_lock:
             old_config = self.get_all()
             old_dynaconf = self.dynaconf
+            old_snapshot = getattr(self, "_settings_snapshot", None)
 
             # Emit pre_reload signal
             if self.pre_reload_signal:
@@ -521,12 +688,8 @@ class DynaconfConfig(ConfigService):
 
                     # Reload Dynaconf with fresh files
                     _log_settings_files_load_order(config_files)
-                    self.dynaconf = Dynaconf(
-                        settings_files=config_files,
-                        environments=False,
-                        MERGE_ENABLED_FOR_DYNACONF=True,
-                        envvar_prefix="KINDLING",
-                    )
+                    self._settings_files = list(config_files)
+                    self._replace_dynaconf(config_files)
 
                     # Re-run translations
                     self._translate_yaml_to_flat()
@@ -534,7 +697,10 @@ class DynaconfConfig(ConfigService):
                 else:
                     # Fallback: reload from existing temp files
                     _CONFIG_LOGGER.info("Reloading configuration from temp files")
-                    self.dynaconf.reload()
+                    # Re-merge the source files (the merged file is a snapshot).
+                    self._replace_dynaconf(getattr(self, "_settings_files", []))
+                    self._translate_yaml_to_flat()
+                    self._translate_bootstrap_to_nested()
 
                 # Increment version
                 self._version += 1
@@ -565,10 +731,16 @@ class DynaconfConfig(ConfigService):
                     except Exception as e:
                         _CONFIG_LOGGER.warning("post_reload signal handler error: %s", e)
 
+                if self._settings_snapshot != old_snapshot:
+                    _remove_snapshot(old_snapshot)
                 return result
 
             except Exception as e:
                 # Rollback on failure
+                new_snapshot = getattr(self, "_settings_snapshot", None)
+                if new_snapshot != old_snapshot:
+                    _remove_snapshot(new_snapshot)
+                self._settings_snapshot = old_snapshot
                 self.dynaconf = old_dynaconf
                 error_msg = f"Config reload failed: {e}"
                 _CONFIG_LOGGER.error(error_msg)

@@ -434,3 +434,305 @@ def test_process_path_disabled_tracing_emits_no_spans():
     proc.process_path("/data")
 
     proc.tp.span.assert_not_called()
+
+
+# ── read options: filetype and infer_schema are honored ─────────────────────
+
+
+def _make_read_processor(entry):
+    """Processor whose spark.read chain returns a chaining mock DataFrame."""
+    proc = _make_processor({entry.entry_id: entry})
+    mock_df = MagicMock()
+    mock_df.withColumn.return_value = mock_df
+    mock_spark = MagicMock()
+    reader = mock_spark.read.format.return_value
+    reader.option.return_value.option.return_value.load.return_value = mock_df
+    proc.spark = mock_spark
+    return proc, mock_spark
+
+
+def _read_options(mock_spark):
+    """{option: value} passed to the reader in _build_df_plan."""
+    first = mock_spark.read.format.return_value.option
+    second = first.return_value.option
+    return dict([first.call_args.args, second.call_args.args])
+
+
+def _plan(proc, fn):
+    with patch("kindling.file_ingestion.lit", side_effect=lambda v: f"LIT({v})"):
+        with patch("kindling.file_ingestion.current_timestamp", return_value="NOW"):
+            return proc._build_df_plan(fn, "/data")
+
+
+def _entry(**overrides):
+    from kindling.file_ingestion import FileIngestionMetadata
+
+    kwargs = dict(
+        entry_id="e1",
+        name="test entry",
+        patterns=[r"orders_\d+\.parquet"],
+        dest_entity_id="target_entity",
+        tags={},
+    )
+    kwargs.update(overrides)
+    return FileIngestionMetadata(**kwargs)
+
+
+def test_build_df_plan_reads_with_entry_filetype_when_pattern_has_no_filetype_group():
+    proc, spark = _make_read_processor(_entry(filetype="parquet"))
+
+    assert _plan(proc, "orders_1.parquet") is not None
+    spark.read.format.assert_called_once_with("parquet")
+
+
+def test_build_df_plan_filetype_group_overrides_entry_filetype_per_file():
+    entry = _entry(patterns=[r"orders_\d+\.(?P<filetype>json|csv)"], filetype="parquet")
+    proc, spark = _make_read_processor(entry)
+
+    _plan(proc, "orders_1.json")
+    spark.read.format.assert_called_once_with("json")
+
+
+def test_build_df_plan_defaults_to_csv_without_filetype_argument_or_group():
+    from kindling.file_ingestion import FileIngestionMetadata
+
+    entry = FileIngestionMetadata(
+        entry_id="e1", name="n", patterns=[r"a\.csv"], dest_entity_id="t", tags={}
+    )
+    proc, spark = _make_read_processor(entry)
+
+    _plan(proc, "a.csv")
+    spark.read.format.assert_called_once_with("csv")
+
+
+def test_build_df_plan_infer_schema_true_enables_spark_inference():
+    proc, spark = _make_read_processor(_entry(infer_schema=True))
+
+    _plan(proc, "orders_1.parquet")
+    assert _read_options(spark) == {"header": "true", "inferSchema": "true"}
+
+
+def test_build_df_plan_infer_schema_defaults_off():
+    proc, spark = _make_read_processor(_entry())
+
+    _plan(proc, "orders_1.parquet")
+    assert _read_options(spark) == {"header": "true", "inferSchema": "false"}
+
+
+def test_entries_entry_infer_schema_defaults_false_and_explicit_value_passes_through(
+    monkeypatch,
+):
+    from kindling.file_ingestion import FileIngestionEntries
+
+    mock_registry = MagicMock()
+    monkeypatch.setattr(FileIngestionEntries, "deregistry", mock_registry)
+
+    FileIngestionEntries.entry(**_entries_kwargs())
+    assert mock_registry.register_entry.call_args.kwargs["infer_schema"] is False
+
+    FileIngestionEntries.entry(**_entries_kwargs(infer_schema=True))
+    assert mock_registry.register_entry.call_args.kwargs["infer_schema"] is True
+
+
+# ── patterns: every pattern is tried in order ───────────────────────────────
+
+
+def test_build_df_plan_matches_a_later_pattern_when_earlier_ones_miss():
+    entry = _entry(patterns=[r"sales_(?P<region>\w+)\.csv", r"orders_(?P<day>\d+)\.csv"])
+    proc, _ = _make_read_processor(entry)
+
+    result = _plan(proc, "orders_7.csv")
+
+    assert result is not None
+    dest_entity_id, df, file_info = result
+    assert file_info["filename"] == "orders_7.csv"
+    assert "day" in _captured_columns(df)
+
+
+def test_build_df_plan_first_matching_pattern_wins():
+    entry = _entry(
+        patterns=[r"(?P<first>orders)_\d+\.csv", r"(?P<second>orders_\d+)\.csv"],
+        dest_entity_id="t_{first}",
+    )
+    proc, _ = _make_read_processor(entry)
+
+    dest_entity_id, df, _ = _plan(proc, "orders_7.csv")
+
+    assert dest_entity_id == "t_orders"
+    assert "second" not in _captured_columns(df)
+
+
+def test_match_file_patterns_returns_none_when_nothing_matches():
+    from kindling.file_ingestion import match_file_patterns
+
+    assert match_file_patterns([r"a\.csv", r"b\.csv"], "c.csv") is None
+    assert match_file_patterns([r"a\.csv", r"b\.csv"], "b.csv").group(0) == "b.csv"
+
+
+@pytest.mark.parametrize(
+    "patterns, message",
+    [
+        (r"orders_\d+\.csv", "non-empty list"),
+        ([], "non-empty list"),
+        ([r"ok\.csv", r"bad(\.csv"], "invalid pattern"),
+    ],
+)
+def test_entries_entry_rejects_unusable_patterns(monkeypatch, patterns, message):
+    from kindling.file_ingestion import FileIngestionEntries
+
+    monkeypatch.setattr(FileIngestionEntries, "deregistry", MagicMock())
+
+    with pytest.raises(ValueError, match=message):
+        FileIngestionEntries.entry(**_entries_kwargs(patterns=patterns))
+
+
+def test_autoloader_batch_matches_any_entry_pattern():
+    entry = _entry(
+        patterns=[r"sales_\w+\.csv", r"orders_(?P<day>\d+)\.csv"],
+        discovery="autoloader",
+        source_glob="*.csv",
+    )
+    proc = _make_processor({entry.entry_id: entry})
+    proc.emit = MagicMock()
+    proc._write_table_group = MagicMock()
+
+    batch_df = MagicMock()
+    batch_df.select.return_value.distinct.return_value.collect.return_value = [
+        {"file_path": "/landing/orders_3.csv"},
+        {"file_path": "/landing/notes.csv"},
+    ]
+    file_df = MagicMock()
+    file_df.withColumn.return_value = file_df
+    batch_df.filter.return_value = file_df
+
+    with patch("kindling.file_ingestion.col", MagicMock()):
+        with patch("kindling.file_ingestion.lit", side_effect=lambda v: f"LIT({v})"):
+            with patch("kindling.file_ingestion.current_timestamp", return_value="NOW"):
+                result = proc._process_autoloader_batch(entry, batch_df, "0", None, None)
+
+    assert result == (1, 0, 1)
+    dest_entity_id, df_list, _ = proc._write_table_group.call_args.args
+    assert dest_entity_id == "target_entity"
+    assert [info["filename"] for _, info in df_list] == ["orders_3.csv"]
+    assert "day" in _captured_columns(file_df)
+
+
+# ── persistence: destination entity's own provider ──────────────────────────
+
+
+def _make_writer(entity, provider_registry):
+    from kindling.file_ingestion import ParallelizingFileIngestionProcessor
+
+    proc = object.__new__(ParallelizingFileIngestionProcessor)
+    proc.logger = MagicMock()
+    proc.emit = MagicMock()
+    proc.env = MagicMock()
+    proc.der = MagicMock()
+    proc.der.get_entity_definition.return_value = entity
+    proc.provider_registry = provider_registry
+    return proc
+
+
+def _registry_with(**instances):
+    """A real EntityProviderRegistry with pre-built provider instances."""
+    from kindling.entity_provider_registry import EntityProviderRegistry
+
+    registry = EntityProviderRegistry(MagicMock())
+    registry._provider_instances.update(instances)
+    return registry
+
+
+def test_write_table_group_appends_through_entity_provider_type():
+    from types import SimpleNamespace
+
+    csv_provider, delta_provider = MagicMock(), MagicMock()
+    entity = SimpleNamespace(entityid="bronze.raw", tags={"provider_type": "csv"})
+    proc = _make_writer(entity, _registry_with(csv=csv_provider, delta=delta_provider))
+    df = MagicMock()
+
+    proc._write_table_group("bronze.raw", [(df, {"source_path": "/p/a.csv", "filename": "a.csv"})])
+
+    csv_provider.append_to_entity.assert_called_once_with(df, entity)
+    delta_provider.append_to_entity.assert_not_called()
+    csv_provider.merge_to_entity.assert_not_called()
+    csv_provider.write_to_entity.assert_not_called()
+
+
+def test_write_table_group_defaults_to_delta_provider_without_provider_type():
+    from types import SimpleNamespace
+
+    csv_provider, delta_provider = MagicMock(), MagicMock()
+    entity = SimpleNamespace(entityid="bronze.raw", tags={})
+    proc = _make_writer(entity, _registry_with(csv=csv_provider, delta=delta_provider))
+    df = MagicMock()
+
+    proc._write_table_group("bronze.raw", [(df, {"source_path": "/p/a.csv", "filename": "a.csv"})])
+
+    delta_provider.append_to_entity.assert_called_once_with(df, entity)
+    csv_provider.append_to_entity.assert_not_called()
+
+
+def test_write_table_group_rejects_provider_without_append():
+    from types import SimpleNamespace
+
+    read_only = MagicMock(spec=["read_entity", "check_entity_exists"])
+    entity = SimpleNamespace(entityid="ref.lookup", tags={"provider_type": "sql"})
+    proc = _make_writer(entity, _registry_with(sql=read_only))
+
+    with pytest.raises(ValueError, match="does not support append"):
+        proc._write_table_group("ref.lookup", [(MagicMock(), {"filename": "a.csv"})])
+
+    proc.emit.assert_not_called()
+
+
+def _parallel_processor(fail_for):
+    """A processor whose batch phase plans two destination tables and whose
+    table writes fail for the ids in fail_for."""
+    from kindling.file_ingestion import ParallelizingFileIngestionProcessor
+    from kindling.trace_ops import TracingGates
+
+    proc = object.__new__(ParallelizingFileIngestionProcessor)
+    proc.logger = MagicMock()
+    proc.tp = MagicMock()
+    proc._trace_gates = TracingGates(False, "standard")
+    proc.emit = MagicMock()
+    proc.config = MagicMock()
+    proc.config.get.return_value = 3  # max_parallel_tables
+    proc.env = MagicMock()
+    proc.env.list.return_value = ["a.csv", "b.csv"]
+    entry = _make_entry([".*"])
+    proc.fir = MagicMock()
+    proc.fir.get_entry_ids.return_value = ["e1"]
+    proc.fir.get_entry_definition.return_value = entry
+    proc._build_df_plan = lambda fn, path, transform: (f"dest_{fn[0]}", MagicMock(), {})
+    written = []
+
+    def write(dest_entity_id, df_list, movepath):
+        if dest_entity_id in fail_for:
+            raise RuntimeError(f"boom {dest_entity_id}")
+        written.append(dest_entity_id)
+
+    proc._write_table_group = write
+    proc._process_autoloader_entries = lambda path, movepath, transform: (0, 0, 0)
+    return proc, written
+
+
+def test_parallel_table_write_failure_fails_the_run():
+    """A failed table write in the parallel path used to be only logged, so
+    process_path reported success; it must raise like the sequential path."""
+    proc, written = _parallel_processor(fail_for={"dest_b"})
+
+    with pytest.raises(RuntimeError, match="failed to write 1 of 2 tables: dest_b") as excinfo:
+        proc.process_path("/data")
+
+    assert written == ["dest_a"]  # the other table still finished
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    emitted = [call.args[0] for call in proc.emit.call_args_list]
+    assert "file_ingestion.process_failed" in emitted
+    assert "file_ingestion.after_process" not in emitted
+
+
+def test_parallel_table_writes_succeed():
+    proc, written = _parallel_processor(fail_for=set())
+    proc.process_path("/data")
+    assert sorted(written) == ["dest_a", "dest_b"]

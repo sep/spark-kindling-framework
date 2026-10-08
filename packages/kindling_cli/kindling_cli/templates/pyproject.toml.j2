@@ -4,17 +4,15 @@ version = "0.1.0"
 description = "Kindling data pipeline project — {{ kebab_name }}"
 authors = []
 requires-python = ">=3.10"
-{% if kindling_source == "github" %}
+# Plain, unpinned spark-kindling: this package's wheel is installed on managed
+# Spark runtimes (Databricks, Fabric, Synapse) that provide their own Spark and
+# Delta, and Kindling itself comes from the runtime the cluster bootstrap
+# installs. So the wheel's Requires-Dist must pull in neither pyspark/delta-spark
+# nor a Kindling version pip could swap in. The release is pinned for local
+# work below, and the local Spark stack lives in the `dev` group.
 dependencies = [
-    "spark-kindling[standalone]",
+    "spark-kindling",
 ]
-{% else %}
-# Kindling packages are pinned to one release (they are versioned together);
-# `kindling env update` moves every pin in the repo to a newer release.
-dependencies = [
-    "spark-kindling[standalone]=={{ kindling_version }}",
-]
-{% endif %}
 
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]
@@ -34,26 +32,28 @@ module-name = "{{ snake_name }}"
 spark-kindling = { url = "https://github.com/sep/spark-kindling-framework/releases/download/v{{ kindling_version }}/spark_kindling-{{ kindling_version }}-py3-none-any.whl" }
 spark-kindling-cli = { url = "https://github.com/sep/spark-kindling-framework/releases/download/v{{ kindling_version }}/spark_kindling_cli-{{ kindling_version }}-py3-none-any.whl" }
 spark-kindling-sdk = { url = "https://github.com/sep/spark-kindling-framework/releases/download/v{{ kindling_version }}/spark_kindling_sdk-{{ kindling_version }}-py3-none-any.whl" }
+{% endif %}
 
 [dependency-groups]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "poethepoet>=0.24.0",
+{%- if kindling_source == "github" %}
     "spark-kindling-sdk",
     "spark-kindling-cli",
-]
-{% else %}
-
-[dependency-groups]
-dev = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "poethepoet>=0.24.0",
+{%- else %}
+    # Kindling packages are pinned to one release (they are versioned
+    # together); `kindling env update` moves every pin in the repo to a newer
+    # release.
+    "spark-kindling=={{ kindling_version }}",
     "spark-kindling-sdk=={{ kindling_version }}",
     "spark-kindling-cli=={{ kindling_version }}",
-]
-{% endif %}
+{%- endif %}
+    # Local Spark for tests and `kindling app run` (spark-kindling's
+    # `standalone` extra, as plain requirements).
+{% for requirement in local_spark_requirements %}    "{{ requirement }}",
+{% endfor %}]
 
 [tool.poe.tasks]
 test-unit = "pytest tests/unit -v"

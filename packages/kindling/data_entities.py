@@ -661,7 +661,17 @@ class DataEntities:
             )
 
         resolved_sql = sql if sql is not None else sql_source.load()
-        merged_tags = {"provider_type": "view", **(tags or {})}
+        # Read by running the SQL, so only a single read-only query is allowed.
+        from kindling.entity_provider_sql import require_query_sql
+
+        require_query_sql(resolved_sql, entityid)
+        provider_type = (tags or {}).get("provider_type", "view")
+        if provider_type != "view":
+            raise ValueError(
+                f"SQL entity '{entityid}' cannot use provider_type '{provider_type}': "
+                "SQL entities are read-only views (provider_type 'view')."
+            )
+        merged_tags = {**(tags or {}), "provider_type": "view"}
 
         cls.deregistry.register_entity(
             entityid,

@@ -5,7 +5,9 @@ Covers:
 - CSV auto-discovered when present under tests/entities/
 - Falls back to registered provider when no CSV is present
 - Dotted entity ID maps to correct subfolder path
-- Headers-only CSV raises a clear error
+- A fixture with no data rows (empty, header-only, comment-only) falls back to
+  the registered provider with a warning; the provider itself still raises if
+  read directly with such a file
 """
 
 from pathlib import Path
@@ -16,6 +18,7 @@ from kindling.data_entities import EntityMetadata
 from kindling.entity_provider_csv import (
     FixtureCSVEntityProvider,
     _entity_id_to_fixture_path,
+    fixture_csv_has_data_rows,
     resolve_fixture_csv_path,
 )
 
@@ -100,6 +103,40 @@ class TestResolveFixtureCsvPath:
         result = resolve_fixture_csv_path("orders", tmp_path)
         assert result is not None
         assert result.is_absolute()
+
+
+class TestFixtureCsvHasDataRows:
+    """fixture_csv_has_data_rows: a header plus at least one data row."""
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param("", id="empty"),
+            pytest.param("\n\n", id="blank-lines"),
+            pytest.param("id,name\n", id="header-only"),
+            pytest.param("id,name\n\n\n", id="header-and-blank-lines"),
+            pytest.param("# add CSV headers here\n", id="legacy-comment-stub"),
+            pytest.param("# note\n# another\n", id="comment-only"),
+            pytest.param("# note\nid,name\n", id="comment-and-header"),
+        ],
+    )
+    def test_false_without_data_rows(self, tmp_path, content):
+        csv_file = tmp_path / "orders.csv"
+        csv_file.write_text(content)
+        assert fixture_csv_has_data_rows(csv_file) is False
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param("id,name\n1,foo\n", id="header-and-row"),
+            pytest.param("id\n1", id="no-trailing-newline"),
+            pytest.param("# note\nid,name\n\n1,foo\n", id="comments-and-blank-lines"),
+        ],
+    )
+    def test_true_with_data_rows(self, tmp_path, content):
+        csv_file = tmp_path / "orders.csv"
+        csv_file.write_text(content)
+        assert fixture_csv_has_data_rows(csv_file) is True
 
 
 # ---------------------------------------------------------------------------
@@ -347,15 +384,56 @@ class TestCreatePipeEntityReaderFixtureConvention:
 
         strategy.wms.read_current_entity_changes.assert_not_called()
 
-    def test_headers_only_csv_raises_clear_error(self, tmp_path):
-        """Headers-only fixture raises ValueError with a helpful message."""
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param("", id="empty"),
+            pytest.param("id,name\n", id="header-only"),
+            pytest.param("# replace with a CSV header row\n", id="comment-only"),
+        ],
+    )
+    def test_fixture_without_data_rows_falls_back_to_provider(self, tmp_path, content):
+        """A fixture with no data rows doesn't hijack the read: the registered
+        provider is used and a warning names the ignored file."""
+        fixture_dir = tmp_path / "tests" / "entities" / "bronze"
+        fixture_dir.mkdir(parents=True)
+        csv_file = fixture_dir / "orders.csv"
+        csv_file.write_text(content)
+
+        mock_df = MagicMock()
+        mock_provider = MagicMock()
+        mock_provider.read_entity.return_value = mock_df
+
+        strategy = self._make_strategy()
+        strategy.provider_registry.get_provider_for_entity.return_value = mock_provider
+        entity = _make_entity("bronze.orders")
+        mock_spark = MagicMock()
+
+        with (
+            patch("kindling.simple_read_persist_strategy._is_local_execution", return_value=True),
+            patch("kindling.simple_read_persist_strategy.os.getcwd", return_value=str(tmp_path)),
+            patch(
+                "kindling.entity_provider_csv.get_or_create_spark_session", return_value=mock_spark
+            ),
+        ):
+            reader = strategy.create_pipe_entity_reader(MagicMock(pipeid="pipe"))
+            result = reader(entity, usewm=False)
+
+        assert result is mock_df
+        strategy.provider_registry.get_provider_for_entity.assert_called_once_with(entity)
+        mock_spark.read.format.assert_not_called()
+        warnings = [str(c.args[0]) for c in strategy.logger.warning.call_args_list]
+        assert any(str(csv_file) in w and "no data rows" in w for w in warnings), warnings
+
+    def test_fixture_with_rows_read_with_comment_lines_skipped(self, tmp_path):
+        """A fixture with data rows is still used, and '#' lines are comments."""
         fixture_dir = tmp_path / "tests" / "entities"
         fixture_dir.mkdir(parents=True)
         csv_file = fixture_dir / "orders.csv"
-        csv_file.write_text("id,name\n")  # no data rows
+        csv_file.write_text("# sample orders\nid,name\n1,foo\n")
 
         mock_df = MagicMock()
-        mock_df.count.return_value = 0
+        mock_df.count.return_value = 1
         mock_reader = MagicMock()
         mock_reader.load.return_value = mock_df
         mock_reader.option.return_value = mock_reader
@@ -373,5 +451,20 @@ class TestCreatePipeEntityReaderFixtureConvention:
             ),
         ):
             reader = strategy.create_pipe_entity_reader(MagicMock(pipeid="pipe"))
-            with pytest.raises(ValueError, match="has no data rows"):
-                reader(entity, usewm=False)
+            result = reader(entity, usewm=False)
+
+        assert result is mock_df
+        strategy.provider_registry.get_provider_for_entity.assert_not_called()
+        mock_reader.option.assert_any_call("comment", "#")
+        mock_reader.load.assert_called_once_with(str(csv_file))
+        strategy.logger.warning.assert_not_called()
+
+
+def test_delimiter_only_row_counts_as_data(tmp_path):
+    from kindling.entity_provider_csv import fixture_csv_has_data_rows
+
+    fixture = tmp_path / "x.csv"
+    fixture.write_text("id,name\n,\n")
+    assert fixture_csv_has_data_rows(fixture) is True
+    fixture.write_text("id,name\n\n\n")
+    assert fixture_csv_has_data_rows(fixture) is False

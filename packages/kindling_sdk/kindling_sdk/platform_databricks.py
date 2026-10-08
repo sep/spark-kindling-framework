@@ -23,6 +23,13 @@ from .platform_provider import (
     create_azure_credential,
 )
 
+# Compute keys that ``submit_app_run``/``register_app_job`` accept through
+# ``compute``; all are already honored by ``_build_job_spec``.
+_NEW_CLUSTER_KEYS = frozenset({"spark_version", "node_type_id", "num_workers"})
+_JOB_COMPUTE_KEYS = frozenset(
+    {"existing_cluster_id", "cluster_id", "force_new_cluster", *_NEW_CLUSTER_KEYS}
+)
+
 _abfss_log_credential_cache = None
 _abfss_log_credential_attempted = False
 _abfss_log_credential_logger = logging.getLogger("kindling_sdk.platform_databricks")
@@ -190,7 +197,7 @@ class DatabricksAPI(PlatformAPI):
               <volume>/kindling; takes precedence over AZURE_STORAGE_ACCOUNT)
             - AZURE_STORAGE_ACCOUNT (for file uploads)
             - AZURE_CONTAINER (default: "artifacts")
-            - AZURE_BASE_PATH (default: "system-tests")
+            - AZURE_BASE_PATH (default: "", the container root -- same as the CLI)
             - DATABRICKS_CLUSTER_ID (default existing cluster for jobs)
             - AZURE_TENANT_ID (for service principal auth)
             - AZURE_CLIENT_ID (for service principal auth)
@@ -214,7 +221,7 @@ class DatabricksAPI(PlatformAPI):
             token=os.getenv("DATABRICKS_TOKEN"),
             storage_account=os.getenv("AZURE_STORAGE_ACCOUNT"),
             container=os.getenv("AZURE_CONTAINER", "artifacts"),
-            base_path=os.getenv("AZURE_BASE_PATH", "system-tests"),
+            base_path=os.getenv("AZURE_BASE_PATH", ""),
             artifacts_path=os.getenv("KINDLING_ARTIFACTS_STORAGE_PATH"),
             default_cluster_id=os.getenv("DATABRICKS_CLUSTER_ID"),
             azure_tenant_id=os.getenv("AZURE_TENANT_ID"),
@@ -460,8 +467,13 @@ class DatabricksAPI(PlatformAPI):
         app_name: str,
         environment: Optional[str] = None,
         parameters: Optional[Dict[str, Any]] = None,
+        compute: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Submit a one-time app run via jobs.submit() — no persistent job definition."""
+        """Submit a one-time app run via jobs.submit() — no persistent job definition.
+
+        ``compute`` selects the job's compute; see ``_apply_compute`` for the
+        accepted keys. Omitted keys keep the defaults of ``_build_job_spec``.
+        """
         config_overrides: Dict[str, Any] = dict(parameters or {})
         if environment:
             config_overrides["environment"] = environment
@@ -469,20 +481,88 @@ class DatabricksAPI(PlatformAPI):
             "app_name": app_name,
             "config_overrides": config_overrides,
         }
+        self._apply_compute(job_config, compute)
         return self._submit_one_time_run(app_name, job_config)
 
     def register_app_job(
         self,
         app_name: str,
         config_overrides: Optional[Dict[str, Any]] = None,
+        compute: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Create or update a named Databricks Job for use in Databricks Workflows."""
+        """Create or update a named Databricks Job for use in Databricks Workflows.
+
+        ``compute`` selects the job's compute; see ``_apply_compute``.
+        """
         job_config: Dict[str, Any] = {
             "app_name": app_name,
             "config_overrides": config_overrides or {},
         }
+        self._apply_compute(job_config, compute)
         result = self.create_job(app_name, job_config)
         return {**result, "platform": "databricks"}
+
+    def _apply_compute(self, job_config: Dict[str, Any], compute: Optional[Dict[str, Any]]) -> None:
+        """Validate ``compute`` and merge it into ``job_config`` in place.
+
+        Accepted keys are the compute keys ``_build_job_spec`` already honors:
+        ``existing_cluster_id`` (or its alias ``cluster_id``) to run on an
+        existing cluster; or ``force_new_cluster`` plus the new job cluster's
+        ``spark_version``, ``node_type_id`` and ``num_workers``. Anything else,
+        or a combination whose settings would be silently ignored, raises
+        ``ValueError``.
+        """
+        if not compute:
+            return
+        unknown = sorted(set(compute) - _JOB_COMPUTE_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Unsupported Databricks compute setting(s): {', '.join(unknown)}. "
+                f"Supported: {', '.join(sorted(_JOB_COMPUTE_KEYS))}."
+            )
+
+        settings = {key: value for key, value in compute.items() if value is not None}
+        if "existing_cluster_id" in settings and "cluster_id" in settings:
+            raise ValueError("Pass either existing_cluster_id or cluster_id, not both.")
+        cluster_id = settings.get("existing_cluster_id", settings.get("cluster_id"))
+        if cluster_id is not None and not (isinstance(cluster_id, str) and cluster_id.strip()):
+            raise ValueError("existing_cluster_id must be a non-empty string.")
+
+        force_new = settings.get("force_new_cluster")
+        if force_new is not None and not isinstance(force_new, bool):
+            raise ValueError("force_new_cluster must be a boolean.")
+
+        for key in ("spark_version", "node_type_id"):
+            value = settings.get(key)
+            if value is not None and not (isinstance(value, str) and value.strip()):
+                raise ValueError(f"{key} must be a non-empty string.")
+        num_workers = settings.get("num_workers")
+        if num_workers is not None and (
+            isinstance(num_workers, bool) or not isinstance(num_workers, int) or num_workers < 0
+        ):
+            raise ValueError("num_workers must be a non-negative integer.")
+
+        sizing = sorted(key for key in _NEW_CLUSTER_KEYS if key in settings)
+        if cluster_id is not None:
+            if force_new:
+                raise ValueError(
+                    "existing_cluster_id and force_new_cluster are mutually exclusive."
+                )
+            if sizing:
+                raise ValueError(
+                    f"{', '.join(sizing)} only apply to a new job cluster and cannot be "
+                    "combined with existing_cluster_id."
+                )
+        elif sizing and not force_new and self.default_cluster_id:
+            # Without this, the default existing cluster would win and the
+            # sizing would be silently dropped.
+            raise ValueError(
+                f"{', '.join(sizing)} only apply to a new job cluster, but "
+                f"DATABRICKS_CLUSTER_ID ({self.default_cluster_id}) selects an existing "
+                "cluster. Set force_new_cluster to run on a new job cluster."
+            )
+
+        job_config.update(settings)
 
     def _build_job_spec(self, job_name: str, job_config: Dict[str, Any]) -> Dict[str, Any]:
         """Build the task specification shared by create_job() and _submit_one_time_run().

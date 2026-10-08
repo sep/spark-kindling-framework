@@ -7,6 +7,14 @@ from typing import Callable, Dict, Literal, Optional, Type
 
 import pyspark.sql.utils
 from delta.tables import DeltaTable
+from kindling.common_transforms import *
+from kindling.features import get_feature_bool, set_runtime_feature
+
+# Import your existing modules
+from kindling.injection import *
+from kindling.signaling import SignalEmitter, SignalProvider
+from kindling.spark_config import *
+from kindling.spark_log_provider import *
 from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import (
@@ -20,15 +28,6 @@ from pyspark.sql.functions import (
     to_json,
 )
 from pyspark.sql.types import StructType
-
-from kindling.common_transforms import *
-from kindling.features import get_feature_bool, set_runtime_feature
-
-# Import your existing modules
-from kindling.injection import *
-from kindling.signaling import SignalEmitter, SignalProvider
-from kindling.spark_config import *
-from kindling.spark_log_provider import *
 
 from .data_entities import *
 from .entity_provider import (
@@ -673,7 +672,8 @@ class DeltaEntityProvider(
             "provider_type": "delta",
             "provider.path": "Tables/custom/sales_transactions",
             "provider.access_mode": "storage"
-        }
+        },
+        schema=transactions_schema,  # a pyspark StructType (or None)
     )
     ```
 
@@ -2102,10 +2102,9 @@ class DeltaEntityProvider(
 
         if watermark_version is None:
             # Initial load: full read stamped with the version it covers.
+            from kindling.common_transforms import drop_if_exists, remove_duplicates
             from pyspark.sql.functions import current_timestamp, date_format, lit
             from pyspark.sql.types import IntegerType, TimestampType
-
-            from kindling.common_transforms import drop_if_exists, remove_duplicates
 
             df = remove_duplicates(
                 self.read_entity(entity)

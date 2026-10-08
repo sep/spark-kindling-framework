@@ -23,9 +23,11 @@ All notable changes to spark-kindling are documented here.
 ### Changed
 
 - **Kindling dependencies are pinned as PyPI versions.** `kindling package
-  init` scaffolds `spark-kindling[standalone]==X.Y.Z` (and `==` pins for the
-  SDK and CLI) instead of release wheel URLs, unless the repo root still pins
-  by URL. `kindling env update` / `env add` / `env bootstrap` write version
+  init` scaffolds `==` pins for `spark-kindling`, the SDK and the CLI in the
+  package's `dev` group instead of release wheel URLs, unless the repo root
+  still pins by URL. The runtime dependency stays plain, unpinned
+  `spark-kindling`, so a lake wheel's `Requires-Dist` never makes pip replace
+  the Kindling the cluster bootstrap installed. `kindling env update` / `env add` / `env bootstrap` write version
   pins for any package version on PyPI and fall back to the release wheel URL
   otherwise; running `kindling env update` on a URL-pinned project converts it.
   Only the packages this repository publishes are ever pinned from PyPI; the
@@ -34,6 +36,163 @@ All notable changes to spark-kindling are documented here.
   falling back to the GitHub release.
 - Package metadata on PyPI: project URLs, classifiers and keywords; README
   links are absolute so they work on pypi.org.
+
+## [0.13.2] - 2026-10-07
+
+### Added
+
+- **A Kindling skill for coding agents.** `kindling agent setup --agents
+  claude,codex,copilot` installs a `kindling` skill (`SKILL.md` plus
+  references for entities, pipes, apps and config) where each agent reads
+  skills, and a short managed block in `CLAUDE.md`, `AGENTS.md` or
+  `.github/copilot-instructions.md`. The skill ships inside
+  `spark-kindling-cli`, so it matches the Kindling release a project pins,
+  and its examples are executed by the integration tests. `kindling repo
+  init --agents ...` installs it for new repos, and the scaffolded
+  devcontainer refreshes it after `kindling env bootstrap`.
+- **Databricks getting-started reference in the agent skill**
+  (`references/databricks.md`): auth, artifacts storage and Unity Catalog,
+  Kindling jobs vs Lakeflow bundles, extensions, `settings.databricks.yaml`
+  and troubleshooting.
+- **`kindling runtime deploy` uploads extension wheels.** Bootstrap installs
+  the extensions in `kindling.extensions` from `<artifacts>/packages/`, but
+  `runtime deploy` uploaded only the core `spark_kindling` wheel, so a domain
+  project had no command to put extension wheels there. `--extension NAME`
+  (repeatable; `spark-kindling-ext-sdp` or `spark_kindling_ext_sdp`) and
+  `--all-extensions` now upload extension wheels from the `github:` release
+  assets or the `local:` directory alongside the runtime; a name the source
+  doesn't have is an error that lists the extensions it does have. Without
+  either option only the core wheel is uploaded, as before. `runtime deploy`
+  also gains `--json`, reporting the uploaded `wheels`, `extension_wheels` and
+  `scripts`.
+- **Databricks job compute from the CLI.** `kindling app run --platform
+  databricks` and `kindling runner register` take `--cluster-id`,
+  `--new-cluster`, `--spark-version`, `--node-type` and `--num-workers`.
+  Before, these commands always used `DATABRICKS_CLUSTER_ID` or a new
+  `Standard_DS3_v2` / 1-worker / 13.3 job cluster. The defaults are
+  unchanged. The options error on other platforms and for standalone runs,
+  and sizing options error instead of being ignored when
+  `DATABRICKS_CLUSTER_ID` would pick an existing cluster (add
+  `--new-cluster`). In the SDK, `submit_app_run` and `register_app_job` take
+  an optional `compute` dict; Fabric and Synapse raise `ValueError` if it is
+  non-empty. Serverless job compute is not supported yet.
+
+### Changed
+
+- `kindling agent setup` no longer needs the devcontainer image: it replaces
+  the image-baked agent reference (and its copy in `~/.claude/CLAUDE.md`)
+  with the skill, writes files only for the selected agents (saved in
+  `.kindling-agent.json`), removes its own files for agents dropped from the
+  selection, and edits only its marked block in instruction files the team
+  also writes in. `--force` is gone; `--check` exits 1 when files are stale.
+- **Scaffolded packages depend on plain `spark-kindling`.** `kindling package
+  init` used to put `spark-kindling[standalone]` in a package's runtime
+  `dependencies`, so its wheel declared pyspark, delta-spark, pandas and
+  pyarrow, and pip pulled them onto Databricks, Fabric and Synapse clusters
+  that already supply Spark and Delta. Generated packages now depend on plain
+  `spark-kindling` and list the local Spark stack in their `dev` group; the
+  root workspace keeps `spark-kindling[standalone]`, and `env bootstrap` adds
+  that extra when it adopts a package's pin. **Existing packages**: change
+  `"spark-kindling[standalone]"` to `"spark-kindling"` in `dependencies` and
+  add `pyspark`, `delta-spark`, `pandas` and `pyarrow` to the `dev` group.
+
+### Fixed
+
+- **`kindling app run --platform` uses `KINDLING_ENV`.** `app deploy` defaults
+  `--environment` to `KINDLING_ENV`, but a remote `app run` passed no
+  environment unless `--env` was given, so with `KINDLING_ENV=prod` a run
+  could miss the `prod` overlay it had just deployed. Remote runs now default
+  `--env` to `KINDLING_ENV` too. The `runner register --help` example now uses
+  `--config environment=prod` (the key the runner reads).
+- **`kindling app run <name> --platform` submits the deployed name.** `app
+  deploy my-app` deploys under the app folder's name (`my_app`), but `app run
+  my-app --platform` submitted `my-app`, which doesn't exist remotely. A remote
+  run now resolves its argument the way `deploy` does: the folder's name
+  (falling back to snake_case when the folder isn't available locally).
+  Docs and the agent skill use the folder name in every deploy/run example.
+- **File ingestion honours its options and the destination's provider.**
+  `FileIngestionEntries.entry(filetype=..., infer_schema=...)` were ignored on
+  the batch path; every pattern was ignored but the first; and files were
+  always appended through Delta whatever the destination entity's
+  `provider_type`. Now the format is a `filetype` named group if the pattern
+  has one, else `filetype=`, else csv; `infer_schema` is passed to the reader;
+  patterns are tried in order (first match wins; an empty list or invalid
+  regex is rejected); and data is appended through the destination entity's
+  own provider. `kindling package add ingestion` no longer tags the
+  destination entity `provider_type: csv`. **Default change**: `infer_schema`
+  now defaults to `False` (it was documented as `True` but had no effect, so
+  existing entries keep reading string columns); pass `infer_schema=True` to
+  infer types.
+- **File ingestion no longer reports success when a table write fails.** With
+  `ingestion.max_parallel_tables > 1`, a failed table write was only logged
+  and `process_path` completed normally, silently skipping that table's data.
+  It now lets the other in-flight tables finish, then raises an error naming
+  every table that failed (the sequential path already failed the run).
+- **Deployed apps register their packages' entities and pipes.** On a
+  cloud platform, an app's `lake-reqs.txt` packages were installed and only
+  their top-level module imported. A package laid out as `kindling package
+  init` scaffolds it -- declarations in `entities/` and `pipes/`, an empty
+  `__init__.py` -- registered nothing remotely, so a batch app ran no pipes.
+  Deployed apps now import each package's `entities`, `pipes` and
+  `ingestion` subpackages, the same walk the local runner does.
+- **`settings.local.yaml` no longer overrides other environments.** Dynaconf
+  silently loaded a `settings.local.yaml` beside every settings file, after
+  all of them, so a developer's local overrides won in `dev`, `prod` or any
+  other environment run from their checkout (deployed runs never saw the file).
+  It now applies only as the `local` environment's layer, and only once.
+- **Lists from different settings layers replace instead of appending.** The
+  runtime appended a list in a later layer to the one below
+  (`[a, b]` + `[c]` → `[a, b, c]`, and `[a, b, c, c]` under `env=local`),
+  unlike config overlays and `kindling bundle build`, which replace -- so the
+  same YAML could resolve differently in a Lakeflow bundle than in a job.
+  Kindling now merges the layers itself (mappings deep-merge, lists and
+  scalars replace) before Dynaconf resolves `@format`, secrets and
+  environment variables. Appending is opt-in with Dynaconf's markers
+  (`dynaconf_merge` in the list, or `"@merge [...]"`). **Behaviour change**:
+  a configuration that relied on lists accumulating across layers must add a
+  marker.
+- `--param kindling.telemetry.logging.level=...` (or any parameter setting a
+  nested key that older code reads through a flat alias such as `log_level`)
+  now takes effect.
+- **`kindling app run .` works.** `app run` accepts a path to an app
+  directory (`.`, `apps/my_app`, an absolute path; one containing `app.py`) as
+  well as an app name, as the scaffolded `app.py`, `kindling app init`'s next
+  steps and the quickstart already suggested. It used to fail with "Project
+  name '.' cannot be converted to a valid Python identifier". With
+  `--platform`, a path runs the app deployed under that directory's name (the
+  name `kindling app deploy` gives it by default).
+- **A freshly scaffolded entity no longer breaks local reads.** A
+  `tests/entities/` fixture with no data rows (empty, header-only, or only `#`
+  comment lines) is now ignored with a warning naming the file, and the
+  entity's provider is read, instead of raising "has no data rows". `kindling
+  package add entity` writes the scaffolded schema's header row (`id`) as the
+  stub, `package add pipe --inputs` keeps a comment-line stub, `app validate`
+  warns about such fixtures and `app inspect --entities` marks them ignored.
+  Lines starting with `#` are comments in fixtures.
+- **SQL entities can be pipe inputs.** Entities declared with
+  `@DataEntities.sql_entity` are tagged `provider_type: "view"`, but no `view`
+  provider was registered, so reading one in the core runner failed with
+  `Unknown provider type: 'view'`. The built-in `view` provider now reads a
+  SQL entity by evaluating its declared SQL, so the read does not depend on
+  `kindling migrate apply` having created the catalog view (and works
+  standalone). SQL entities stay read-only: a pipe that writes to one fails
+  with an error naming the entity, and no view DDL is issued. That holds
+  whatever the entity's tags say: a SQL entity always resolves to the `view`
+  provider, and `sql_entity(tags={"provider_type": ...})` naming another
+  provider is an error. The SQL must be a single read-only query; DDL, DML,
+  session commands and multiple statements are rejected when the entity is
+  declared and when it is read.
+- **Databricks workspace overlay.** When `workspace_id` holds the workspace
+  URL (it doubles as the REST API host), bootstrap looked for
+  `workspace_https://....yaml`, which can't exist. The overlay is now keyed
+  by the workspace's numeric ID, or its host with dots replaced by
+  underscores when the ID isn't available.
+- **SDK storage root.** The Databricks and Synapse SDK clients defaulted
+  `AZURE_BASE_PATH` to `system-tests`, while the CLI defaults it to empty, so
+  uploads and job reads could resolve different roots. Both now default to
+  empty.
+- `kindling entity show` / `validate` skip `#` comment lines and blank
+  records in fixture CSVs, as the runtime does.
 
 ## [0.13.1] - 2026-10-06
 

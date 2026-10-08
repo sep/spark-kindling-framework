@@ -619,11 +619,17 @@ def load_settings_file(path: Path) -> Dict[str, Any]:
 def deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> Dict[str, Any]:
     """Deep-merge mappings, override winning; lists and scalars replace.
 
-    Matches Dynaconf's ``MERGE_ENABLED_FOR_DYNACONF`` behaviour for plain
-    YAML values, which is how the runtime layers these same files.
+    The runtime merges these same files with the same rule
+    (``kindling.spark_config.merge_settings_layers``; a unit test keeps them
+    in agreement for plain values). Dynaconf merge markers are runtime-only
+    and produce a warning here.
     """
     merged: Dict[str, Any] = dict(base)
     for key, value in override.items():
+        # Keys match case-insensitively, as at runtime (Dynaconf lookups are
+        # case-insensitive); the earlier spelling is kept.
+        if key not in merged and isinstance(key, str):
+            key = next((k for k in merged if isinstance(k, str) and k.lower() == key.lower()), key)
         existing = merged.get(key)
         if isinstance(existing, Mapping) and isinstance(value, Mapping):
             merged[key] = deep_merge(existing, value)

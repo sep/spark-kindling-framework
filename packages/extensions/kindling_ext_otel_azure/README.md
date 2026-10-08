@@ -16,8 +16,10 @@ This package provides Azure Monitor-backed implementations of Kindling's telemet
 pip install spark-kindling-ext-otel-azure
 ```
 
-In a uv project, `kindling env add spark-kindling-ext-otel-azure` pins the
-version that matches the project's Kindling release.
+In a Kindling domain project, add it with `kindling env add spark-kindling-ext-otel-azure`.
+On a cluster, the runtime installs it from `<artifacts>/packages/` when it is listed in
+`kindling.extensions`; upload the wheel there with
+`kindling runtime deploy --source github:<version> --dest <artifacts-root> --extension spark-kindling-ext-otel-azure`.
 
 ## Usage
 
@@ -29,21 +31,21 @@ Add the extension to your `settings.yaml` or `BOOTSTRAP_CONFIG`:
 kindling:
   # Extensions are automatically loaded (installed + imported)
   extensions:
-    - spark-kindling-ext-otel-azure>=0.3.0a1  # Alpha with improved cross-platform support
+    - spark-kindling-ext-otel-azure>=0.4.0
 
   telemetry:
     azure_monitor:
       connection_string: "InstrumentationKey=your-key;IngestionEndpoint=https://..."
-      # Optional settings
+      # Both default to false: with neither set the extension sends nothing.
       enable_logging: true
       enable_tracing: true
-      sampling_rate: 1.0  # 1.0 = 100% sampling
+      sampling_rate: 1.0  # optional; 1.0 = 100% sampling
 ```
 
 Or in bootstrap config:
 ```python
 BOOTSTRAP_CONFIG = {
-    'extensions': ['spark-kindling-ext-otel-azure>=0.1.0'],
+    'extensions': ['spark-kindling-ext-otel-azure>=0.4.0'],
     'kindling': {
         'telemetry': {
             'azure_monitor': {

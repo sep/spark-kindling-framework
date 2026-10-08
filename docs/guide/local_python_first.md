@@ -100,20 +100,36 @@ uv run poe test
 
 `uv run` syncs what the package needs before running. Don't run a bare `uv sync` inside a package directory: in the workspace it is an exact sync of that one package and removes the others from the shared `.venv/`. Resync the whole repo with `uv sync --all-packages` (or `kindling env bootstrap`) at the root.
 
-The generated `pyproject.toml` pins the published runtime distribution to the
-CLI's release by version, resolved from PyPI:
+The generated `pyproject.toml` depends on plain `spark-kindling` at runtime and
+pins the Kindling release, by version from PyPI, in its `dev` dependency group,
+next to the local Spark stack:
 
 ```toml
 [project]
-dependencies = ["spark-kindling[standalone]==X.Y.Z"]
+dependencies = ["spark-kindling"]
 
 [dependency-groups]
 dev = [
     # ...pytest, poethepoet
+    "spark-kindling==X.Y.Z",
     "spark-kindling-sdk==X.Y.Z",
     "spark-kindling-cli==X.Y.Z",
+    "pyspark>=3.4.0,<4.0.0",
+    "delta-spark>=2.4.0,<4.0.0",
+    "pandas>=2.0.0",
+    "pyarrow>=12.0.0",
 ]
 ```
+
+The runtime dependency is plain and unpinned: the package's wheel is installed
+on Databricks, Fabric and Synapse clusters, which provide their own Spark and
+Delta and get Kindling from the runtime the bootstrap installs. Its
+`Requires-Dist` therefore names neither `pyspark`/`delta-spark` nor a Kindling
+version that pip could swap in. The `dev` group pins the release for local
+work (uv resolves one version for the whole workspace) and carries the same
+packages as the `standalone` extra for local tests and runs; the repo root
+(never built into a wheel) pins `spark-kindling[standalone]==X.Y.Z` so the
+shared `.venv/` always has local Spark.
 
 Every package must pin the same Kindling release as the root `pyproject.toml`
 (they share one lockfile). Run `kindling env update` at the repo root (or
@@ -201,19 +217,19 @@ standalone platform. The positional argument is the app name; kindling discovers
 
 ```bash
 # From the repo root — convention lookup finds apps/my_pipeline/
-kindling app run my-pipeline
-kindling app run my-pipeline --env local
+kindling app run my_pipeline
+kindling app run my_pipeline --env local
 
 # Non-standard layout: override the lookup with --local-folder
-kindling app run my-pipeline --local-folder path/to/app-dir
+kindling app run my_pipeline --local-folder path/to/app-dir
 ```
 
 When you want the app to import checked-out package code instead of an installed
 or artifact-backed wheel, pass one or more local package roots:
 
 ```bash
-kindling app run my-pipeline --local-package packages/my_pipeline
-kindling app run my-pipeline --local-package packages/my_pipeline --local-package packages/shared_domain
+kindling app run my_pipeline --local-package packages/my_pipeline
+kindling app run my_pipeline --local-package packages/my_pipeline --local-package packages/shared_domain
 ```
 
 Each `--local-package` path may point at a package root with a `src/` directory
@@ -375,17 +391,17 @@ The CLI covers the full local-to-remote app lifecycle using app names as convent
 
 ```bash
 # Package apps/my_pipeline/ into a .kda archive
-kindling app package my-pipeline
+kindling app package my_pipeline
 
 # Deploy apps/my_pipeline/ to a remote platform
-kindling app deploy my-pipeline --platform fabric
+kindling app deploy my_pipeline --platform fabric
 
 # Run all registered pipes locally with standalone Spark
-kindling app run my-pipeline
+kindling app run my_pipeline
 
 # Run an already-deployed app remotely (deploy must come first)
-kindling app deploy my-pipeline --platform synapse
-kindling app run my-pipeline --platform synapse
+kindling app deploy my_pipeline --platform synapse
+kindling app run my_pipeline --platform synapse
 kindling app status <run-id> --platform synapse
 kindling app logs <run-id> --platform synapse
 ```
@@ -393,7 +409,7 @@ kindling app logs <run-id> --platform synapse
 Non-standard layouts can always override convention lookup with `--local-folder`:
 
 ```bash
-kindling app deploy my-pipeline --local-folder path/to/app --platform fabric
+kindling app deploy my_pipeline --local-folder path/to/app --platform fabric
 kindling package deploy my-package --local-folder path/to/package
 ```
 
@@ -421,6 +437,30 @@ kindling runtime deploy \
 ```
 
 The `--dest` root becomes your `artifacts_storage_path` in `BOOTSTRAP_CONFIG`.
+
+### Getting extensions onto the cluster
+
+Extensions listed under `kindling.extensions` in your settings are installed at
+bootstrap from wheels in `{artifacts}/packages/`. `runtime deploy` uploads only
+the core runtime wheel unless you ask for extensions, so name each one your
+settings list (or pass `--all-extensions`):
+
+```yaml
+kindling:
+  extensions: [spark-kindling-ext-sdp]
+```
+
+```bash
+kindling runtime deploy \
+  --source github:latest \
+  --dest abfss://artifacts@myacct.dfs.core.windows.net/kindling \
+  --extension spark-kindling-ext-sdp
+```
+
+The extension wheels come from the same GitHub release (or `local:` directory)
+as the runtime, so their versions match. Naming an extension the source does
+not contain fails and lists what is available. Promoting with a store-to-store
+copy carries the extension wheels along with everything else in `packages/`.
 
 ### Workspace initialization and config deploy
 

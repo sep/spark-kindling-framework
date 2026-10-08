@@ -1017,25 +1017,32 @@ class DataAppManager(DataAppRunner):
             wheels_cache_dir = self._download_lake_wheels(app_name, lake_requirements, temp_dir)
 
         # Step 2: Install lake wheels
+        lake_installed = False
         if wheels_cache_dir and lake_requirements:
-            self._install_lake_wheels(wheels_cache_dir, lake_requirements)
+            lake_installed = self._install_lake_wheels(wheels_cache_dir, lake_requirements)
 
         # Step 3: Install PyPI dependencies
         if pypi_dependencies:
             self._install_pypi_dependencies(pypi_dependencies, wheels_cache_dir)
+
+        # Step 4: Import the lake packages and register their declarations --
+        # only after every dependency is installed, since a declaration module
+        # may import a library the app's requirements.txt provides.
+        if lake_installed:
+            self._import_installed_packages(lake_requirements)
 
         if not pypi_dependencies and not lake_requirements:
             self.logger.debug("No dependencies to install")
 
         return temp_dir
 
-    def _install_lake_wheels(self, wheels_cache_dir: str, lake_requirements: List[str]) -> None:
-        """Install lake wheel packages"""
+    def _install_lake_wheels(self, wheels_cache_dir: str, lake_requirements: List[str]) -> bool:
+        """Install lake wheel packages; True when any wheel was installed."""
         self.logger.info(f"Installing {len(lake_requirements)} datalake packages")
 
         wheel_files = list(Path(wheels_cache_dir).glob("*.whl"))
         if not wheel_files:
-            return
+            return False
 
         pip_args = [
             sys.executable,
@@ -1055,20 +1062,29 @@ class DataAppManager(DataAppRunner):
             raise Exception("Datalake wheel installation failed")
 
         self.logger.info("Datalake wheels installed successfully")
-
-        # Import packages to execute decorators
-        self._import_installed_packages(lake_requirements)
+        return True
 
     def _import_installed_packages(self, package_specs: List[str]) -> None:
-        """Import packages to trigger decorator execution"""
+        """Import the app's lake packages and register their declarations.
+
+        Importing a package alone registers nothing when its declarations
+        live in its ``entities`` / ``pipes`` / ``ingestion`` subpackages (the
+        scaffolded layout, with an empty ``__init__.py``), so those are
+        imported too -- the same walk the local runner does.
+        """
+        from kindling.package_registrations import import_package_registrations
+
+        package_names = []
         for package_spec in package_specs:
             package_name = self._normalize_pkg_name(self._extract_package_name(package_spec))
             try:
                 __import__(package_name)
-                self.logger.info(f"Imported {package_name} - decorators executed")
+                self.logger.info(f"Imported {package_name}")
             except ImportError as e:
                 self.logger.error(f"Failed to import {package_name}: {e}")
                 raise
+            package_names.append(package_name)
+        import_package_registrations(self.logger, package_names)
 
     def _install_pypi_dependencies(
         self, pypi_dependencies: List[str], wheels_cache_dir: str = ""

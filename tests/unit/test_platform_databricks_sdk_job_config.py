@@ -617,3 +617,145 @@ def test_submit_one_time_run_produces_valid_volumes_python_file():
         == "/Volumes/cat/schema/vol/kindling/scripts/kindling_bootstrap.py"
     )
     assert run_id == "555"
+
+
+# --- Job compute selection through submit_app_run / register_app_job ---
+
+
+def test_submit_app_run_compute_new_cluster_sizing_reaches_new_cluster():
+    api = _make_api_for_create_job()
+    api.default_cluster_id = "warm-shared-cluster"
+    api._client.jobs.submit.return_value = MagicMock(run_id=1)
+
+    api.submit_app_run(
+        "myapp",
+        compute={
+            "force_new_cluster": True,
+            "spark_version": "15.4.x-scala2.12",
+            "node_type_id": "Standard_DS4_v2",
+            "num_workers": 4,
+        },
+    )
+
+    task = api._client.jobs.submit.call_args.kwargs["tasks"][0]
+    assert task.existing_cluster_id is None
+    assert task.new_cluster.spark_version == "15.4.x-scala2.12"
+    assert task.new_cluster.node_type_id == "Standard_DS4_v2"
+    assert task.new_cluster.num_workers == 4
+
+
+def test_submit_app_run_compute_existing_cluster_overrides_default():
+    api = _make_api_for_create_job()
+    api.default_cluster_id = "warm-shared-cluster"
+    api._client.jobs.submit.return_value = MagicMock(run_id=1)
+
+    api.submit_app_run("myapp", compute={"existing_cluster_id": "0101-abc"})
+
+    task = api._client.jobs.submit.call_args.kwargs["tasks"][0]
+    assert task.existing_cluster_id == "0101-abc"
+    assert task.new_cluster is None
+
+
+def test_submit_app_run_compute_sizing_without_default_cluster_uses_new_cluster():
+    api = _make_api_for_create_job()
+    api._client.jobs.submit.return_value = MagicMock(run_id=1)
+
+    api.submit_app_run("myapp", compute={"num_workers": 3})
+
+    task = api._client.jobs.submit.call_args.kwargs["tasks"][0]
+    assert task.new_cluster.num_workers == 3
+    # Unspecified keys keep the SDK defaults.
+    assert task.new_cluster.spark_version == "13.3.x-scala2.12"
+    assert task.new_cluster.node_type_id == "Standard_DS3_v2"
+
+
+def test_submit_app_run_without_compute_keeps_defaults():
+    api = _make_api_for_create_job()
+    api.default_cluster_id = "warm-shared-cluster"
+    api._client.jobs.submit.return_value = MagicMock(run_id=1)
+
+    api.submit_app_run("myapp")
+
+    task = api._client.jobs.submit.call_args.kwargs["tasks"][0]
+    assert task.existing_cluster_id == "warm-shared-cluster"
+
+
+def test_register_app_job_compute_reaches_job_definition():
+    api = _make_api_for_create_job()
+    api.default_cluster_id = "warm-shared-cluster"
+
+    result = api.register_app_job(
+        "myapp",
+        config_overrides={"env": "prod"},
+        compute={"force_new_cluster": True, "node_type_id": "Standard_E8s_v3"},
+    )
+
+    task = api._client.jobs.create.call_args.kwargs["tasks"][0]
+    assert task.existing_cluster_id is None
+    assert task.new_cluster.node_type_id == "Standard_E8s_v3"
+    assert task.new_cluster.num_workers == 1
+    assert result["platform"] == "databricks"
+
+
+def test_register_app_job_compute_cluster_id_alias():
+    api = _make_api_for_create_job()
+
+    api.register_app_job("myapp", compute={"cluster_id": "0202-def"})
+
+    task = api._client.jobs.create.call_args.kwargs["tasks"][0]
+    assert task.existing_cluster_id == "0202-def"
+
+
+@pytest.mark.parametrize(
+    "compute, message",
+    [
+        ({"autoscale": {"min_workers": 1}}, "Unsupported Databricks compute setting(s): autoscale"),
+        ({"existing_cluster_id": "a", "cluster_id": "b"}, "not both"),
+        ({"existing_cluster_id": " "}, "non-empty string"),
+        ({"existing_cluster_id": "a", "force_new_cluster": True}, "mutually exclusive"),
+        ({"existing_cluster_id": "a", "num_workers": 2}, "cannot be combined"),
+        ({"force_new_cluster": "yes"}, "must be a boolean"),
+        ({"num_workers": -1}, "non-negative integer"),
+        ({"num_workers": True}, "non-negative integer"),
+        ({"spark_version": ""}, "spark_version must be a non-empty string"),
+    ],
+)
+def test_compute_validation_errors(compute, message):
+    api = _make_api_for_create_job()
+
+    with pytest.raises(ValueError) as excinfo:
+        api.submit_app_run("myapp", compute=compute)
+
+    assert message in str(excinfo.value)
+    api._client.jobs.submit.assert_not_called()
+
+
+def test_compute_sizing_with_default_cluster_requires_force_new_cluster():
+    """Sizing must not be silently dropped in favour of DATABRICKS_CLUSTER_ID."""
+    api = _make_api_for_create_job()
+    api.default_cluster_id = "warm-shared-cluster"
+
+    with pytest.raises(ValueError, match="force_new_cluster"):
+        api.register_app_job("myapp", compute={"node_type_id": "Standard_DS4_v2"})
+
+    api._client.jobs.create.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "module, cls", [("platform_fabric", "FabricAPI"), ("platform_synapse", "SynapseAPI")]
+)
+def test_other_platforms_reject_compute(module, cls):
+    import importlib
+
+    api_cls = getattr(importlib.import_module(f"kindling_sdk.{module}"), cls)
+    api = api_cls.__new__(api_cls)
+    api.create_job = MagicMock()
+    api._submit_livy_batch = MagicMock()
+
+    with pytest.raises(ValueError, match="only available on Databricks"):
+        api.submit_app_run("myapp", compute={"num_workers": 2})
+    with pytest.raises(ValueError, match="only available on Databricks"):
+        api.register_app_job("myapp", compute={"num_workers": 2})
+
+    api.create_job.assert_not_called()
+    api._submit_livy_batch.assert_not_called()
