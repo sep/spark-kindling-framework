@@ -2,6 +2,14 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Fixed
+
+- The agent skill's Databricks reference no longer says the devcontainer
+  image lacks the Azure CLI. The image includes `az`, so `az login` auth
+  works there.
+
 ## [0.13.2] - 2026-10-07
 
 ### Added
