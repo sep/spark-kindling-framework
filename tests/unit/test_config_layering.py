@@ -221,3 +221,50 @@ def test_explicit_flat_log_level_wins_over_nested(_spark, tmp_path):
         initial_config={"kindling.telemetry.logging.level": "WARN", "log_level": "DEBUG"},
     )
     assert config.get("log_level") == "DEBUG"
+
+
+@pytest.mark.parametrize(
+    "initial_config",
+    [
+        {"kindling.extensions": ["temporal==0.2.7", "otel==0.4.0"]},
+        {"kindling": {"extensions": ["temporal==0.2.7", "otel==0.4.0"]}},
+    ],
+)
+@patch(
+    "kindling.spark_config.get_or_create_spark_session",
+    side_effect=lambda: _spark_without_conf(),
+)
+def test_parameter_list_replaces_settings_list(_spark, tmp_path, initial_config):
+    """A job parameter / --param is the top layer: its list replaces the
+    settings file's (before, Dynaconf appended it, and the extension dedup
+    then kept the file's stale pin)."""
+    import copy
+
+    settings = _write(
+        tmp_path / "settings.yaml",
+        {"kindling": {"extensions": ["temporal==0.2.4"], "items": ["a"], "probe": "file"}},
+    )
+    supplied = copy.deepcopy(initial_config)
+    config = DynaconfConfig()
+    config.initialize(config_files=[settings], initial_config=initial_config)
+
+    assert list(config.get("kindling.extensions")) == ["temporal==0.2.7", "otel==0.4.0"]
+    assert list(config.get("extensions")) == ["temporal==0.2.7", "otel==0.4.0"]
+    # Siblings the parameter didn't set are kept.
+    assert list(config.get("kindling.items")) == ["a"]
+    assert config.get("kindling.probe") == "file"
+    # The caller's config is not mutated by Dynaconf's merge.
+    assert initial_config == supplied
+
+
+@patch(
+    "kindling.spark_config.get_or_create_spark_session",
+    side_effect=lambda: _spark_without_conf(),
+)
+def test_parameter_list_append_is_opt_in(_spark, tmp_path):
+    settings = _write(tmp_path / "settings.yaml", {"kindling": {"items": ["a"]}})
+    config = DynaconfConfig()
+    config.initialize(
+        config_files=[settings], initial_config={"kindling.items": ["dynaconf_merge", "b"]}
+    )
+    assert list(config.get("kindling.items")) == ["a", "b"]

@@ -56,6 +56,16 @@ All notable changes to spark-kindling are documented here.
 - Package metadata on PyPI: project URLs, classifiers and keywords; README
   links are absolute so they work on pypi.org.
 
+### Fixed
+
+- **A job parameter or `--param` list now replaces the settings files'
+  list.** Parameters are applied through Dynaconf's merge, which appended a
+  parameter's list to the one from `settings.yaml` (and changed the caller's
+  dict in place), so e.g. `kindling.extensions` set as a job parameter could
+  not replace the app's list: the extension dedup then kept the file's pin.
+  Parameter lists now replace, like every other layer, and Dynaconf's
+  `dynaconf_merge` marker still appends.
+
 ## [0.13.2] - 2026-10-07
 
 ### Added

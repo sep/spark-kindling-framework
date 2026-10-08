@@ -1,3 +1,4 @@
+import copy
 import logging
 import shutil
 import tempfile
@@ -429,8 +430,29 @@ class DynaconfConfig(ConfigService):
             if key != "spark_configs":  # Already handled specially
                 self._merge_dotted_key(nested, key, value)
 
+        # Dynaconf's merge (MERGE_ENABLED_FOR_DYNACONF) appends a parameter's
+        # list to the one the settings files set -- mutating the list object
+        # it is given -- so a job parameter or --param could never replace
+        # e.g. kindling.extensions. Parameters are the top layer and lists
+        # replace across layers, with the same opt-in append markers as the
+        # settings files (merge_settings_layers): record the supplied lists
+        # and the file values under them, hand Dynaconf a copy, then set each
+        # resolved list at its dotted path without merging (that replaces
+        # only the leaf).
+        supplied_lists = copy.deepcopy(self._list_leaves(nested))
+        file_lists = {}
+        for dotted_key, _value in supplied_lists:
+            try:
+                file_value = self.dynaconf.get(dotted_key)
+            except Exception:  # noqa: BLE001 -- a lazy value elsewhere; treat as unset
+                file_value = None
+            file_lists[dotted_key] = list(file_value) if isinstance(file_value, list) else None
         for top_level_key, value in nested.items():
-            self.dynaconf.set(top_level_key, value)
+            self.dynaconf.set(top_level_key, copy.deepcopy(value))
+
+        for dotted_key, value in supplied_lists:
+            resolved = merge_settings_layers(file_lists[dotted_key], value)
+            self.dynaconf.set(dotted_key, resolved, merge=False)
 
         # A parameter that sets a nested key (e.g. --param
         # kindling.telemetry.logging.level=DEBUG) must also update the flat
@@ -448,6 +470,18 @@ class DynaconfConfig(ConfigService):
                 value = self.dynaconf.get(nested_key)
                 if value is not None:
                     self.dynaconf.set(flat_key, value, merge=False)
+
+    @staticmethod
+    def _list_leaves(tree: Dict[str, Any], prefix: str = "") -> List[Tuple[str, list]]:
+        """(dotted_key, list) for every list value in a nested dict."""
+        leaves: List[Tuple[str, list]] = []
+        for key, value in tree.items():
+            dotted = f"{prefix}.{key}" if prefix else str(key)
+            if isinstance(value, dict):
+                leaves.extend(DynaconfConfig._list_leaves(value, dotted))
+            elif isinstance(value, list):
+                leaves.append((dotted, value))
+        return leaves
 
     @staticmethod
     def _dotted_key_in(tree: Dict[str, Any], dotted_key: str) -> bool:
