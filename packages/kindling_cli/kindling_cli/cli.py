@@ -3307,6 +3307,18 @@ def _uv_pin_package_kindling_version(
     return "pypi"
 
 
+def _package_init_source(source: str, version: Optional[str]) -> str:
+    """Pin form for a new package when the repo root pins no Kindling yet:
+    --source, or for `auto` PyPI only when the release is published there,
+    so a fresh scaffold never gets `==` pins uv cannot resolve."""
+    if source in ("pypi", "github"):
+        return source
+    from kindling_cli.scaffold import _kindling_version
+
+    resolved = version or _kindling_version()
+    return "pypi" if _published_on_pypi(_KINDLING_DISTRIBUTION_PREFIX, resolved) else "github"
+
+
 def _source_option(func):
     return click.option(
         "--source",
@@ -8864,6 +8876,7 @@ package_group.add_command(package_add_group)
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     help="Directory of custom Jinja2 templates that overlay the built-ins.",
 )
+@_source_option
 def package_init(
     package_name: str,
     auth: str,
@@ -8871,8 +8884,14 @@ def package_init(
     integration: bool,
     repo_root: Path,
     template_dir: Optional[Path],
+    source: str = "auto",
 ) -> None:
-    """Create a Kindling package under an existing multi-package repo."""
+    """Create a Kindling package under an existing multi-package repo.
+
+    A repo root that already pins Kindling sets the release and the pin form
+    (a uv workspace pins each package one way). Otherwise --source decides:
+    `auto` writes PyPI version pins when the release is on PyPI and GitHub
+    release wheel URLs when it isn't (or PyPI is unreachable)."""
     from kindling_cli.scaffold import (
         PackageScaffoldConfig,
         generate_package,
@@ -8907,6 +8926,7 @@ def package_init(
     # root is one of them; it also rejects members pinning Kindling to a
     # different release URL than the root, so a pinned root sets the version.
     root_pyproject = cfg.repo_root / "pyproject.toml"
+    root_version = None
     if root_pyproject.is_file():
         try:
             root_pins = {
@@ -8933,6 +8953,8 @@ def package_init(
                 f"{root_pyproject}; uv workspace members need distinct names. "
                 "Choose a different package name."
             )
+    if not root_version:
+        cfg.kindling_source = _package_init_source(source, cfg.kindling_version)
 
     try:
         generate_package(cfg)

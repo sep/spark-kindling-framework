@@ -517,6 +517,13 @@ def test_repo_devcontainer_uses_root_workspace_venv(tmp_path):
     assert "postCreateCommand" in dcj
 
 
+@pytest.fixture(autouse=True)
+def _offline_pypi(monkeypatch):
+    """No network in scaffold tests: every release counts as on PyPI unless
+    a test says otherwise (package init --source auto checks)."""
+    monkeypatch.setattr("kindling_cli.cli._published_on_pypi", lambda dist, version: True)
+
+
 class TestScaffoldCommands:
     def test_repo_init_initializes_output_directory(self, tmp_path):
         runner = CliRunner()
@@ -646,6 +653,36 @@ class TestScaffoldCommands:
         assert result.exit_code == 0, result.output
         assert '"Kindling Domain Development"' in devcontainer.read_text()
         assert (tmp_path / "packages").is_dir()
+
+    @pytest.mark.parametrize(
+        "source, on_pypi, expect_url",
+        [
+            ("auto", True, False),
+            ("auto", False, True),
+            ("github", True, True),
+            ("pypi", False, False),
+        ],
+    )
+    def test_package_init_source_without_root_pin(
+        self, monkeypatch, tmp_path, source, on_pypi, expect_url
+    ):
+        """With no root pin, auto writes PyPI pins only for a release that is
+        on PyPI; --source forces either form."""
+        monkeypatch.setattr("kindling_cli.cli._published_on_pypi", lambda dist, version: on_pypi)
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+
+        result = CliRunner().invoke(
+            cli,
+            ["package", "init", "orders", "--repo-root", str(repo_root), "--source", source],
+        )
+
+        assert result.exit_code == 0, result.output
+        data = _load_pyproject_toml(repo_root / "packages" / "orders" / "pyproject.toml")
+        sources = data.get("tool", {}).get("uv", {}).get("sources", {})
+        assert ("spark-kindling" in sources) is expect_url
+        dev_pins = [r for r in data["dependency-groups"]["dev"] if r.startswith("spark-kindling==")]
+        assert bool(dev_pins) is not expect_url
 
     def test_package_init_creates_package_under_repo(self, tmp_path):
         repo_root = tmp_path / "repo"

@@ -32,8 +32,16 @@ All notable changes to spark-kindling are documented here.
   otherwise; running `kindling env update` on a URL-pinned project converts it.
   Only the packages this repository publishes are ever pinned from PyPI; the
   GitHub-only extensions always pin their release wheel URL.
-- The devcontainer image's lazy `kindling` shim installs the CLI from PyPI,
-  falling back to the GitHub release.
+- The devcontainer image's lazy `kindling` shim installs the latest GitHub
+  release's exact CLI and SDK version from PyPI, falling back to that
+  release's wheels while PyPI doesn't have it yet.
+- **Extension versions for their first PyPI upload:** Databricks 0.2.1, SDP
+  0.3.5, Cosmos DB 0.2.1, Temporal 0.2.8, OpenTelemetry Azure 0.4.1. Only
+  their package metadata and READMEs changed; the bump keeps each version
+  number tied to one set of files across GitHub releases and PyPI.
+- `kindling package init --source auto|pypi|github`: with no Kindling pin at
+  the repo root, `auto` writes PyPI version pins only when the release is on
+  PyPI, and release wheel URLs otherwise.
 - Package metadata on PyPI: project URLs, classifiers and keywords; README
   links are absolute so they work on pypi.org.
 
