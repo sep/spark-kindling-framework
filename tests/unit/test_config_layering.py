@@ -163,7 +163,9 @@ def test_peek_removes_its_snapshot(tmp_path, monkeypatch):
     created = []
     real = sc._merged_settings_file
     monkeypatch.setattr(
-        sc, "_merged_settings_file", lambda files: created.append(real(files)) or created[-1]
+        sc,
+        "_merged_settings_file",
+        lambda files, top_layer=None: created.append(real(files, top_layer)) or created[-1],
     )
     base = _write(tmp_path / "settings.yaml", {"kindling": {"a": 1}})
 
@@ -283,3 +285,53 @@ def test_explicit_kindling_list_beats_flat_alias(_spark, tmp_path):
         initial_config={"extensions": ["flat"], "kindling.extensions": ["dotted"]},
     )
     assert list(config.get("kindling.extensions")) == ["dotted"]
+
+
+@patch(
+    "kindling.spark_config.get_or_create_spark_session",
+    side_effect=lambda: _spark_without_conf(),
+)
+def test_parameter_lists_never_go_through_dynaconf_merge(_spark, tmp_path):
+    """Dynaconf's merge appends lists, and from 3.3 even a non-merging dotted
+    set does, so parameter lists join Kindling's own merge of the settings
+    files instead. The only list sets allowed are root-level keys with
+    merge=False (the flat aliases), which replace in every version."""
+    from dynaconf.base import Settings
+
+    settings = _write(tmp_path / "settings.yaml", {"kindling": {"extensions": ["file"]}})
+    seen = []
+    depth = [0]
+    real_set = Settings.set
+
+    def spy(self, key, value=None, *args, **kwargs):
+        # Only Kindling's calls; Dynaconf re-enters set() with merged values.
+        if depth[0] == 0:
+            # Copy now: Dynaconf merges into the dict it is given.
+            seen.append((key, __import__("copy").deepcopy(value), kwargs.get("merge")))
+        depth[0] += 1
+        try:
+            return real_set(self, key, value, *args, **kwargs)
+        finally:
+            depth[0] -= 1
+
+    def has_list(value):
+        if isinstance(value, list):
+            return True
+        return isinstance(value, dict) and any(has_list(v) for v in value.values())
+
+    config = DynaconfConfig()
+    config.initialize(
+        config_files=[settings],
+        initial_config={"kindling.extensions": ["param"], "kindling.probe": "p"},
+    )
+    with patch.object(Settings, "set", spy):
+        config._translate_bootstrap_to_nested()  # the parameter step, again
+
+    unsafe = [
+        key
+        for key, value, merge in seen
+        if has_list(value) and not (merge is False and "." not in str(key))
+    ]
+    assert not unsafe, [v for k, v, m in seen if k in unsafe]
+    assert list(config.get("kindling.extensions")) == ["param"]
+    assert config.get("kindling.probe") == "p"

@@ -149,7 +149,12 @@ def _append_unique(base: List[Any], items: List[Any]) -> List[Any]:
     return result
 
 
-def _merged_settings_file(config_files: List[str]) -> Optional[str]:
+_NO_VALUE = object()
+
+
+def _merged_settings_file(
+    config_files: List[str], top_layer: Optional[Dict[str, Any]] = None
+) -> Optional[str]:
     """Merge the YAML settings layers (lowest precedence first) into one file
     for Dynaconf, in a private temp directory.
 
@@ -171,6 +176,11 @@ def _merged_settings_file(config_files: List[str]) -> Optional[str]:
         if not isinstance(layer, dict):
             raise ValueError(f"Settings file {path} must contain a mapping at the top level")
         merged = merge_settings_layers(merged, layer)
+    if top_layer:
+        # Parameter lists (see DynaconfConfig._parameter_list_layer): merged
+        # here, as the top layer, because Dynaconf's own merge appends lists
+        # and, depending on its version, even a non-merging dotted set does.
+        merged = merge_settings_layers(merged, top_layer)
     if not merged:
         return None
     directory = Path(tempfile.mkdtemp(prefix="kindling-settings-"))
@@ -179,11 +189,13 @@ def _merged_settings_file(config_files: List[str]) -> Optional[str]:
     return str(target)
 
 
-def _build_dynaconf(config_files: Optional[List[str]]) -> Tuple[Dynaconf, Optional[str]]:
+def _build_dynaconf(
+    config_files: Optional[List[str]], top_layer: Optional[Dict[str, Any]] = None
+) -> Tuple[Dynaconf, Optional[str]]:
     """Dynaconf over the merged layers, plus the merged file's path. The file
     must outlive the instance (Dynaconf reads it lazily and again for
     get_fresh); callers remove it with _remove_snapshot when done."""
-    merged_file = _merged_settings_file(list(config_files or []))
+    merged_file = _merged_settings_file(list(config_files or []), top_layer)
     settings = Dynaconf(
         settings_files=[merged_file] if merged_file else [],
         environments=False,
@@ -353,7 +365,9 @@ class DynaconfConfig(ConfigService):
         # NOTE: environments=False because Kindling uses separate files (settings.yaml, development.yaml)
         # NOT environment blocks within files (default:, development:)
         self._settings_files = list(settings_files)
-        self.dynaconf, self._settings_snapshot = _build_dynaconf(settings_files)
+        self.dynaconf, self._settings_snapshot = _build_dynaconf(
+            settings_files, self._parameter_list_layer()
+        )
 
         # Step 1: Translate YAML (new → old) and add to config
         self._translate_yaml_to_flat()
@@ -367,7 +381,9 @@ class DynaconfConfig(ConfigService):
         """Swap in a Dynaconf over freshly merged files. The previous snapshot
         is left for _reload to remove once the reload succeeds, since a
         failed reload rolls back to the previous instance."""
-        self.dynaconf, self._settings_snapshot = _build_dynaconf(config_files)
+        self.dynaconf, self._settings_snapshot = _build_dynaconf(
+            config_files, self._parameter_list_layer()
+        )
 
     def _translate_yaml_to_flat(self):
         """Translate YAML's nested keys back to flat bootstrap keys"""
@@ -418,41 +434,16 @@ class DynaconfConfig(ConfigService):
         ``pyproject.toml``, which pins dynaconf below the affected range.
         """
         merged_initial = self._apply_bootstrap_overrides(self.initial_config)
+        nested = self._parameter_tree()
 
-        nested: Dict[str, Any] = {}
-        for key, value in merged_initial.items():
-            self._merge_dotted_key(nested, key, value)
-
-        # Preserve original flat keys too (kept alongside their transformed
-        # form for any caller reading the literal flat key) -- merged into
-        # the SAME tree, never a second pass of individual .set() calls.
-        for key, value in self.initial_config.items():
-            if key != "spark_configs":  # Already handled specially
-                self._merge_dotted_key(nested, key, value)
-
-        # Dynaconf's merge (MERGE_ENABLED_FOR_DYNACONF) appends a parameter's
-        # list to the one the settings files set -- mutating the list object
-        # it is given -- so a job parameter or --param could never replace
-        # e.g. kindling.extensions. Parameters are the top layer and lists
-        # replace across layers, with the same opt-in append markers as the
-        # settings files (merge_settings_layers): record the supplied lists
-        # and the file values under them, hand Dynaconf a copy, then set each
-        # resolved list at its dotted path without merging (that replaces
-        # only the leaf).
-        supplied_lists = copy.deepcopy(self._list_leaves(nested))
-        file_lists = {}
-        for dotted_key, _value in supplied_lists:
-            try:
-                file_value = self.dynaconf.get(dotted_key)
-            except Exception:  # noqa: BLE001 -- a lazy value elsewhere; treat as unset
-                file_value = None
-            file_lists[dotted_key] = list(file_value) if isinstance(file_value, list) else None
+        # Lists are already in the settings snapshot as its top layer
+        # (_parameter_list_layer): setting them again would append them,
+        # since Dynaconf's merge (MERGE_ENABLED_FOR_DYNACONF) appends lists.
         for top_level_key, value in nested.items():
-            self.dynaconf.set(top_level_key, copy.deepcopy(value))
-
-        for dotted_key, value in supplied_lists:
-            resolved = merge_settings_layers(file_lists[dotted_key], value)
-            self.dynaconf.set(dotted_key, resolved, merge=False)
+            payload = self._without_lists(value)
+            if payload is _NO_VALUE:
+                continue
+            self.dynaconf.set(top_level_key, payload)
 
         # A parameter that sets a nested key (e.g. --param
         # kindling.telemetry.logging.level=DEBUG) must also update the flat
@@ -471,17 +462,53 @@ class DynaconfConfig(ConfigService):
                 if value is not None:
                     self.dynaconf.set(flat_key, value, merge=False)
 
+    def _parameter_tree(self) -> Dict[str, Any]:
+        """The bootstrap parameters (job parameters, --param, BOOTSTRAP_CONFIG)
+        as one nested tree: their transformed form plus the original flat
+        keys, merged into the same tree."""
+        merged_initial = self._apply_bootstrap_overrides(self.initial_config or {})
+        nested: Dict[str, Any] = {}
+        for key, value in merged_initial.items():
+            self._merge_dotted_key(nested, key, copy.deepcopy(value))
+        for key, value in (self.initial_config or {}).items():
+            if key != "spark_configs":  # Already handled specially
+                self._merge_dotted_key(nested, key, copy.deepcopy(value))
+        return nested
+
+    def _parameter_list_layer(self) -> Dict[str, Any]:
+        """Only the list values of the parameter tree, as a settings layer.
+
+        Parameters are the top layer and lists replace across layers (an
+        item `dynaconf_merge` appends, as in the settings files), so their
+        lists join Kindling's own merge of the settings files rather than
+        Dynaconf's, which appends them."""
+        return self._only_lists(self._parameter_tree()) or {}
+
     @staticmethod
-    def _list_leaves(tree: Dict[str, Any], prefix: str = "") -> List[Tuple[str, list]]:
-        """(dotted_key, list) for every list value in a nested dict."""
-        leaves: List[Tuple[str, list]] = []
-        for key, value in tree.items():
-            dotted = f"{prefix}.{key}" if prefix else str(key)
-            if isinstance(value, dict):
-                leaves.extend(DynaconfConfig._list_leaves(value, dotted))
-            elif isinstance(value, list):
-                leaves.append((dotted, value))
-        return leaves
+    def _only_lists(value: Any) -> Any:
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            kept = {}
+            for key, item in value.items():
+                filtered = DynaconfConfig._only_lists(item)
+                if filtered is not None:
+                    kept[key] = filtered
+            return kept or None
+        return None
+
+    @staticmethod
+    def _without_lists(value: Any) -> Any:
+        if isinstance(value, list):
+            return _NO_VALUE
+        if isinstance(value, dict):
+            kept = {}
+            for key, item in value.items():
+                filtered = DynaconfConfig._without_lists(item)
+                if filtered is not _NO_VALUE:
+                    kept[key] = filtered
+            return kept if kept or not value else _NO_VALUE
+        return value
 
     @staticmethod
     def _dotted_key_in(tree: Dict[str, Any], dotted_key: str) -> bool:
