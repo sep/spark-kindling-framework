@@ -2,17 +2,23 @@
 
 All notable changes to spark-kindling are documented here.
 
-## Unreleased
+## [0.13.3] - 2026-10-08
 
 ### Fixed
 
 - **A job parameter or `--param` list now replaces the settings files'
-  list.** Parameters are applied through Dynaconf's merge, which appended a
+  list.** Parameters were applied through Dynaconf's merge, which appended a
   parameter's list to the one from `settings.yaml` (and changed the caller's
-  dict in place), so e.g. `kindling.extensions` set as a job parameter could
-  not replace the app's list: the extension dedup then kept the file's pin.
-  Parameter lists now replace, like every other layer, and Dynaconf's
-  `dynaconf_merge` marker still appends.
+  dict in place). So `kindling.extensions` passed as a job parameter could
+  not replace an app's list, and the extension dedup kept the file's pin.
+  Parameter lists now join Kindling's own merge of the settings files as its
+  top layer: they replace, and Dynaconf's `dynaconf_merge` marker appends
+  once. This holds for `kindling.extensions`, the nested form and the legacy
+  flat `extensions` / `required_packages` keys, and does not depend on the
+  Dynaconf version (from 3.3, even Dynaconf's non-merging set appends lists).
+- **The lock tests dynaconf 3.3.1,** the version clusters install (the
+  runtimes don't ship Dynaconf, so pip takes the highest allowed). The
+  `<3.3.2` cap still excludes the 3.3.4 `@format` regression.
 - The agent skill's Databricks reference no longer says the devcontainer
   image lacks the Azure CLI. The image includes `az`, so `az login` auth
   works there.
