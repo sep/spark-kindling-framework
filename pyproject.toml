@@ -24,7 +24,7 @@ dependencies = [
     # and 3.2.13. Since cloud Spark runtimes (Fabric/Synapse) don't ship dynaconf
     # themselves, an unbounded range lets pip resolve whatever is newest on PyPI at
     # install time, independently of what's pinned in uv.lock for local/CI use.
-    "dynaconf>=3.1.0,<3.3.2",
+    "dynaconf>=3.1.0,<3.3.6",
     "pyyaml>=6.0",
     "packaging>=23.0",
     "blinker>=1.6.0",
