@@ -45,6 +45,12 @@ def _empty_events_frame(spark):
         return spark.range(0)
 
 
+class ExpressionValidationUnavailable(RuntimeError):
+    """Spark could not check an expression (stopped session, Connect RPC
+    failure, ...). Not a verdict on the expression: ingestion fails and can be
+    retried instead of quarantining a rule that was never checked."""
+
+
 def _error_condition(exc: BaseException):
     for accessor in ("getCondition", "getErrorClass"):
         get = getattr(exc, accessor, None)
@@ -128,12 +134,17 @@ class ActiveSparkSqlExpressionParser:
         try:
             self._probe_frame(spark).select(F.expr(expression)).schema
         except Exception as exc:  # noqa: BLE001 -- only analysis errors are accepted
-            # Unknown columns/functions surface as analysis errors and are
-            # fine at this stage. Anything else -- a parse error, or a failure
-            # that means no check ran (stopped session, Connect RPC error) --
-            # propagates, and the caller marks the condition invalid.
-            if _is_parse_error(exc) or not _is_analysis_error(exc):
+            # A parse error makes the expression invalid. Unknown
+            # columns/functions surface as analysis errors and are fine at
+            # this stage. Anything else means no check ran (stopped session,
+            # Connect RPC error): raise ExpressionValidationUnavailable so the
+            # caller fails rather than quarantining an unchecked rule.
+            if _is_parse_error(exc):
                 raise
+            if not _is_analysis_error(exc):
+                raise ExpressionValidationUnavailable(
+                    f"Spark could not validate expression {expression!r}: {exc}"
+                ) from exc
 
 
 @dataclass(frozen=True)
@@ -306,6 +317,8 @@ class TemporalConditionValidator:
                 continue
             try:
                 self.expression_parser.parse(str(expression))
+            except ExpressionValidationUnavailable:
+                raise  # no verdict on the rule: fail, don't quarantine it
             except Exception as exc:
                 errors.append(f"parameters.{key} is invalid: {exc}")
 

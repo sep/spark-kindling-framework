@@ -1211,7 +1211,7 @@ class _WrappedParseError(Exception):
         (_syntax_error, True),
         (_WrappedParseError("wrapped"), True),
         (_analysis_error, False),  # unresolved column: not scoped to events yet
-        (RuntimeError("Spark Connect RPC failed"), True),  # no check ran: not accepted
+        (RuntimeError("Spark Connect RPC failed"), "unavailable"),  # no check ran
     ],
 )
 def test_expression_parser_forces_analysis_when_expr_parses_lazily(error, invalid):
@@ -1222,8 +1222,37 @@ def test_expression_parser_forces_analysis_when_expr_parses_lazily(error, invali
     failure = error() if callable(error) else error
     parser = ActiveSparkSqlExpressionParser(_LazyParseSession(failure))
     with patch("pyspark.sql.functions.expr", lambda expression: object()):
-        if invalid:
+        if invalid == "unavailable":
+            from kindling_ext_temporal.validation import ExpressionValidationUnavailable
+
+            with pytest.raises(ExpressionValidationUnavailable):
+                parser.parse("cast(payload['temperature'] as double) > 90")
+        elif invalid:
             with pytest.raises(Exception):
                 parser.parse("this is ! not (valid sql")
         else:
             parser.parse("cast(payload['temperature'] as double) > 90")
+
+
+def test_validator_propagates_unavailable_validation_instead_of_rejecting():
+    """A rule Spark could not check must fail validation loudly, not be
+    turned into an InvalidCondition (and quarantined)."""
+    from kindling_ext_temporal.validation import (
+        ConditionRule,
+        ExpressionValidationUnavailable,
+        TemporalConditionValidator,
+    )
+
+    class _Unavailable:
+        def parse(self, expression):
+            raise ExpressionValidationUnavailable("session stopped")
+
+    rule = ConditionRule(
+        condition_id="condition.ok",
+        consumes_event_type=["telemetry"],
+        subject_type="machine",
+        parameters={"enter_when": "true", "exit_when": "false"},
+    )
+    validator = TemporalConditionValidator(_Unavailable())
+    with pytest.raises(ExpressionValidationUnavailable):
+        validator._validate_rule(rule)

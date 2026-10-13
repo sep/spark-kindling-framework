@@ -391,3 +391,20 @@ def test_extension_import_failure_of_any_kind_is_a_warning(monkeypatch):
 
     assert import_distribution_modules("broken-ext", logger) is False
     assert "AttributeError" in logger.warning.call_args.args[0]
+
+
+def test_extension_find_spec_failure_is_a_warning(monkeypatch):
+    """find_spec imports parent packages, so it can raise more than
+    ImportError (the psutil AttributeError on Databricks escaped this way)."""
+    from kindling.bootstrap import import_distribution_modules
+
+    monkeypatch.setattr("kindling.bootstrap.resolve_import_names", lambda name: ["broken_ext.sub"])
+
+    def boom(name):
+        raise AttributeError("module 'psutil._psutil_linux' has no attribute 'getpagesize'")
+
+    monkeypatch.setattr("kindling.bootstrap.importlib.util.find_spec", boom)
+    logger = MagicMock()
+
+    assert import_distribution_modules("broken-ext", logger) is False
+    assert "AttributeError" in logger.warning.call_args.args[0]

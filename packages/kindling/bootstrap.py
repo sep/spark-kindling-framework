@@ -1251,6 +1251,13 @@ def import_distribution_modules(dist_name: str, logger) -> bool:
                 continue
         except (ImportError, ValueError):
             continue
+        except (
+            Exception
+        ) as e:  # noqa: BLE001 -- find_spec imports parents; must not abort bootstrap
+            logger.warning(
+                f"Failed to import extension module {import_name}: {type(e).__name__}: {e}"
+            )
+            continue
         try:
             importlib.import_module(import_name)
             logger.info(f"Loaded extension module: {import_name}")
