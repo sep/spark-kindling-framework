@@ -2,7 +2,7 @@
 
 All notable changes to spark-kindling are documented here.
 
-## Unreleased
+## [0.13.4] - 2026-10-13
 
 ### Fixed
 
@@ -14,17 +14,23 @@ All notable changes to spark-kindling are documented here.
   `opentelemetry.util.types` (`cannot import name '_ExtendedAttributes'`).
   After an install, the bootstrap now evicts every module (including
   compiled ones, e.g. psutil's `_psutil_linux`) of each distribution the
-  install added or changed, plus their namespace-package parents; unchanged
-  packages stay cached, so no second copy is loaded. Any failure importing
-  an extension is now a warning, as an `ImportError` already was, instead of
-  aborting the bootstrap.
+  install added or changed (and, from a pre-install snapshot, any loaded
+  module the upgrade removed or renamed), plus their namespace-package
+  parents; unchanged packages stay cached, so no second copy is loaded. Any
+  failure importing an extension (including from `find_spec`) is now a
+  warning, as an `ImportError` already was, instead of aborting the
+  bootstrap.
 - **Temporal: invalid condition SQL is quarantined on Spark 4**
   (spark-kindling-ext-temporal 0.2.8). The validator relied on
   `functions.expr` raising a syntax error immediately, which only Spark 3.x
   does; Spark 4 (classic and Connect, e.g. Databricks Runtime 17.x) parses
   lazily, so every condition passed, nothing was quarantined, and the bad
   SQL failed the pipe run instead. It now forces analysis over an empty
-  frame with the events schema and treats only parse errors as invalid.
+  frame with the events schema: a parse error rejects the rule, an analysis
+  error (unknown column or function) is accepted as before, and any other
+  failure (no session, a Spark Connect RPC error) raises the new
+  `ExpressionValidationUnavailable`, failing ingestion so it can be retried
+  instead of quarantining a rule that was never checked.
 
 ### Changed
 
