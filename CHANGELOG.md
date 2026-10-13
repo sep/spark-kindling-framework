@@ -4,6 +4,15 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Changed
+
+- **The lock tests the highest versions the dependency ranges allow** for
+  packages a supported runtime doesn't ship, since clusters install those:
+  databricks-sdk 0.152.0, packaging 26.3, azure-storage-file-datalake
+  12.23.0, azure-storage-blob 12.28.0, typing-extensions 4.16.0, msal
+  1.39.0. (azure-core and azure-identity stay at 1.30.x / 1.17.x, the
+  ceiling under Fabric's cap.) No range changes.
+
 ### Added
 
 - **Spark 4 test lane.** `poe test-spark4 [--mode classic|connect]` runs the
