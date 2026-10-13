@@ -2,6 +2,33 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Changed
+
+- **Extension installs keep the runtime's packages.** The cluster bootstrap
+  installed extension wheels with `pip install --ignore-installed --upgrade
+  --upgrade-strategy eager`, which copied the newest version of every
+  dependency over the runtime's own (on Databricks Runtime 17.3 the
+  otel-azure extension replaced OpenTelemetry 1.32.1, azure-core,
+  azure-identity, msal, typing-extensions, psutil and more; on Fabric it
+  replaced azure-core 1.30.2). Extensions now install without those flags,
+  so pip keeps every installed version that satisfies their requirements,
+  and with the runtime's key packages (azure-core, azure-identity, msal,
+  azure-monitor-opentelemetry, OpenTelemetry API/SDK/semantic conventions,
+  typing-extensions, numpy, pandas, pyarrow, protobuf, pyspark, py4j) pinned
+  at their installed versions, so pip picks the highest extension
+  dependency versions that work with them. If pip can't replace an
+  installed package (installed by conda or distutils), the install is
+  retried with `--ignore-installed` (the key packages stay pinned); if the
+  requirements can't be met with the key packages pinned, it is retried
+  without the pins. When an install adds modules into a package the runtime
+  installed elsewhere (azure-core-tracing-opentelemetry into
+  `azure.core` on Databricks), that package is reinstalled, at the same
+  version, next to them so they can be imported. Every installed package an
+  extension or `kindling.required_packages` install changes the version of
+  is logged as a warning. `required_packages` still install with
+  `--ignore-installed`: they are an explicit request.
 ## [0.13.4] - 2026-10-13
 
 ### Fixed
