@@ -29,6 +29,12 @@ All notable changes to spark-kindling are documented here.
   extension or `kindling.required_packages` install changes the version of
   is logged as a warning. `required_packages` still install with
   `--ignore-installed`: they are an explicit request.
+- **otel-azure extension accepts azure-monitor-opentelemetry 1.6 through
+  1.8** (spark-kindling-ext-otel-azure 0.4.1; was `<1.7.0`). Synapse 3.5
+  ships 1.8.2, which the extension had to replace; Databricks 17.3 now gets
+  1.6.7 and Fabric 1.3 gets 1.6.10, the highest that work with their
+  OpenTelemetry and azure-core.
+
 ## [0.13.4] - 2026-10-13
 
 ### Fixed

@@ -8,7 +8,7 @@ __all__ = [
     "AzureMonitorTraceProvider",
 ]
 
-__version__ = "0.3.2"
+__version__ = "0.4.1"
 
 
 def _register_providers():
@@ -18,7 +18,6 @@ def _register_providers():
     It forcibly rebinds the log and trace providers to the Azure Monitor implementations.
     """
     from injector import singleton
-
     from kindling.injection import GlobalInjector
     from kindling.spark_log_provider import PythonLoggerProvider, SparkLoggerProvider
     from kindling.spark_trace import SparkTraceProvider

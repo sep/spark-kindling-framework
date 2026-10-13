@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "spark-kindling-ext-otel-azure"
-version = "0.4.0"
+version = "0.4.1"
 description = "Azure Monitor OpenTelemetry integration for Kindling framework"
 authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
 license = "MIT"
@@ -19,15 +19,17 @@ requires-python = ">=3.10"
 # requesting extras, so any dep gated behind `extra == ...` would silently
 # skip on that code path and import would fail at runtime.
 #
-# The Fabric-compatible OTel line (1.6.x / 1.20.x) is API-compatible with
-# the modern line (1.8.x / 1.21.x) for every symbol this extension uses, and
-# it's the only line that works on Fabric's pinned azure-core 1.30.x. So we
-# ship one profile: the lowest-common-denominator that works everywhere.
+# azure-monitor-opentelemetry 1.6.x through 1.8.x is API-compatible for
+# every symbol this extension uses. The range spans what the runtimes ship
+# or can install without replacing their own packages: the bootstrap keeps a
+# runtime's azure-core and OpenTelemetry at their installed versions, so pip
+# picks 1.6.x on Fabric (azure-core 1.30.x) and Databricks (OpenTelemetry
+# 1.32.x) and keeps the 1.8.x Synapse ships.
 #
 # typing-extensions pinned high because Databricks runtime ships an older
 # version and the `deprecated` decorator (used by opentelemetry) needs >=4.6.
 dependencies = [
-    "azure-monitor-opentelemetry>=1.6.0,<1.7.0",
+    "azure-monitor-opentelemetry>=1.6.0,<1.9.0",
     "opentelemetry-api>=1.20.0,<2.0.0",
     "opentelemetry-sdk>=1.20.0,<2.0.0",
     "typing-extensions>=4.6.0",

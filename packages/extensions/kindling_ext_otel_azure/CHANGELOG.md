@@ -5,6 +5,18 @@ All notable changes to the kindling-ext-otel-azure extension will be documented 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - Unreleased
+
+### Changed
+- `azure-monitor-opentelemetry>=1.6.0,<1.9.0` (was `<1.7.0`). Synapse 3.5
+  ships 1.8.2; the old range made every install replace it (and its
+  OpenTelemetry 1.44). The Kindling bootstrap now keeps a runtime's
+  azure-core and OpenTelemetry at their installed versions, so pip picks the
+  highest compatible release: 1.6.7 on Databricks 17.3 (OpenTelemetry
+  1.32.1), 1.6.10 on Fabric 1.3 (azure-core 1.30.2), the shipped 1.8.2 on
+  Synapse 3.5. Every symbol the extension uses is the same across 1.6-1.8.
+- `__version__` matches the package version (was `0.3.2`).
+
 ## [0.4.0] - 2026-04-20
 
 ### Changed
