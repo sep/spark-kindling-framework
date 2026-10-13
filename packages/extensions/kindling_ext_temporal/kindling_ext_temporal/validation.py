@@ -45,6 +45,29 @@ def _empty_events_frame(spark):
         return spark.range(0)
 
 
+def _error_condition(exc: BaseException):
+    for accessor in ("getCondition", "getErrorClass"):
+        get = getattr(exc, accessor, None)
+        if callable(get):
+            try:
+                condition = get()
+            except Exception:  # noqa: BLE001
+                condition = None
+            if isinstance(condition, str):
+                return condition
+    return None
+
+
+def _is_analysis_error(exc: BaseException) -> bool:
+    """An analysis error (unresolved column/function, type mismatch): the
+    expression parsed, it just isn't resolved against real events yet."""
+    try:
+        from pyspark.errors import AnalysisException
+    except ImportError:  # pyspark < 3.4
+        AnalysisException = ()  # type: ignore[assignment]
+    return bool(AnalysisException) and isinstance(exc, AnalysisException)
+
+
 def _is_parse_error(exc: BaseException) -> bool:
     """A SQL syntax error, whichever way the session reports it."""
     try:
@@ -53,16 +76,8 @@ def _is_parse_error(exc: BaseException) -> bool:
         ParseException = ()  # type: ignore[assignment]
     if ParseException and isinstance(exc, ParseException):
         return True
-    for accessor in ("getCondition", "getErrorClass"):
-        get = getattr(exc, accessor, None)
-        if callable(get):
-            try:
-                condition = get()
-            except Exception:  # noqa: BLE001
-                condition = None
-            if isinstance(condition, str) and condition.startswith("PARSE_"):
-                return True
-    return False
+    condition = _error_condition(exc)
+    return isinstance(condition, str) and condition.startswith("PARSE_")
 
 
 class ActiveSparkSqlExpressionParser:
@@ -112,8 +127,12 @@ class ActiveSparkSqlExpressionParser:
 
         try:
             self._probe_frame(spark).select(F.expr(expression)).schema
-        except Exception as exc:  # noqa: BLE001 -- re-raised when it is a parse error
-            if _is_parse_error(exc):
+        except Exception as exc:  # noqa: BLE001 -- only analysis errors are accepted
+            # Unknown columns/functions surface as analysis errors and are
+            # fine at this stage. Anything else -- a parse error, or a failure
+            # that means no check ran (stopped session, Connect RPC error) --
+            # propagates, and the caller marks the condition invalid.
+            if _is_parse_error(exc) or not _is_analysis_error(exc):
                 raise
 
 

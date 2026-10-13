@@ -1193,6 +1193,12 @@ def _syntax_error():
     return ParseException(message="[PARSE_SYNTAX_ERROR] Syntax error at or near 'not'.")
 
 
+def _analysis_error():
+    from pyspark.errors import AnalysisException
+
+    return AnalysisException(message="[UNRESOLVED_COLUMN] payload cannot be resolved.")
+
+
 class _WrappedParseError(Exception):
     def getErrorClass(self):
         return "PARSE_SYNTAX_ERROR"
@@ -1204,7 +1210,8 @@ class _WrappedParseError(Exception):
         (None, False),
         (_syntax_error, True),
         (_WrappedParseError("wrapped"), True),
-        (RuntimeError("[UNRESOLVED_COLUMN] payload"), False),  # not scoped to events yet
+        (_analysis_error, False),  # unresolved column: not scoped to events yet
+        (RuntimeError("Spark Connect RPC failed"), True),  # no check ran: not accepted
     ],
 )
 def test_expression_parser_forces_analysis_when_expr_parses_lazily(error, invalid):
