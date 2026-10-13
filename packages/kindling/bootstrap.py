@@ -1269,6 +1269,35 @@ def import_distribution_modules(dist_name: str, logger) -> bool:
     return imported_any
 
 
+def _normalized_distribution_name(dist) -> str:
+    return (dist.metadata.get("Name") or "").strip().lower().replace("_", "-")
+
+
+def _distribution_module_names(dist) -> set:
+    """Every module a distribution's files provide, including submodules
+    (opentelemetry.util.types) and compiled ones (psutil._psutil_linux)."""
+    modules: set = set()
+    for file in dist.files or []:
+        path = str(file).replace("\\", "/")
+        if path.startswith(".."):
+            continue
+        directory, _, filename = path.rpartition("/")
+        if filename.endswith(".py"):
+            stem = filename[: -len(".py")]
+        elif filename.endswith((".so", ".pyd")):
+            # Compiled modules: psutil/_psutil_linux.abi3.so -> psutil._psutil_linux.
+            # Missing these left a runtime's old C module cached under an
+            # upgraded pure-Python package (psutil on Databricks).
+            stem = filename.split(".", 1)[0]
+        else:
+            continue
+        module = f"{directory}/{stem}".strip("/").replace("/", ".")
+        if module.endswith(".__init__"):
+            module = module[: -len(".__init__")]
+        modules.add(module)
+    return modules
+
+
 def _installed_distribution_versions() -> Dict[str, str]:
     """{normalized distribution name: version}, as import would resolve it
     now (the first copy on sys.path wins, like importlib.metadata)."""
@@ -1276,46 +1305,54 @@ def _installed_distribution_versions() -> Dict[str, str]:
 
     versions: Dict[str, str] = {}
     for dist in distributions():
-        name = (dist.metadata.get("Name") or "").strip().lower().replace("_", "-")
+        name = _normalized_distribution_name(dist)
         if name:
             versions.setdefault(name, dist.version)
     return versions
 
 
-def _modules_of_changed_distributions(before: Mapping[str, str]) -> set:
-    """Module names provided by the distributions an install added or changed
-    since `before` (every module, so submodules like opentelemetry.util.types
-    are included). Unchanged distributions are left out: evicting a module
-    that is already current would load a second copy of it."""
+def _installed_distribution_snapshot() -> Dict[str, Tuple[str, frozenset]]:
+    """{name: (version, loaded modules)} before an install. The modules are
+    the ones currently in sys.modules: an upgrade can remove or rename a
+    module, so after the install the new file list no longer names it, yet
+    the old copy is still loaded and must be evicted too."""
     from importlib.metadata import distributions
 
+    loaded = set(sys.modules)
+    snapshot: Dict[str, Tuple[str, frozenset]] = {}
+    for dist in distributions():
+        name = _normalized_distribution_name(dist)
+        if name and name not in snapshot:
+            snapshot[name] = (dist.version, frozenset(_distribution_module_names(dist) & loaded))
+    return snapshot
+
+
+def _modules_of_changed_distributions(before: Mapping[str, Any]) -> set:
+    """Module names of the distributions an install added or changed since
+    `before` (a _installed_distribution_snapshot): every module of the new
+    copy plus the previously loaded modules of the old copy. Unchanged
+    distributions are left out: evicting a module that is already current
+    would load a second copy of it."""
+    from importlib.metadata import distributions
+
+    def version_and_modules(entry):
+        if isinstance(entry, tuple):
+            return entry
+        return entry, frozenset()  # a plain {name: version} mapping
+
     after = _installed_distribution_versions()
-    changed = {name for name, version in after.items() if before.get(name) != version}
     modules: set = set()
     seen: set = set()
     for dist in distributions():
-        name = (dist.metadata.get("Name") or "").strip().lower().replace("_", "-")
-        if name not in changed or name in seen:
+        name = _normalized_distribution_name(dist)
+        if not name or name in seen:
             continue
         seen.add(name)  # the copy import now resolves (first on sys.path)
-        for file in dist.files or []:
-            path = str(file).replace("\\", "/")
-            if path.startswith(".."):
-                continue
-            directory, _, filename = path.rpartition("/")
-            if filename.endswith(".py"):
-                stem = filename[: -len(".py")]
-            elif filename.endswith((".so", ".pyd")):
-                # Compiled modules: psutil/_psutil_linux.abi3.so -> psutil._psutil_linux.
-                # Missing these left a runtime's old C module cached under
-                # an upgraded pure-Python package (psutil on Databricks).
-                stem = filename.split(".", 1)[0]
-            else:
-                continue
-            module = f"{directory}/{stem}".strip("/").replace("/", ".")
-            if module.endswith(".__init__"):
-                module = module[: -len(".__init__")]
-            modules.add(module)
+        old_version, old_modules = version_and_modules(before.get(name, (None, frozenset())))
+        if old_version == after.get(name):
+            continue
+        modules |= _distribution_module_names(dist)
+        modules |= set(old_modules)
     return modules
 
 
@@ -1455,7 +1492,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
         """Install package (from PyPI), forcing upgrade to override system packages"""
         logger.info(f"Installing package: {package_spec}")
         try:
-            versions_before = _installed_distribution_versions()
+            versions_before = _installed_distribution_snapshot()
             # Use --ignore-installed to force installation even if package exists in system site-packages
             # This is critical for platforms like Databricks where system packages may be outdated
             subprocess.check_call(
@@ -1663,7 +1700,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
 
                 # Install the downloaded wheel
                 logger.info(f"Installing {wheel_filename}")
-                versions_before = _installed_distribution_versions()
+                versions_before = _installed_distribution_snapshot()
                 result = subprocess.run(
                     [
                         sys.executable,

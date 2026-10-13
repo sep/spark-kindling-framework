@@ -408,3 +408,26 @@ def test_extension_find_spec_failure_is_a_warning(monkeypatch):
 
     assert import_distribution_modules("broken-ext", logger) is False
     assert "AttributeError" in logger.warning.call_args.args[0]
+
+
+def test_modules_of_changed_distributions_includes_modules_the_upgrade_removed(monkeypatch):
+    """An upgrade can drop or rename a module that is already loaded; the new
+    file list no longer names it, so the pre-install snapshot supplies it."""
+    from types import SimpleNamespace
+
+    import kindling.bootstrap as bootstrap
+
+    def dist(name, version, files):
+        return SimpleNamespace(metadata={"Name": name}, version=version, files=files)
+
+    old = [dist("opentelemetry-api", "1.32.1", ["opentelemetry/util/_old.py"])]
+    new = [dist("opentelemetry-api", "1.36.0", ["opentelemetry/util/types.py"])]
+    monkeypatch.setitem(sys.modules, "opentelemetry.util._old", object())
+
+    monkeypatch.setattr("importlib.metadata.distributions", lambda: iter(old))
+    before = bootstrap._installed_distribution_snapshot()
+    monkeypatch.setattr("importlib.metadata.distributions", lambda: iter(new))
+
+    modules = bootstrap._modules_of_changed_distributions(before)
+
+    assert modules == {"opentelemetry.util.types", "opentelemetry.util._old"}
