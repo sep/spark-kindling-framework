@@ -150,6 +150,12 @@ def main(argv: list[str] | None = None) -> int:
     extension_dirs = sorted(EXTENSIONS_DIR.glob("kindling_ext_*"))
     if args.extension:
         wanted = {f"kindling_ext_{name.replace('-', '_')}" for name in args.extension}
+        unknown = sorted(wanted - {path.name for path in extension_dirs})
+        if unknown:
+            parser.error(
+                f"unknown extension(s): {', '.join(unknown)}; "
+                f"known: {', '.join(path.name for path in extension_dirs)}"
+            )
         extension_dirs = [path for path in extension_dirs if path.name in wanted]
     runtimes = args.runtime or sorted(RUNTIMES)
 

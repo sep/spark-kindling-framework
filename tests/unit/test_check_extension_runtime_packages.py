@@ -62,3 +62,13 @@ def test_main_fails_when_a_runtime_needs_a_key_package_replaced(monkeypatch, cap
     assert "keeps    azure-core==1.34.0" in capsys.readouterr().out
     assert check.main(["--extension", "otel-azure"]) == 1
     assert "FAIL  kindling_ext_otel_azure on synapse3.5" in capsys.readouterr().out
+
+
+def test_main_rejects_an_unknown_extension(capsys):
+    """A typo must fail rather than check nothing and pass."""
+    import pytest
+
+    with pytest.raises(SystemExit) as excinfo:
+        check.main(["--extension", "otel_azur"])
+    assert excinfo.value.code == 2
+    assert "unknown extension(s): kindling_ext_otel_azur" in capsys.readouterr().err

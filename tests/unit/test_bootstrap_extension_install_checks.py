@@ -3,6 +3,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 from kindling.bootstrap import (
     _build_run_scoped_staging_path,
     _dbfs_uri_to_local_path,
@@ -521,6 +522,24 @@ def test_pip_install_drops_key_pins_only_when_requirements_cannot_be_met(monkeyp
     assert result.returncode == 0
     assert calls[0][1] == "opentelemetry-api==1.16.0\n"
     assert "-c" not in calls[1][0]
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "ERROR: Could not install packages due to an OSError: [Errno 28] No space left on device",
+        "ERROR: THESE PACKAGES DO NOT MATCH THE HASHES FROM THE REQUIREMENTS FILE.",
+        "WARNING: Retrying (Retry(total=4)) after connection broken by 'ReadTimeoutError'",
+    ],
+)
+def test_pip_install_keeps_pins_for_failures_that_are_not_conflicts(monkeypatch, stderr):
+    """Only a resolver conflict drops the runtime pins: retrying unpinned after
+    an unrelated failure could replace the packages the pins protect."""
+    failure = _completed(1, stderr=stderr)
+    result, calls = _run_pip_install(monkeypatch, [failure], {"azure-core": "1.30.2"})
+
+    assert result.returncode == 1
+    assert len(calls) == 1
 
 
 def test_pip_install_returns_the_failure_once_fallbacks_are_exhausted(monkeypatch):

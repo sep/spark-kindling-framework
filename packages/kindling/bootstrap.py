@@ -1438,6 +1438,16 @@ _PIP_UNINSTALL_FAILURES = (
 )
 
 
+# pip's messages for requirements that can't be met together, e.g. because a
+# pinned runtime package conflicts with what the extension needs.
+_PIP_RESOLVER_CONFLICTS = (
+    "ResolutionImpossible",
+    "conflicting dependencies",
+    "Could not find a version that satisfies the requirement",
+    "No matching distribution found",
+)
+
+
 def _distribution_version(entry) -> Optional[str]:
     """The version from a _installed_distribution_snapshot entry or a plain
     version string."""
@@ -1472,8 +1482,9 @@ def _pip_install_keeping_installed(logger, args: List[str]):
     - pip can't replace an installed package (no uninstall records, or a
       user-site install under a virtualenv): retry with --ignore-installed;
       the key distributions stay pinned.
-    - the requirements can't be met with the key distributions pinned:
-      retry without the pins; the bootstrap then reports what was replaced.
+    - the requirements can't be met with the key distributions pinned (a
+      resolver conflict): retry without the pins; the bootstrap then reports
+      what was replaced. Any other failure is returned unchanged.
     """
     pip_install = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
     constraints = _key_distribution_constraints(_installed_distribution_versions())
@@ -1500,13 +1511,15 @@ def _pip_install_keeping_installed(logger, args: List[str]):
                     f"--ignore-installed: {' '.join(args)}"
                 )
                 ignore_installed = True
-            elif constraints:
+            elif constraints and any(conflict in output for conflict in _PIP_RESOLVER_CONFLICTS):
                 logger.warning(
                     f"{' '.join(args)} can't be installed with the runtime's "
                     f"{', '.join(constraints)}; retrying without keeping them"
                 )
                 constraints = []
             else:
+                # Anything else (network, a corrupt wheel, disk) is returned as
+                # is: retrying unpinned could replace the runtime's packages.
                 return result
 
 
