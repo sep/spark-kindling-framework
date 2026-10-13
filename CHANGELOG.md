@@ -35,6 +35,13 @@ All notable changes to spark-kindling are documented here.
   1.6.7 and Fabric 1.3 gets 1.6.10, the highest that work with their
   OpenTelemetry and azure-core.
 
+### Added
+
+- `poe check-extension-runtimes` resolves each extension's requirements
+  (against the package index) with the key package versions Databricks
+  17.3, Fabric 1.3 and Synapse 3.5 ship pinned, and fails when a runtime
+  would need one of them replaced.
+
 ## [0.13.4] - 2026-10-13
 
 ### Fixed
