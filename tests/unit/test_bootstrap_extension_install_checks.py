@@ -303,3 +303,131 @@ def test_extension_install_prioritizes_new_site_packages_and_clears_stale_depend
         if original_opentelemetry is not None:
             sys.modules["opentelemetry"] = original_opentelemetry
         sys.path[:] = [path for path in sys.path if path not in {"/user/site", "/venv/site"}]
+
+
+def test_evict_stale_modules_drops_submodules_and_namespace_parents(tmp_path, monkeypatch):
+    """Evicting only a top-level name left `opentelemetry.util.types` cached
+    (the Databricks `_ExtendedAttributes` import error). Stale submodules and
+    their namespace-package parents go; an unchanged regular package stays
+    cached and is re-attached to the recreated parent."""
+    import importlib
+
+    from kindling.bootstrap import _evict_stale_modules
+
+    root = tmp_path / "zzns"
+    (root / "util").mkdir(parents=True)  # namespace packages: no __init__.py
+    (root / "util" / "types.py").write_text("VERSION = 'old'\n")
+    (root / "keep").mkdir()
+    (root / "keep" / "__init__.py").write_text("")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    import zzns.keep  # noqa: F401
+    import zzns.util.types  # noqa: F401
+
+    kept = sys.modules["zzns.keep"]
+    (root / "util" / "types.py").write_text("VERSION = 'new'\n")
+    __import__("shutil").rmtree(root / "util" / "__pycache__", ignore_errors=True)
+    try:
+        _evict_stale_modules(MagicMock(), {"zzns.util.types"})
+
+        assert "zzns.util.types" not in sys.modules
+        assert "zzns.util" not in sys.modules
+        assert sys.modules["zzns.keep"] is kept  # not stale: no second copy
+        assert sys.modules["zzns"].keep is kept  # re-attached to the fresh parent
+        importlib.invalidate_caches()
+        assert importlib.import_module("zzns.util.types").VERSION == "new"
+    finally:
+        for name in [n for n in sys.modules if n == "zzns" or n.startswith("zzns.")]:
+            del sys.modules[name]
+
+
+def test_modules_of_changed_distributions_lists_every_module_of_changed_dists(monkeypatch):
+    from types import SimpleNamespace
+
+    import kindling.bootstrap as bootstrap
+
+    def dist(name, version, files):
+        return SimpleNamespace(metadata={"Name": name}, version=version, files=files)
+
+    now = [
+        dist(
+            "opentelemetry-api",
+            "1.36.0",
+            [
+                "opentelemetry/util/types.py",
+                "opentelemetry/trace/__init__.py",
+                "psutil/_psutil_linux.abi3.so",
+                "opentelemetry_api-1.36.0.dist-info/RECORD",
+                "../../bin/x",
+            ],
+        ),
+        dist("azure-core", "1.34.0", ["azure/core/__init__.py"]),
+    ]
+    monkeypatch.setattr("importlib.metadata.distributions", lambda: iter(now))
+
+    modules = bootstrap._modules_of_changed_distributions(
+        {"opentelemetry-api": "1.32.1", "azure-core": "1.34.0"}
+    )
+
+    assert modules == {"opentelemetry.util.types", "opentelemetry.trace", "psutil._psutil_linux"}
+
+
+def test_extension_import_failure_of_any_kind_is_a_warning(monkeypatch):
+    """Importing a freshly installed extension can fail with more than
+    ImportError (e.g. AttributeError from a stale compiled module); that must
+    be a warning, like ImportError, not abort the bootstrap."""
+    from kindling.bootstrap import import_distribution_modules
+
+    monkeypatch.setattr("kindling.bootstrap.resolve_import_names", lambda name: ["broken_ext"])
+
+    def boom(name):
+        raise AttributeError("module 'psutil._psutil_linux' has no attribute 'getpagesize'")
+
+    monkeypatch.setattr("kindling.bootstrap.importlib.util.find_spec", lambda name: object())
+    monkeypatch.setattr(
+        "kindling.bootstrap.importlib.import_module", boom
+    )  # last: monkeypatch uses it
+    logger = MagicMock()
+
+    assert import_distribution_modules("broken-ext", logger) is False
+    assert "AttributeError" in logger.warning.call_args.args[0]
+
+
+def test_extension_find_spec_failure_is_a_warning(monkeypatch):
+    """find_spec imports parent packages, so it can raise more than
+    ImportError (the psutil AttributeError on Databricks escaped this way)."""
+    from kindling.bootstrap import import_distribution_modules
+
+    monkeypatch.setattr("kindling.bootstrap.resolve_import_names", lambda name: ["broken_ext.sub"])
+
+    def boom(name):
+        raise AttributeError("module 'psutil._psutil_linux' has no attribute 'getpagesize'")
+
+    monkeypatch.setattr("kindling.bootstrap.importlib.util.find_spec", boom)
+    logger = MagicMock()
+
+    assert import_distribution_modules("broken-ext", logger) is False
+    assert "AttributeError" in logger.warning.call_args.args[0]
+
+
+def test_modules_of_changed_distributions_includes_modules_the_upgrade_removed(monkeypatch):
+    """An upgrade can drop or rename a module that is already loaded; the new
+    file list no longer names it, so the pre-install snapshot supplies it."""
+    from types import SimpleNamespace
+
+    import kindling.bootstrap as bootstrap
+
+    def dist(name, version, files):
+        return SimpleNamespace(metadata={"Name": name}, version=version, files=files)
+
+    old = [dist("opentelemetry-api", "1.32.1", ["opentelemetry/util/_old.py"])]
+    new = [dist("opentelemetry-api", "1.36.0", ["opentelemetry/util/types.py"])]
+    monkeypatch.setitem(sys.modules, "opentelemetry.util._old", object())
+
+    monkeypatch.setattr("importlib.metadata.distributions", lambda: iter(old))
+    before = bootstrap._installed_distribution_snapshot()
+    monkeypatch.setattr("importlib.metadata.distributions", lambda: iter(new))
+
+    modules = bootstrap._modules_of_changed_distributions(before)
+
+    assert modules == {"opentelemetry.util.types", "opentelemetry.util._old"}

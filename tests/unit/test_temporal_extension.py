@@ -1161,3 +1161,110 @@ def test_condition_engine_execute_registry_source_calls_execute_rules_directly()
 
     assert result == "boundary_events"
     runner.execute_rules.assert_called_once_with(events_df, registry_rules)
+
+
+class _LazyParseSession:
+    """A session whose functions.expr never raises (Spark 4, classic and
+    Connect, parse lazily) and whose analysis raises the given error."""
+
+    def __init__(self, error=None):
+        self.error = error
+
+    def range(self, _n):
+        session = self
+
+        class _Frame:
+            def select(self, *_columns):
+                class _Projected:
+                    @property
+                    def schema(self):
+                        if session.error is not None:
+                            raise session.error
+                        return "schema"
+
+                return _Projected()
+
+        return _Frame()
+
+
+def _syntax_error():
+    from pyspark.errors import ParseException
+
+    return ParseException(message="[PARSE_SYNTAX_ERROR] Syntax error at or near 'not'.")
+
+
+def _analysis_error():
+    from pyspark.errors import AnalysisException
+
+    return AnalysisException(message="[UNRESOLVED_COLUMN] payload cannot be resolved.")
+
+
+class _WrappedParseError(Exception):
+    def getErrorClass(self):
+        return "PARSE_SYNTAX_ERROR"
+
+
+@pytest.mark.parametrize(
+    "error, invalid",
+    [
+        (None, False),
+        (_syntax_error, True),
+        (_WrappedParseError("wrapped"), True),
+        (_analysis_error, False),  # unresolved column: not scoped to events yet
+        (RuntimeError("Spark Connect RPC failed"), "unavailable"),  # no check ran
+    ],
+)
+def test_expression_parser_forces_analysis_when_expr_parses_lazily(error, invalid):
+    """Spark 4 defers parsing past functions.expr, so the parser must force
+    analysis; only a parse error makes the expression invalid."""
+    from kindling_ext_temporal.validation import ActiveSparkSqlExpressionParser
+
+    failure = error() if callable(error) else error
+    parser = ActiveSparkSqlExpressionParser(_LazyParseSession(failure))
+    with patch("pyspark.sql.functions.expr", lambda expression: object()):
+        if invalid == "unavailable":
+            from kindling_ext_temporal.validation import ExpressionValidationUnavailable
+
+            with pytest.raises(ExpressionValidationUnavailable):
+                parser.parse("cast(payload['temperature'] as double) > 90")
+        elif invalid:
+            with pytest.raises(Exception):
+                parser.parse("this is ! not (valid sql")
+        else:
+            parser.parse("cast(payload['temperature'] as double) > 90")
+
+
+def test_validator_propagates_unavailable_validation_instead_of_rejecting():
+    """A rule Spark could not check must fail validation loudly, not be
+    turned into an InvalidCondition (and quarantined)."""
+    from kindling_ext_temporal.validation import (
+        ConditionRule,
+        ExpressionValidationUnavailable,
+        TemporalConditionValidator,
+    )
+
+    class _Unavailable:
+        def parse(self, expression):
+            raise ExpressionValidationUnavailable("session stopped")
+
+    rule = ConditionRule(
+        condition_id="condition.ok",
+        consumes_event_type=["telemetry"],
+        subject_type="machine",
+        parameters={"enter_when": "true", "exit_when": "false"},
+    )
+    validator = TemporalConditionValidator(_Unavailable())
+    with pytest.raises(ExpressionValidationUnavailable):
+        validator._validate_rule(rule)
+
+
+def test_expression_parser_without_a_session_is_unavailable_not_invalid(monkeypatch):
+    """No session means no check ran: retryable failure, not a rejection."""
+    from kindling_ext_temporal.validation import (
+        ActiveSparkSqlExpressionParser,
+        ExpressionValidationUnavailable,
+    )
+
+    monkeypatch.setattr("pyspark.sql.SparkSession.getActiveSession", staticmethod(lambda: None))
+    with pytest.raises(ExpressionValidationUnavailable):
+        ActiveSparkSqlExpressionParser().parse("true")

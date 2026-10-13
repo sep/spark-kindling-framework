@@ -2,6 +2,43 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Fixed
+
+- **Extensions import on Databricks after an install upgrades a package the
+  runtime already loaded.** Databricks Runtime imports its own
+  OpenTelemetry (1.32.1 on DBR 17.3) before Kindling starts; installing the
+  otel-azure extension upgrades it, but the bootstrap evicted only top-level
+  names from `sys.modules`, so the new SDK imported against the cached old
+  `opentelemetry.util.types` (`cannot import name '_ExtendedAttributes'`).
+  After an install, the bootstrap now evicts every module (including
+  compiled ones, e.g. psutil's `_psutil_linux`) of each distribution the
+  install added or changed, plus their namespace-package parents; unchanged
+  packages stay cached, so no second copy is loaded. Any failure importing
+  an extension is now a warning, as an `ImportError` already was, instead of
+  aborting the bootstrap.
+- **Temporal: invalid condition SQL is quarantined on Spark 4**
+  (spark-kindling-ext-temporal 0.2.8). The validator relied on
+  `functions.expr` raising a syntax error immediately, which only Spark 3.x
+  does; Spark 4 (classic and Connect, e.g. Databricks Runtime 17.x) parses
+  lazily, so every condition passed, nothing was quarantined, and the bad
+  SQL failed the pipe run instead. It now forces analysis over an empty
+  frame with the events schema and treats only parse errors as invalid.
+
+### Changed
+
+- **dynaconf `>=3.1.0,!=3.3.4,<3.3.6`** (was `<3.3.2`), locked at 3.3.5, the
+  version clusters now install. The `@format` merge regression Kindling
+  guards against exists only in 3.3.4: a bug in dynaconf#1435, reported as
+  dynaconf#1437 and fixed in 3.3.5 by dynaconf#1438. 3.3.2 and 3.3.3 were
+  never affected.
+- **New Databricks job clusters default to DBR 17.3 LTS**
+  (`17.3.x-scala2.13`, Spark 4.0) instead of 13.3, which Databricks no
+  longer supports and on which installing Kindling replaced runtime packages
+  (packaging, blinker, databricks-sdk, typing-extensions). Jobs that set
+  `spark_version` (or `--spark-version`) are unaffected.
+
 ## [0.13.3] - 2026-10-08
 
 ### Fixed
