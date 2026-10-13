@@ -450,6 +450,52 @@ jobs:
           name: integration-test-results
           path: test-results/integration-test-results.xml
 
+  spark4-tests:
+    name: Spark 4 Tests (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    needs: [classify-changes, build-ci-image]
+    container:
+      image: ${{ needs.build-ci-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    # Every other lane runs PySpark 3.5, but Databricks Runtime 17.x (the CI
+    # cluster's DBR 17.3 LTS included) is Spark 4.0 / Scala 2.13 / Python 3.12
+    # -- a Temporal bug that only Spark 4 exposed shipped that way. This lane
+    # runs the unit + integration suites in an isolated .venv-spark4 (built
+    # from uv.lock with the Spark stack swapped for pyspark[connect] 4.0 +
+    # delta-spark 4.0; the default environment is untouched), once with
+    # classic sessions and once over Spark Connect. Known Spark 4 failures are
+    # strict-xfailed from tests/spark4_known_failures.txt, so new breakage and
+    # fixed entries (XPASS) both turn it red. Gated like the other runtime
+    # work: any change not classified as CLI/SDK/docs-only.
+    if: |
+      needs.classify-changes.outputs.fast_track != 'true' &&
+      needs.classify-changes.outputs.release_kind == 'runtime'
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [classic, connect]
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Provision the Spark 4 runtime (.venv-spark4)
+        run: poe spark4-runtime
+
+      - name: Run unit + integration suites on Spark 4 (${{ matrix.mode }})
+        run: |
+          poe test-spark4 --mode "${{ matrix.mode }}" --ci --workers "${KINDLING_SPARK4_TEST_CI_WORKERS:-4}"
+
+      - name: Upload Spark 4 test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spark4-${{ matrix.mode }}-test-results
+          path: test-results/all-test-*
+
   full-suite-single-process:
     name: Full Suite (single process)
     runs-on: ubuntu-latest
@@ -1099,6 +1145,7 @@ jobs:
         unit-tests,
         integration-tests,
         full-suite-single-process,
+        spark4-tests,
         kda-packaging-tests,
         system-tests,
         security-scan,
@@ -1150,6 +1197,15 @@ jobs:
 
           fi
 
+
+          # Check the Spark 4 lane (both matrix legs report one aggregate result)
+          if [ "${{ needs.spark4-tests.result }}" == "success" ]; then
+            echo "| Spark 4 Tests (classic + connect) | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.spark4-tests.result }}" == "skipped" ]; then
+            echo "| Spark 4 Tests (classic + connect) | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Spark 4 Tests (classic + connect) | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
 
           # Check KDA tests
           if [ "${{ needs.kda-packaging-tests.result }}" == "success" ]; then
