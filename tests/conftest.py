@@ -231,6 +231,91 @@ def pytest_collection_modifyitems(config, items):
             if "system" not in item.keywords:
                 item.add_marker(pytest.mark.system)
 
+    _mark_spark4_known_failures(items)
+
+
+SPARK4_KNOWN_FAILURES_FILE = Path(__file__).parent / "spark4_known_failures.txt"
+
+
+def _spark4_mode():
+    """``"classic"``/``"connect"`` under PySpark 4+, else None (Spark 3.x)."""
+    try:
+        import pyspark
+    except ImportError:
+        return None
+    if int(pyspark.__version__.split(".")[0]) < 4:
+        return None
+    return "connect" if os.getenv("SPARK_API_MODE", "").strip().lower() == "connect" else "classic"
+
+
+def _disable_connect_session_finalizer():
+    """Spark 4 Connect lane only: make ``connect.SparkSession.__del__`` a no-op.
+
+    PySpark 4.0's finalizer closes the client, which shuts down the shared
+    reattach ``ThreadPoolExecutor``. When the garbage collector happens to
+    collect a dropped session *inside* ``ThreadPoolExecutor.submit`` on that
+    same pool (which holds its non-reentrant ``_shutdown_lock``), ``shutdown()``
+    blocks on that lock forever -- the integration suite hung this way in
+    whichever test triggered the collection. Test modules build and drop
+    many sessions; leaving them to process exit avoids the deadlock and
+    changes nothing a test observes.
+    """
+    from pyspark.sql.connect.session import SparkSession as ConnectSparkSession
+
+    ConnectSparkSession.__del__ = lambda self: None
+
+
+if _spark4_mode() == "connect":
+    _disable_connect_session_finalizer()
+    # Set before any session starts; subprocess-based tests inherit it.
+    from tests.spark_test_helper import connect_server_submit_args
+
+    os.environ.setdefault("PYSPARK_SUBMIT_ARGS", connect_server_submit_args())
+
+
+def load_spark4_known_failures(path=SPARK4_KNOWN_FAILURES_FILE):
+    """Parse ``spark4_known_failures.txt`` into ``[(modes, nodeid, reason)]``.
+
+    Line format: ``<all|classic|connect> <nodeid-or-prefix> | <reason>``;
+    ``#`` starts a comment line.
+    """
+    entries = []
+    for lineno, raw in enumerate(path.read_text().splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        head, sep, reason = line.partition("|")
+        parts = head.split()
+        if not sep or len(parts) != 2 or parts[0] not in {"all", "classic", "connect"}:
+            raise ValueError(
+                f"{path.name}:{lineno}: expected '<all|classic|connect> <nodeid> | <reason>'"
+            )
+        modes = {"classic", "connect"} if parts[0] == "all" else {parts[0]}
+        entries.append((modes, parts[1], reason.strip()))
+    return entries
+
+
+def _mark_spark4_known_failures(items):
+    """Spark 4 lane only: strict-xfail the curated known failures.
+
+    Strict, so a fix (or a test that stops failing for another reason) turns
+    the lane red with XPASS until its entry is removed -- the list cannot rot.
+    No-op under Spark 3.x, so the default suites never see these markers.
+    """
+    mode = _spark4_mode()
+    if mode is None:
+        return
+    entries = [e for e in load_spark4_known_failures() if mode in e[0]]
+    for item in items:
+        for _modes, nodeid, reason in entries:
+            if item.nodeid == nodeid or item.nodeid.startswith(nodeid + "::"):
+                item.add_marker(
+                    pytest.mark.xfail(
+                        reason=f"Spark 4 ({mode}) known failure: {reason}", strict=True
+                    )
+                )
+                break
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Shared Test Fixtures

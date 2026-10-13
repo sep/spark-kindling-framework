@@ -38,7 +38,7 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-from tests.spark_test_helper import _teardown_non_delta_jvm
+from tests.spark_test_helper import _teardown_non_delta_jvm, set_spark_log_level
 
 
 @pytest.fixture(scope="module")
@@ -56,7 +56,7 @@ def spark():
         .config("spark.ui.enabled", "false")
     )
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
-    spark.sparkContext.setLogLevel("ERROR")
+    set_spark_log_level(spark, "ERROR")
     yield spark
     spark.stop()
 
