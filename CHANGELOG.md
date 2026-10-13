@@ -34,6 +34,12 @@ All notable changes to spark-kindling are documented here.
   ships 1.8.2, which the extension had to replace; Databricks 17.3 now gets
   1.6.7 and Fabric 1.3 gets 1.6.10, the highest that work with their
   OpenTelemetry and azure-core.
+- **The lock tests the highest versions the dependency ranges allow** for
+  packages a supported runtime doesn't ship, since clusters install those:
+  databricks-sdk 0.152.0, packaging 26.3, azure-storage-file-datalake
+  12.23.0, azure-storage-blob 12.28.0, typing-extensions 4.16.0, msal
+  1.39.0. (azure-core and azure-identity stay at 1.30.x / 1.17.x, the
+  ceiling under Fabric's cap.) No range changes.
 
 ### Added
 
