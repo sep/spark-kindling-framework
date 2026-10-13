@@ -36,6 +36,56 @@ class SparkSqlExpressionParser(Protocol):
         """Raise an exception when the expression cannot be parsed."""
 
 
+def _empty_events_frame(spark):
+    from .entities import events_schema
+
+    try:
+        return spark.createDataFrame([], events_schema())
+    except Exception:  # noqa: BLE001 -- any frame works for the parse check
+        return spark.range(0)
+
+
+class ExpressionValidationUnavailable(RuntimeError):
+    """Spark could not check an expression (stopped session, Connect RPC
+    failure, ...). Not a verdict on the expression: ingestion fails and can be
+    retried instead of quarantining a rule that was never checked."""
+
+
+def _error_condition(exc: BaseException):
+    for accessor in ("getCondition", "getErrorClass"):
+        get = getattr(exc, accessor, None)
+        if callable(get):
+            try:
+                condition = get()
+            except Exception:  # noqa: BLE001
+                condition = None
+            if isinstance(condition, str):
+                return condition
+    return None
+
+
+def _is_analysis_error(exc: BaseException) -> bool:
+    """An analysis error (unresolved column/function, type mismatch): the
+    expression parsed, it just isn't resolved against real events yet."""
+    try:
+        from pyspark.errors import AnalysisException
+    except ImportError:  # pyspark < 3.4
+        AnalysisException = ()  # type: ignore[assignment]
+    return bool(AnalysisException) and isinstance(exc, AnalysisException)
+
+
+def _is_parse_error(exc: BaseException) -> bool:
+    """A SQL syntax error, whichever way the session reports it."""
+    try:
+        from pyspark.errors import ParseException
+    except ImportError:  # pyspark < 3.4
+        ParseException = ()  # type: ignore[assignment]
+    if ParseException and isinstance(exc, ParseException):
+        return True
+    condition = _error_condition(exc)
+    return isinstance(condition, str) and condition.startswith("PARSE_")
+
+
 class ActiveSparkSqlExpressionParser:
     """Validate expression syntax with Spark's SQL parser.
 
@@ -47,6 +97,13 @@ class ActiveSparkSqlExpressionParser:
 
     def __init__(self, spark=None):
         self.spark = spark
+        self._probe_frames = {}
+
+    def _probe_frame(self, spark):
+        frame = self._probe_frames.get(id(spark))
+        if frame is None:
+            frame = self._probe_frames[id(spark)] = _empty_events_frame(spark)
+        return frame
 
     def parse(self, expression: str) -> None:
         if expression is None or not str(expression).strip():
@@ -59,14 +116,37 @@ class ActiveSparkSqlExpressionParser:
             spark = SparkSession.getActiveSession()
 
         if spark is None:
-            raise RuntimeError("No active SparkSession available for expression parsing")
+            raise ExpressionValidationUnavailable(
+                "No active SparkSession available for expression parsing"
+            )
 
-        # functions.expr parses eagerly through public API. The direct route
-        # (spark._jsparkSession.sessionState().sqlParser()) is blocked by
-        # py4j security whitelisting on Databricks shared-access clusters.
+        # The direct route (spark._jsparkSession.sessionState().sqlParser())
+        # is blocked by py4j security whitelisting on Databricks shared-access
+        # clusters, so parse through the public API. functions.expr parses
+        # eagerly only on classic Spark 3.x; Spark 4 (classic and Connect)
+        # defers parsing to analysis, so force analysis of a one-column
+        # projection (.schema issues the AnalyzePlan request on Connect). Only
+        # a parse error makes the expression invalid: unresolved columns and
+        # functions are expected, because rules are validated before they are
+        # scoped to an events dataframe. Projecting over an empty frame with
+        # the events schema resolves the usual columns (payload, subject_id,
+        # ...), so valid rules don't make Spark log analysis errors.
         from pyspark.sql import functions as F
 
-        F.expr(expression)
+        try:
+            self._probe_frame(spark).select(F.expr(expression)).schema
+        except Exception as exc:  # noqa: BLE001 -- only analysis errors are accepted
+            # A parse error makes the expression invalid. Unknown
+            # columns/functions surface as analysis errors and are fine at
+            # this stage. Anything else means no check ran (stopped session,
+            # Connect RPC error): raise ExpressionValidationUnavailable so the
+            # caller fails rather than quarantining an unchecked rule.
+            if _is_parse_error(exc):
+                raise
+            if not _is_analysis_error(exc):
+                raise ExpressionValidationUnavailable(
+                    f"Spark could not validate expression {expression!r}: {exc}"
+                ) from exc
 
 
 @dataclass(frozen=True)
@@ -239,6 +319,8 @@ class TemporalConditionValidator:
                 continue
             try:
                 self.expression_parser.parse(str(expression))
+            except ExpressionValidationUnavailable:
+                raise  # no verdict on the rule: fail, don't quarantine it
             except Exception as exc:
                 errors.append(f"parameters.{key} is invalid: {exc}")
 

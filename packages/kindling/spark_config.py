@@ -429,9 +429,9 @@ class DynaconfConfig(ConfigService):
         settings YAML's ``secret_templates.auth_header`` referencing
         ``this.kindling.secrets.service.api_token``, before its target is
         ever set, raising ``DynaconfFormatError``) can trigger. That
-        regression is confirmed present in dynaconf 3.3.4 and absent in
-        3.3.1/3.2.13; the real fix is the version constraint in
-        ``pyproject.toml``, which pins dynaconf below the affected range.
+        regression exists only in dynaconf 3.3.4 (dynaconf#1435, reported as
+        dynaconf#1437, fixed in 3.3.5 by dynaconf#1438); the real fix is the
+        version constraint in ``pyproject.toml``, which excludes 3.3.4.
         """
         merged_initial = self._apply_bootstrap_overrides(self.initial_config)
         nested = self._parameter_tree()

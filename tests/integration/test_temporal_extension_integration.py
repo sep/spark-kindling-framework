@@ -1397,3 +1397,25 @@ def test_execute_rules_runs_table_and_registry_rules_side_by_side(spark):
     assert "condition.table_overheat.exited" in event_types
     assert "condition.registry_overheat.entered" in event_types
     assert "condition.registry_overheat.exited" in event_types
+
+
+@pytest.mark.parametrize(
+    "expression, valid",
+    [
+        ("this is ! not (valid sql", False),
+        ("this is ((( not sql", False),
+        ("a +", False),
+        ("cast(payload['temperature'] as double) > 90", True),
+        ("false", True),
+        ("no_such_fn(payload['x']) > 1", True),  # functions resolve at evaluation
+    ],
+)
+def test_expression_parser_rejects_only_syntax_errors(spark, expression, valid):
+    from kindling_ext_temporal.validation import ActiveSparkSqlExpressionParser
+
+    parser = ActiveSparkSqlExpressionParser(spark)
+    if valid:
+        parser.parse(expression)
+    else:
+        with pytest.raises(Exception, match="PARSE_SYNTAX_ERROR|Syntax error"):
+            parser.parse(expression)

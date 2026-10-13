@@ -109,7 +109,7 @@ assert names.get_table_name(orders) == "main.bronze.orders"
 |---|---|---|
 | Runs | app.py as a `spark_python_task` | the declared graph as a Lakeflow pipeline |
 | Writes data | Kindling providers (Delta, merges, watermarks) | Lakeflow (MVs, streaming tables, AUTO CDC) |
-| Compute | classic only: `--cluster-id`/`DATABRICKS_CLUSTER_ID`, else a new job cluster (default 1-worker 13.3 `Standard_DS3_v2`) | serverless |
+| Compute | classic only: `--cluster-id`/`DATABRICKS_CLUSTER_ID`, else a new job cluster (default 1-worker DBR 17.3 LTS `Standard_DS3_v2`) | serverless |
 | Config | downloaded from artifacts at run time | merged at build time, inline in the resource |
 | Choose for | imperative pipes, file ingestion (Auto Loader), Delta writes you control | declarative pipes, expectations, SCD2, managed scheduling |
 

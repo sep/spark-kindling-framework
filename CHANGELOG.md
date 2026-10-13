@@ -58,13 +58,72 @@ All notable changes to spark-kindling are documented here.
 
 ### Fixed
 
+- **`kindling env add` / `env update` pin an extension's Kindling extension
+  dependencies** from the same release (e.g. SDP for the Databricks
+  extension), before the extension itself. `kindling env add
+  spark-kindling-ext-databricks` failed with GitHub pins because uv looked
+  SDP up on a package index.
+
+## [0.13.4] - 2026-10-13
+
+### Fixed
+
+- **Extensions import on Databricks after an install upgrades a package the
+  runtime already loaded.** Databricks Runtime imports its own
+  OpenTelemetry (1.32.1 on DBR 17.3) before Kindling starts; installing the
+  otel-azure extension upgrades it, but the bootstrap evicted only top-level
+  names from `sys.modules`, so the new SDK imported against the cached old
+  `opentelemetry.util.types` (`cannot import name '_ExtendedAttributes'`).
+  After an install, the bootstrap now evicts every module (including
+  compiled ones, e.g. psutil's `_psutil_linux`) of each distribution the
+  install added or changed (and, from a pre-install snapshot, any loaded
+  module the upgrade removed or renamed), plus their namespace-package
+  parents; unchanged packages stay cached, so no second copy is loaded. Any
+  failure importing an extension (including from `find_spec`) is now a
+  warning, as an `ImportError` already was, instead of aborting the
+  bootstrap.
+- **Temporal: invalid condition SQL is quarantined on Spark 4**
+  (spark-kindling-ext-temporal 0.2.8). The validator relied on
+  `functions.expr` raising a syntax error immediately, which only Spark 3.x
+  does; Spark 4 (classic and Connect, e.g. Databricks Runtime 17.x) parses
+  lazily, so every condition passed, nothing was quarantined, and the bad
+  SQL failed the pipe run instead. It now forces analysis over an empty
+  frame with the events schema: a parse error rejects the rule, an analysis
+  error (unknown column or function) is accepted as before, and any other
+  failure (no session, a Spark Connect RPC error) raises the new
+  `ExpressionValidationUnavailable`, failing ingestion so it can be retried
+  instead of quarantining a rule that was never checked.
+
+### Changed
+
+- **dynaconf `>=3.1.0,!=3.3.4,<3.3.6`** (was `<3.3.2`), locked at 3.3.5, the
+  version clusters now install. The `@format` merge regression Kindling
+  guards against exists only in 3.3.4: a bug in dynaconf#1435, reported as
+  dynaconf#1437 and fixed in 3.3.5 by dynaconf#1438. 3.3.2 and 3.3.3 were
+  never affected.
+- **New Databricks job clusters default to DBR 17.3 LTS**
+  (`17.3.x-scala2.13`, Spark 4.0) instead of 13.3, which Databricks no
+  longer supports and on which installing Kindling replaced runtime packages
+  (packaging, blinker, databricks-sdk, typing-extensions). Jobs that set
+  `spark_version` (or `--spark-version`) are unaffected.
+
+## [0.13.3] - 2026-10-08
+
+### Fixed
+
 - **A job parameter or `--param` list now replaces the settings files'
-  list.** Parameters are applied through Dynaconf's merge, which appended a
+  list.** Parameters were applied through Dynaconf's merge, which appended a
   parameter's list to the one from `settings.yaml` (and changed the caller's
-  dict in place), so e.g. `kindling.extensions` set as a job parameter could
-  not replace the app's list: the extension dedup then kept the file's pin.
-  Parameter lists now replace, like every other layer, and Dynaconf's
-  `dynaconf_merge` marker still appends.
+  dict in place). So `kindling.extensions` passed as a job parameter could
+  not replace an app's list, and the extension dedup kept the file's pin.
+  Parameter lists now join Kindling's own merge of the settings files as its
+  top layer: they replace, and Dynaconf's `dynaconf_merge` marker appends
+  once. This holds for `kindling.extensions`, the nested form and the legacy
+  flat `extensions` / `required_packages` keys, and does not depend on the
+  Dynaconf version (from 3.3, even Dynaconf's non-merging set appends lists).
+- **The lock tests dynaconf 3.3.1,** the version clusters install (the
+  runtimes don't ship Dynaconf, so pip takes the highest allowed). The
+  `<3.3.2` cap still excludes the 3.3.4 `@format` regression.
 - The agent skill's Databricks reference no longer says the devcontainer
   image lacks the Azure CLI. The image includes `az`, so `az login` auth
   works there.
