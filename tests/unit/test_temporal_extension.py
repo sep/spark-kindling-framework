@@ -1256,3 +1256,15 @@ def test_validator_propagates_unavailable_validation_instead_of_rejecting():
     validator = TemporalConditionValidator(_Unavailable())
     with pytest.raises(ExpressionValidationUnavailable):
         validator._validate_rule(rule)
+
+
+def test_expression_parser_without_a_session_is_unavailable_not_invalid(monkeypatch):
+    """No session means no check ran: retryable failure, not a rejection."""
+    from kindling_ext_temporal.validation import (
+        ActiveSparkSqlExpressionParser,
+        ExpressionValidationUnavailable,
+    )
+
+    monkeypatch.setattr("pyspark.sql.SparkSession.getActiveSession", staticmethod(lambda: None))
+    with pytest.raises(ExpressionValidationUnavailable):
+        ActiveSparkSqlExpressionParser().parse("true")

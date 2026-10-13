@@ -116,7 +116,9 @@ class ActiveSparkSqlExpressionParser:
             spark = SparkSession.getActiveSession()
 
         if spark is None:
-            raise RuntimeError("No active SparkSession available for expression parsing")
+            raise ExpressionValidationUnavailable(
+                "No active SparkSession available for expression parsing"
+            )
 
         # The direct route (spark._jsparkSession.sessionState().sqlParser())
         # is blocked by py4j security whitelisting on Databricks shared-access
