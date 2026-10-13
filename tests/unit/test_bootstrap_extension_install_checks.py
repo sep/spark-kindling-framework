@@ -356,6 +356,7 @@ def test_modules_of_changed_distributions_lists_every_module_of_changed_dists(mo
             [
                 "opentelemetry/util/types.py",
                 "opentelemetry/trace/__init__.py",
+                "psutil/_psutil_linux.abi3.so",
                 "opentelemetry_api-1.36.0.dist-info/RECORD",
                 "../../bin/x",
             ],
@@ -368,4 +369,25 @@ def test_modules_of_changed_distributions_lists_every_module_of_changed_dists(mo
         {"opentelemetry-api": "1.32.1", "azure-core": "1.34.0"}
     )
 
-    assert modules == {"opentelemetry.util.types", "opentelemetry.trace"}
+    assert modules == {"opentelemetry.util.types", "opentelemetry.trace", "psutil._psutil_linux"}
+
+
+def test_extension_import_failure_of_any_kind_is_a_warning(monkeypatch):
+    """Importing a freshly installed extension can fail with more than
+    ImportError (e.g. AttributeError from a stale compiled module); that must
+    be a warning, like ImportError, not abort the bootstrap."""
+    from kindling.bootstrap import import_distribution_modules
+
+    monkeypatch.setattr("kindling.bootstrap.resolve_import_names", lambda name: ["broken_ext"])
+
+    def boom(name):
+        raise AttributeError("module 'psutil._psutil_linux' has no attribute 'getpagesize'")
+
+    monkeypatch.setattr("kindling.bootstrap.importlib.util.find_spec", lambda name: object())
+    monkeypatch.setattr(
+        "kindling.bootstrap.importlib.import_module", boom
+    )  # last: monkeypatch uses it
+    logger = MagicMock()
+
+    assert import_distribution_modules("broken-ext", logger) is False
+    assert "AttributeError" in logger.warning.call_args.args[0]

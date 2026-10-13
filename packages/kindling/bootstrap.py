@@ -1255,8 +1255,10 @@ def import_distribution_modules(dist_name: str, logger) -> bool:
             importlib.import_module(import_name)
             logger.info(f"Loaded extension module: {import_name}")
             imported_any = True
-        except ImportError as e:
-            logger.warning(f"Failed to import extension module {import_name}: {e}")
+        except Exception as e:  # noqa: BLE001 -- a broken extension must not abort bootstrap
+            logger.warning(
+                f"Failed to import extension module {import_name}: {type(e).__name__}: {e}"
+            )
     return imported_any
 
 
@@ -1291,9 +1293,19 @@ def _modules_of_changed_distributions(before: Mapping[str, str]) -> set:
         seen.add(name)  # the copy import now resolves (first on sys.path)
         for file in dist.files or []:
             path = str(file).replace("\\", "/")
-            if path.startswith("..") or not path.endswith(".py"):
+            if path.startswith(".."):
                 continue
-            module = path[: -len(".py")].replace("/", ".")
+            directory, _, filename = path.rpartition("/")
+            if filename.endswith(".py"):
+                stem = filename[: -len(".py")]
+            elif filename.endswith((".so", ".pyd")):
+                # Compiled modules: psutil/_psutil_linux.abi3.so -> psutil._psutil_linux.
+                # Missing these left a runtime's old C module cached under
+                # an upgraded pure-Python package (psutil on Databricks).
+                stem = filename.split(".", 1)[0]
+            else:
+                continue
+            module = f"{directory}/{stem}".strip("/").replace("/", ".")
             if module.endswith(".__init__"):
                 module = module[: -len(".__init__")]
             modules.add(module)
