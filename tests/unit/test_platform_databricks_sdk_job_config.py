@@ -665,7 +665,7 @@ def test_submit_app_run_compute_sizing_without_default_cluster_uses_new_cluster(
     task = api._client.jobs.submit.call_args.kwargs["tasks"][0]
     assert task.new_cluster.num_workers == 3
     # Unspecified keys keep the SDK defaults.
-    assert task.new_cluster.spark_version == "13.3.x-scala2.12"
+    assert task.new_cluster.spark_version == "17.3.x-scala2.13"
     assert task.new_cluster.node_type_id == "Standard_DS3_v2"
 
 

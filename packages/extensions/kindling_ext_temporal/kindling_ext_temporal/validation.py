@@ -36,6 +36,35 @@ class SparkSqlExpressionParser(Protocol):
         """Raise an exception when the expression cannot be parsed."""
 
 
+def _empty_events_frame(spark):
+    from .entities import events_schema
+
+    try:
+        return spark.createDataFrame([], events_schema())
+    except Exception:  # noqa: BLE001 -- any frame works for the parse check
+        return spark.range(0)
+
+
+def _is_parse_error(exc: BaseException) -> bool:
+    """A SQL syntax error, whichever way the session reports it."""
+    try:
+        from pyspark.errors import ParseException
+    except ImportError:  # pyspark < 3.4
+        ParseException = ()  # type: ignore[assignment]
+    if ParseException and isinstance(exc, ParseException):
+        return True
+    for accessor in ("getCondition", "getErrorClass"):
+        get = getattr(exc, accessor, None)
+        if callable(get):
+            try:
+                condition = get()
+            except Exception:  # noqa: BLE001
+                condition = None
+            if isinstance(condition, str) and condition.startswith("PARSE_"):
+                return True
+    return False
+
+
 class ActiveSparkSqlExpressionParser:
     """Validate expression syntax with Spark's SQL parser.
 
@@ -47,6 +76,13 @@ class ActiveSparkSqlExpressionParser:
 
     def __init__(self, spark=None):
         self.spark = spark
+        self._probe_frames = {}
+
+    def _probe_frame(self, spark):
+        frame = self._probe_frames.get(id(spark))
+        if frame is None:
+            frame = self._probe_frames[id(spark)] = _empty_events_frame(spark)
+        return frame
 
     def parse(self, expression: str) -> None:
         if expression is None or not str(expression).strip():
@@ -61,12 +97,24 @@ class ActiveSparkSqlExpressionParser:
         if spark is None:
             raise RuntimeError("No active SparkSession available for expression parsing")
 
-        # functions.expr parses eagerly through public API. The direct route
-        # (spark._jsparkSession.sessionState().sqlParser()) is blocked by
-        # py4j security whitelisting on Databricks shared-access clusters.
+        # The direct route (spark._jsparkSession.sessionState().sqlParser())
+        # is blocked by py4j security whitelisting on Databricks shared-access
+        # clusters, so parse through the public API. functions.expr parses
+        # eagerly only on classic Spark 3.x; Spark 4 (classic and Connect)
+        # defers parsing to analysis, so force analysis of a one-column
+        # projection (.schema issues the AnalyzePlan request on Connect). Only
+        # a parse error makes the expression invalid: unresolved columns and
+        # functions are expected, because rules are validated before they are
+        # scoped to an events dataframe. Projecting over an empty frame with
+        # the events schema resolves the usual columns (payload, subject_id,
+        # ...), so valid rules don't make Spark log analysis errors.
         from pyspark.sql import functions as F
 
-        F.expr(expression)
+        try:
+            self._probe_frame(spark).select(F.expr(expression)).schema
+        except Exception as exc:  # noqa: BLE001 -- re-raised when it is a parse error
+            if _is_parse_error(exc):
+                raise
 
 
 @dataclass(frozen=True)

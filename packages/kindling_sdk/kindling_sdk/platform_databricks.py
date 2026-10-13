@@ -669,7 +669,7 @@ class DatabricksAPI(PlatformAPI):
         runtime_engine = RuntimeEngine.PHOTON if job_config.get("photon") else None
 
         cluster_spec = ClusterSpec(
-            spark_version=job_config.get("spark_version", "13.3.x-scala2.12"),
+            spark_version=job_config.get("spark_version", "17.3.x-scala2.13"),
             node_type_id=job_config.get("node_type_id", "Standard_DS3_v2"),
             num_workers=job_config.get("num_workers", 1),
             cluster_log_conf=cluster_log_conf,

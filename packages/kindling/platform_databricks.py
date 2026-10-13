@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Optional, Union
 from urllib.parse import quote
 
 import requests
-
 from kindling.features import get_feature_bool
 from kindling.injection import GlobalInjector
 from kindling.notebook_framework import *
@@ -1275,7 +1274,7 @@ class DatabricksService(PlatformService):
         else:
             # Default cluster config
             task_config["new_cluster"] = {
-                "spark_version": "13.3.x-scala2.12",
+                "spark_version": "17.3.x-scala2.13",
                 "node_type_id": "Standard_DS3_v2",
                 "num_workers": 2,
             }

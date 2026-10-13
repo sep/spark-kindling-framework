@@ -1260,6 +1260,96 @@ def import_distribution_modules(dist_name: str, logger) -> bool:
     return imported_any
 
 
+def _installed_distribution_versions() -> Dict[str, str]:
+    """{normalized distribution name: version}, as import would resolve it
+    now (the first copy on sys.path wins, like importlib.metadata)."""
+    from importlib.metadata import distributions
+
+    versions: Dict[str, str] = {}
+    for dist in distributions():
+        name = (dist.metadata.get("Name") or "").strip().lower().replace("_", "-")
+        if name:
+            versions.setdefault(name, dist.version)
+    return versions
+
+
+def _modules_of_changed_distributions(before: Mapping[str, str]) -> set:
+    """Module names provided by the distributions an install added or changed
+    since `before` (every module, so submodules like opentelemetry.util.types
+    are included). Unchanged distributions are left out: evicting a module
+    that is already current would load a second copy of it."""
+    from importlib.metadata import distributions
+
+    after = _installed_distribution_versions()
+    changed = {name for name, version in after.items() if before.get(name) != version}
+    modules: set = set()
+    seen: set = set()
+    for dist in distributions():
+        name = (dist.metadata.get("Name") or "").strip().lower().replace("_", "-")
+        if name not in changed or name in seen:
+            continue
+        seen.add(name)  # the copy import now resolves (first on sys.path)
+        for file in dist.files or []:
+            path = str(file).replace("\\", "/")
+            if path.startswith("..") or not path.endswith(".py"):
+                continue
+            module = path[: -len(".py")].replace("/", ".")
+            if module.endswith(".__init__"):
+                module = module[: -len(".__init__")]
+            modules.add(module)
+    return modules
+
+
+def _evict_stale_modules(logger, modules: Iterable[str]) -> None:
+    """Drop cached imports so the next import loads the freshly installed copy.
+
+    A runtime can import a package (e.g. Databricks imports opentelemetry
+    before Kindling starts) that an install then upgrades; evicting only the
+    top-level name left its submodules cached, so the new code imported
+    against the old ones (`cannot import name '_ExtendedAttributes' from
+    'opentelemetry.util.types'`).
+
+    Namespace-package parents (`opentelemetry`, `opentelemetry.util`, `azure`)
+    are evicted too: they carry only a search path, which otherwise keeps
+    pointing at the old copy. Regular packages that are not themselves stale
+    (an unchanged `azure.core`) stay cached, so no second copy is loaded, and
+    are re-attached to their recreated parent."""
+    targets = set(modules)
+    for module_name in list(targets):
+        parts = module_name.split(".")
+        for depth in range(1, len(parts)):
+            parent = ".".join(parts[:depth])
+            cached = sys.modules.get(parent)
+            if cached is not None and getattr(cached, "__file__", None) is None:
+                targets.add(parent)  # a namespace package
+    evicted_namespaces = []
+    for module_name in list(sys.modules):
+        if module_name in targets:
+            logger.debug(f"Clearing cached import: {module_name}")
+            if getattr(sys.modules[module_name], "__file__", None) is None:
+                evicted_namespaces.append(module_name)
+            del sys.modules[module_name]
+    # Re-attach cached children that were kept (e.g. azure.core under a
+    # recreated `azure`): import binds `azure.core` through the parent's
+    # attribute, which a fresh namespace module does not have.
+    for parent in sorted(evicted_namespaces, key=lambda name: name.count(".")):
+        children = [
+            name
+            for name in sys.modules
+            if name.startswith(parent + ".") and "." not in name[len(parent) + 1 :]
+        ]
+        if not children:
+            continue
+        try:
+            fresh = importlib.import_module(parent)
+        except Exception as exc:  # noqa: BLE001 -- the next import retries
+            logger.debug(f"Could not re-import {parent}: {exc}")
+            continue
+        for child in children:
+            if not hasattr(fresh, child.rsplit(".", 1)[1]):
+                setattr(fresh, child.rsplit(".", 1)[1], sys.modules[child])
+
+
 def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_path=None):
     """Install packages needed for framework bootstrap
 
@@ -1346,6 +1436,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
         """Install package (from PyPI), forcing upgrade to override system packages"""
         logger.info(f"Installing package: {package_spec}")
         try:
+            versions_before = _installed_distribution_versions()
             # Use --ignore-installed to force installation even if package exists in system site-packages
             # This is critical for platforms like Databricks where system packages may be outdated
             subprocess.check_call(
@@ -1374,10 +1465,11 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
 
             # Clear any cached imports of this package to force reload from new location
             importlib.invalidate_caches()
-            for module_name in resolve_import_names(get_package_name(package_spec)):
-                if module_name in sys.modules:
-                    logger.debug(f"Clearing cached import: {module_name}")
-                    del sys.modules[module_name]
+            _evict_stale_modules(
+                logger,
+                set(resolve_import_names(get_package_name(package_spec)))
+                | _modules_of_changed_distributions(versions_before),
+            )
 
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to install {package_spec}: {e}")
@@ -1552,6 +1644,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
 
                 # Install the downloaded wheel
                 logger.info(f"Installing {wheel_filename}")
+                versions_before = _installed_distribution_versions()
                 result = subprocess.run(
                     [
                         sys.executable,
@@ -1588,17 +1681,18 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                             logger.debug(f"Moved to front of sys.path: {path}")
 
                     importlib.invalidate_caches()
-                    stale_modules = resolve_import_names(package_name) + [
-                        "typing_extensions",
-                        "azure",
-                        "azure.monitor",
-                        "azure.monitor.opentelemetry",
-                        "opentelemetry",
-                    ]
-                    for module_name in stale_modules:
-                        if module_name in sys.modules:
-                            logger.debug(f"Clearing cached import: {module_name}")
-                            del sys.modules[module_name]
+                    _evict_stale_modules(
+                        logger,
+                        set(resolve_import_names(package_name))
+                        | {
+                            "typing_extensions",
+                            "azure",
+                            "azure.monitor",
+                            "azure.monitor.opentelemetry",
+                            "opentelemetry",
+                        }
+                        | _modules_of_changed_distributions(versions_before),
+                    )
 
                     logger.info(f"Successfully installed extension: {package_spec}")
                 else:

@@ -167,7 +167,7 @@ job_config = {
     "job_name": "my-app",  # Required
     "cluster_id": "...",  # Optional - existing cluster
     "new_cluster": {  # Optional - new cluster config
-        "spark_version": "13.3.x-scala2.12",
+        "spark_version": "17.3.x-scala2.13",
         "node_type_id": "Standard_DS3_v2",
         "num_workers": 2
     },

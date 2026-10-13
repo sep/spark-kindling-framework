@@ -567,7 +567,7 @@ The app must have been deployed first with `kindling app deploy`. `--env` defaul
 
 **Databricks job compute.** Without compute options, a Databricks run uses the existing cluster in
 `DATABRICKS_CLUSTER_ID` when it is set, and otherwise a new job cluster with the SDK defaults
-(`13.3.x-scala2.12`, `Standard_DS3_v2`, 1 worker). The options below change that. They are
+(`17.3.x-scala2.13`, i.e. DBR 17.3 LTS; `Standard_DS3_v2`; 1 worker). The options below change that. They are
 Databricks-only and error on other platforms and for standalone runs.
 
 | Compute option | Description |
@@ -731,7 +731,7 @@ the definition in place (idempotent). Config overrides supplied with
 | `--json` | — | Machine-readable JSON output |
 | `--cluster-id TEXT` | `DATABRICKS_CLUSTER_ID` | Databricks only: run the job on this existing cluster |
 | `--new-cluster` | — | Databricks only: use a new job cluster even if `DATABRICKS_CLUSTER_ID` is set |
-| `--spark-version TEXT` | `13.3.x-scala2.12` | Databricks only: new job cluster runtime version |
+| `--spark-version TEXT` | `17.3.x-scala2.13` | Databricks only: new job cluster runtime version |
 | `--node-type TEXT` | `Standard_DS3_v2` | Databricks only: new job cluster node type |
 | `--num-workers INT` | `1` | Databricks only: new job cluster worker count |
 
