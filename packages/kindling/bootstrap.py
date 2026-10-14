@@ -2192,9 +2192,10 @@ def _bind_plain_telemetry_providers(logger=None) -> None:
 
     Same forced-rebind pattern as kindling_ext_otel_azure._register_providers:
     the concrete SparkLoggerProvider stays bound (dual-bind) so callers that
-    resolve the concrete class keep working.
+    resolve the concrete class keep working. The bootstrap has already
+    resolved PythonLoggerProvider by now, so the rebind must also evict that
+    cached singleton (GlobalInjector.rebind_singleton).
     """
-    from injector import singleton
     from kindling.plain_telemetry import (
         PlainPythonLoggerProvider,
         PlainPythonTraceProvider,
@@ -2202,10 +2203,9 @@ def _bind_plain_telemetry_providers(logger=None) -> None:
     from kindling.spark_log_provider import SparkLoggerProvider
     from kindling.spark_trace import SparkTraceProvider
 
-    binder = GlobalInjector.get_injector().binder
-    binder.bind(PythonLoggerProvider, to=PlainPythonLoggerProvider, scope=singleton)
-    binder.bind(SparkLoggerProvider, to=PlainPythonLoggerProvider, scope=singleton)
-    binder.bind(SparkTraceProvider, to=PlainPythonTraceProvider, scope=singleton)
+    GlobalInjector.rebind_singleton(PythonLoggerProvider, PlainPythonLoggerProvider)
+    GlobalInjector.rebind_singleton(SparkLoggerProvider, PlainPythonLoggerProvider)
+    GlobalInjector.rebind_singleton(SparkTraceProvider, PlainPythonTraceProvider)
     if logger:
         logger.info("No py4j JVM bridge detected; using plain-python telemetry providers")
 

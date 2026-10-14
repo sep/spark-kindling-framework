@@ -8,11 +8,10 @@ the capability-based provider swap.
 
 from unittest.mock import MagicMock
 
-import pytest
-from injector import Injector
-
 import kindling.bootstrap as bootstrap_module
 import kindling.notebook_framework as notebook_framework_module
+import pytest
+from injector import Injector
 from kindling.injection import GlobalInjector
 from kindling.plain_telemetry import PlainPythonLoggerProvider, PlainPythonTraceProvider
 from kindling.spark_config import ConfigService
@@ -72,6 +71,30 @@ class TestPlainTelemetryProviderSwap:
         return injector
 
     def test_bind_plain_telemetry_providers_rebinds_all_three(self, injector):
+        bootstrap_module._bind_plain_telemetry_providers()
+
+        assert isinstance(injector.get(PythonLoggerProvider), PlainPythonLoggerProvider)
+        assert isinstance(injector.get(SparkLoggerProvider), PlainPythonLoggerProvider)
+        assert isinstance(injector.get(SparkTraceProvider), PlainPythonTraceProvider)
+
+    def test_rebind_replaces_providers_already_resolved(self, injector):
+        # The bootstrap resolves PythonLoggerProvider (and may resolve the trace
+        # provider) before the swap; injector caches singletons per interface.
+        from injector import singleton
+
+        class DefaultLoggerProvider(PythonLoggerProvider):
+            def get_logger(self, name, session=None):
+                return MagicMock()
+
+        class DefaultTraceProvider(SparkTraceProvider):
+            pass
+
+        DefaultTraceProvider.__abstractmethods__ = frozenset()
+        injector.binder.bind(PythonLoggerProvider, to=DefaultLoggerProvider, scope=singleton)
+        injector.binder.bind(SparkTraceProvider, to=DefaultTraceProvider, scope=singleton)
+        assert isinstance(injector.get(PythonLoggerProvider), DefaultLoggerProvider)
+        assert isinstance(injector.get(SparkTraceProvider), DefaultTraceProvider)
+
         bootstrap_module._bind_plain_telemetry_providers()
 
         assert isinstance(injector.get(PythonLoggerProvider), PlainPythonLoggerProvider)

@@ -82,6 +82,16 @@ All notable changes to spark-kindling are documented here.
   which is lazy on Connect and never raises, so SCD2 merges into a new
   memory entity skipped the temporal-column bootstrap. The probe now forces
   analysis.
+- **Telemetry provider overrides take effect after the bootstrap resolved the
+  defaults** (spark-kindling-ext-otel-azure 0.4.1). Rebinding an interface
+  in the DI container left the singleton already resolved for it in place,
+  so after the bootstrap had resolved `PythonLoggerProvider`,
+  `get_kindling_service(PythonLoggerProvider)` kept returning the default
+  provider even with the Azure Monitor extension loaded (and the plain-python
+  swap on runtimes without a JVM bridge only reached the concrete
+  `SparkLoggerProvider`). The new `GlobalInjector.rebind_singleton` also
+  evicts the cached instance; the extension uses it when the runtime has it.
+  Loggers and services that already hold the earlier provider keep it.
 
 ## [0.13.4] - 2026-10-13
 

@@ -1,7 +1,7 @@
 import inspect
 from abc import ABC
 
-from injector import Injector, singleton
+from injector import Injector, SingletonScope, singleton
 
 
 class GlobalInjector:
@@ -40,6 +40,29 @@ class GlobalInjector:
     def bind(cls, interface, implementation):
         # print("Calling bind on GI ...")
         cls.get_injector().binder.bind(interface, to=implementation)
+
+    @classmethod
+    def rebind_singleton(cls, interface, implementation):
+        """Bind ``interface`` to ``implementation`` in singleton scope, replacing
+        both the earlier binding and any instance already resolved for it.
+
+        ``binder.bind`` alone only replaces the binding: injector's
+        ``SingletonScope`` caches each resolved instance by interface key, so an
+        interface resolved before the rebind keeps returning the old instance.
+        This also evicts that cached instance, so the next resolution uses
+        ``implementation``. Objects that already hold the old instance (for
+        example through constructor injection, or a logger obtained from it)
+        keep it; only later resolutions see the new binding.
+        """
+        injector = cls.get_injector()
+        injector.binder.bind(interface, to=implementation, scope=singleton)
+        try:
+            scope_binding, _ = injector.binder.get_binding(SingletonScope)
+            cached = getattr(scope_binding.provider.get(injector), "_context", None)
+        except Exception:  # noqa: BLE001 - eviction is best effort across injector versions
+            return
+        if isinstance(cached, dict):
+            cached.pop(interface, None)
 
     @classmethod
     def autobind(cls, *interfaces):
