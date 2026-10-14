@@ -58,6 +58,15 @@ All notable changes to spark-kindling are documented here.
   failures are listed in `tests/spark4_known_failures.txt` and strict-xfailed
   only in this lane, so a fix shows up as `XPASS`.
 
+### Fixed
+
+- **YAML `add_columns` types parse on Spark 4.** `{name, type}` entries
+  used the private `pyspark.sql.types._all_atomic_types`, which Spark 4.0
+  removed, so every typed column raised `ImportError`. The atomic types are
+  now looked up from the public type classes; the accepted names and
+  aliases are unchanged (`char`/`varchar`, which need a length and always
+  failed, are now rejected with the usual invalid-type error).
+
 ## [0.13.4] - 2026-10-13
 
 ### Fixed

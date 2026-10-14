@@ -86,7 +86,44 @@ def parse_column_type(type_name: str, column: str) -> Any:
     """
     import re
 
-    from pyspark.sql.types import ArrayType, DecimalType, _all_atomic_types
+    from pyspark.sql.types import (
+        ArrayType,
+        BinaryType,
+        BooleanType,
+        ByteType,
+        DateType,
+        DecimalType,
+        DoubleType,
+        FloatType,
+        IntegerType,
+        LongType,
+        NullType,
+        ShortType,
+        StringType,
+        TimestampNTZType,
+        TimestampType,
+    )
+
+    # Public equivalent of the private ``pyspark.sql.types._all_atomic_types``
+    # (removed in Spark 4.0): the parameterless atomic types by type name.
+    atomic_types = {
+        t.typeName(): t
+        for t in (
+            StringType,
+            BinaryType,
+            BooleanType,
+            FloatType,
+            DoubleType,
+            ByteType,
+            ShortType,
+            IntegerType,
+            LongType,
+            DateType,
+            TimestampType,
+            TimestampNTZType,
+            NullType,
+        )
+    }
 
     text = type_name.strip().lower()
     array_match = re.fullmatch(r"array\s*<\s*(.+)\s*>", text)
@@ -98,7 +135,7 @@ def parse_column_type(type_name: str, column: str) -> Any:
         scale = int(decimal_match.group(2) or 0)
         return DecimalType(precision, scale)
     name = _TYPE_ALIASES.get(text, text)
-    atomic = _all_atomic_types.get(name)
+    atomic = atomic_types.get(name)
     if atomic is None:
         raise DerivationError(
             f"add_columns: column {column!r} has an invalid type {type_name!r}; use an atomic "
