@@ -13,6 +13,19 @@ All notable changes to spark-kindling are documented here.
   1.39.0. (azure-core and azure-identity stay at 1.30.x / 1.17.x, the
   ceiling under Fabric's cap.) No range changes.
 
+### Added
+
+- **Spark 4 test lane.** `poe test-spark4 [--mode classic|connect]` runs the
+  unit and integration suites against Spark 4.0 (the Spark line of
+  Databricks Runtime 17.x) in an isolated `.venv-spark4`, built by
+  `poe spark4-runtime` from `uv.lock` with the Spark stack swapped for
+  `pyspark[connect]` 4.0 + `delta-spark` 4.0 (Scala 2.13); the default
+  environment and its Spark 3.5 pins are unchanged. `--mode connect` runs
+  every test session over an in-process Spark Connect server. CI runs both
+  modes as the **Spark 4 Tests** job for runtime changes. Known Spark 4
+  failures are listed in `tests/spark4_known_failures.txt` and strict-xfailed
+  only in this lane, so a fix shows up as `XPASS`.
+
 ## [0.13.4] - 2026-10-13
 
 ### Fixed

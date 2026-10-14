@@ -102,6 +102,9 @@ DELTA_CONFS = {
 def state(monkeypatch):
     """Patch class-level Spark state with restore-on-exit; return knobs."""
     main = sys.modules["__main__"]
+    # These tests pin the CLASSIC (py4j) preflight; the Spark 4 Connect lane's
+    # SPARK_API_MODE=connect switch would otherwise short-circuit it.
+    monkeypatch.delenv("SPARK_API_MODE", raising=False)
     monkeypatch.setattr(SparkContext, "_gateway", None)
     monkeypatch.setattr(SparkContext, "_jvm", None)
     monkeypatch.setattr(SparkContext, "_active_spark_context", None)

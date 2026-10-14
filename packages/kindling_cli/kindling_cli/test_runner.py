@@ -150,7 +150,7 @@ def build_pytest_args(options: TestRunOptions) -> List[str]:
     if workers and workers not in {"0", "1"}:
         ensure_xdist_available(workers)
         args.extend(["-n", workers])
-        if options.suite in {"unit", "integration"}:
+        if options.suite in {"unit", "integration", "all"}:
             # Several unit/integration test files self-register a provider
             # (or similar module-level side effect) at first import inside
             # one test, then rely on a plain import hitting sys.modules'
@@ -161,6 +161,7 @@ def build_pytest_args(options: TestRunOptions) -> List[str]:
             # no shared sys.modules cache, breaking that implicit ordering.
             # loadscope keeps every test from one file on the same worker,
             # so within-file execution order matches a serial run.
+            # "all" too: poe test-spark4 runs unit + integration as one suite.
             args.extend(["--dist", "loadscope"])
 
     args.extend(options.pytest_args)

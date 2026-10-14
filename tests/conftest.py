@@ -231,6 +231,116 @@ def pytest_collection_modifyitems(config, items):
             if "system" not in item.keywords:
                 item.add_marker(pytest.mark.system)
 
+    _mark_spark4_known_failures(items)
+
+
+SPARK4_KNOWN_FAILURES_FILE = Path(__file__).parent / "spark4_known_failures.txt"
+
+
+def _spark4_mode():
+    """``"classic"``/``"connect"`` under PySpark 4+, else None (Spark 3.x)."""
+    try:
+        import pyspark
+    except ImportError:
+        return None
+    if int(pyspark.__version__.split(".")[0]) < 4:
+        return None
+    return "connect" if os.getenv("SPARK_API_MODE", "").strip().lower() == "connect" else "classic"
+
+
+def _disable_connect_session_finalizer():
+    """Spark 4 Connect lane only: make ``connect.SparkSession.__del__`` a no-op.
+
+    PySpark 4.0's finalizer closes the client, which shuts down the shared
+    reattach ``ThreadPoolExecutor``. When the garbage collector happens to
+    collect a dropped session *inside* ``ThreadPoolExecutor.submit`` on that
+    same pool (which holds its non-reentrant ``_shutdown_lock``), ``shutdown()``
+    blocks on that lock forever -- the integration suite hung this way in
+    whichever test triggered the collection. Test modules build and drop
+    many sessions; leaving them to process exit avoids the deadlock and
+    changes nothing a test observes.
+    """
+    from pyspark.sql.connect.session import SparkSession as ConnectSparkSession
+
+    ConnectSparkSession.__del__ = lambda self: None
+
+
+if _spark4_mode() == "connect":
+    _disable_connect_session_finalizer()
+    # Set before any session starts; subprocess-based tests inherit it.
+    from tests.spark_test_helper import connect_server_submit_args
+
+    os.environ.setdefault("PYSPARK_SUBMIT_ARGS", connect_server_submit_args())
+
+
+def load_spark4_known_failures(path=SPARK4_KNOWN_FAILURES_FILE):
+    """Parse ``spark4_known_failures.txt`` into ``[(modes, nodeid, reason)]``.
+
+    Line format: ``<all|classic|connect> <nodeid-or-prefix> | <reason>``;
+    ``#`` starts a comment line.
+    """
+    entries = []
+    for lineno, raw in enumerate(path.read_text().splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        head, sep, reason = line.partition("|")
+        parts = head.split()
+        if not sep or len(parts) != 2 or parts[0] not in {"all", "classic", "connect"}:
+            raise ValueError(
+                f"{path.name}:{lineno}: expected '<all|classic|connect> <nodeid> | <reason>'"
+            )
+        modes = {"classic", "connect"} if parts[0] == "all" else {parts[0]}
+        entries.append((modes, parts[1], reason.strip()))
+    return entries
+
+
+def _match_spark4_known_failures(nodeids, entries):
+    """Pair each collected nodeid with its known-failure entry.
+
+    Returns ``(matches, unmatched)``: ``matches`` maps a nodeid to the reason
+    of the first entry equal to it or prefixing it (``<entry>::...``), and
+    ``unmatched`` lists the entries' nodeids that matched nothing.
+    """
+    matches = {}
+    used = set()
+    for nodeid in nodeids:
+        for _modes, entry, reason in entries:
+            if nodeid == entry or nodeid.startswith(entry + "::"):
+                matches[nodeid] = reason
+                used.add(entry)
+                break
+    unmatched = [entry for _modes, entry, _reason in entries if entry not in used]
+    return matches, unmatched
+
+
+def _mark_spark4_known_failures(items):
+    """Spark 4 lane only: strict-xfail the curated known failures.
+
+    Strict, so a fix (or a test that stops failing for another reason) turns
+    the lane red with XPASS until its entry is removed -- the list cannot rot.
+    ``poe test-spark4`` also sets KINDLING_SPARK4_LANE_FULL=1, which makes an
+    entry that matches no collected test (renamed or deleted) a usage error;
+    a partial run (a single file, ``-k``) skips that check.
+    No-op under Spark 3.x, so the default suites never see these markers.
+    """
+    mode = _spark4_mode()
+    if mode is None:
+        return
+    entries = [e for e in load_spark4_known_failures() if mode in e[0]]
+    matches, unmatched = _match_spark4_known_failures([item.nodeid for item in items], entries)
+    if unmatched and os.getenv("KINDLING_SPARK4_LANE_FULL") == "1":
+        raise pytest.UsageError(
+            f"{SPARK4_KNOWN_FAILURES_FILE.name}: {mode} entries match no collected test "
+            f"(renamed or removed? delete or fix them): {', '.join(unmatched)}"
+        )
+    for item in items:
+        reason = matches.get(item.nodeid)
+        if reason is not None:
+            item.add_marker(
+                pytest.mark.xfail(reason=f"Spark 4 ({mode}) known failure: {reason}", strict=True)
+            )
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Shared Test Fixtures
