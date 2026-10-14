@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Synapse 3.5. Every symbol the extension uses is the same across 1.6-1.8.
 - `__version__` matches the package version (was `0.3.2`).
 
+### Fixed
+- The Azure Monitor providers replace the defaults even when Kindling already
+  resolved them. The bootstrap resolves `PythonLoggerProvider` before it
+  imports extensions, and the DI container caches singletons per interface, so
+  `get_kindling_service(PythonLoggerProvider)` kept returning the default
+  `SparkLoggerProvider`. Registration now uses `GlobalInjector.rebind_singleton`
+  (Kindling 0.13.5+), which also evicts the cached instance, and falls back to
+  the previous plain rebind on older runtimes. Loggers already handed out
+  (e.g. the bootstrap's own) are not replaced.
+
 ## [0.4.0] - 2026-04-20
 
 ### Changed

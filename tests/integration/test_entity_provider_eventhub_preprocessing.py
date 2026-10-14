@@ -89,6 +89,18 @@ class TestPreprocessKafkaMode:
         assert row["body"] == "hello world"
         assert row["headers"] == {"content-type": "application/json"}
 
+    def test_malformed_utf8_body_and_header_decode_leniently(self, spark_session):
+        """Invalid UTF-8 becomes U+FFFD instead of failing the query: Spark 4's
+        decode() is strict ([MALFORMED_CHARACTER_CODING]), Spark 3.5's lenient."""
+        df = _headers_schema_df(
+            spark_session, b"ok \xff body", header_value_bytes=bytes([0x81, 0x00])
+        )
+
+        row = _PREPROCESS_MODES["kafka"](df).collect()[0]
+
+        assert row["body"] == "ok \ufffd body"
+        assert row["headers"] == {"content-type": "\ufffd\x00"}
+
     def test_noop_when_body_already_text_and_headers_absent(self, spark_session):
         df = spark_session.createDataFrame([("already text",)], ["body"])
 
@@ -118,7 +130,7 @@ class TestPreprocessKafkaMode:
 
 
 class TestAmqpPrimitiveDecodeParity:
-    """The production header-decoding UDF (_decode_amqp_headers_udf) wraps
+    """The production header-decoding UDF (_build_decode_amqp_headers_udf()) wraps
     a function defined entirely inside _build_decode_amqp_headers_udf --
     NOT _decode_amqp_primitive -- specifically so it doesn't reference any
     kindling-module-level name (see that factory's docstring). That nested
@@ -141,7 +153,7 @@ class TestAmqpPrimitiveDecodeParity:
         ],
     )
     def test_udf_matches_reference_implementation(self, spark_session, value_bytes):
-        from kindling.entity_provider_eventhub import _decode_amqp_headers_udf
+        from kindling.entity_provider_eventhub import _build_decode_amqp_headers_udf
         from pyspark.sql import Row
         from pyspark.sql.functions import col
         from pyspark.sql.types import (
@@ -171,9 +183,8 @@ class TestAmqpPrimitiveDecodeParity:
         df = spark_session.createDataFrame(
             [Row(headers=[Row(key="x-opt-test", value=value_bytes)])], schema=schema
         )
-        result = df.withColumn("headers", _decode_amqp_headers_udf(col("headers"))).collect()[0][
-            "headers"
-        ]
+        decode_headers = _build_decode_amqp_headers_udf()
+        result = df.withColumn("headers", decode_headers(col("headers"))).collect()[0]["headers"]
 
         assert result["x-opt-test"] == _decode_amqp_primitive(value_bytes)
 

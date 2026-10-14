@@ -58,6 +58,41 @@ All notable changes to spark-kindling are documented here.
   failures are listed in `tests/spark4_known_failures.txt` and strict-xfailed
   only in this lane, so a fix shows up as `XPASS`.
 
+### Fixed
+
+- **YAML `add_columns` types parse on Spark 4.** `{name, type}` entries
+  used the private `pyspark.sql.types._all_atomic_types`, which Spark 4.0
+  removed, so every typed column raised `ImportError`. The atomic types are
+  now looked up from the public type classes; the accepted names and
+  aliases are unchanged (`char`/`varchar`, which need a length and always
+  failed, are now rejected with the usual invalid-type error).
+- **Event Hubs `preprocess: kafka` tolerates invalid UTF-8 on Spark 4.**
+  Spark 4.0's `decode(bin, 'UTF-8')` fails the query with
+  `[MALFORMED_CHARACTER_CODING]` where Spark 3.x substituted U+FFFD. On
+  Spark 4 the body and plain header values now decode with
+  `make_valid_utf8(cast(... AS STRING))`, which keeps the lenient result on
+  classic and Spark Connect sessions alike.
+- **Event Hubs `amqp_headers` works over Spark Connect.** The header
+  decoding UDF was built at import time, so importing Kindling before a
+  Spark Connect session existed (Databricks standard/shared access mode)
+  produced a classic UDF that rejected Connect columns
+  (`[NOT_COLUMN_OR_STR]`). It is now built when the transform is applied.
+- **The memory provider no longer reports missing entities as existing over
+  Spark Connect.** `check_entity_exists` probed with `spark.table(name)`,
+  which is lazy on Connect and never raises, so SCD2 merges into a new
+  memory entity skipped the temporal-column bootstrap. The probe now forces
+  analysis.
+- **Telemetry provider overrides take effect after the bootstrap resolved the
+  defaults** (spark-kindling-ext-otel-azure 0.4.1). Rebinding an interface
+  in the DI container left the singleton already resolved for it in place,
+  so after the bootstrap had resolved `PythonLoggerProvider`,
+  `get_kindling_service(PythonLoggerProvider)` kept returning the default
+  provider even with the Azure Monitor extension loaded (and the plain-python
+  swap on runtimes without a JVM bridge only reached the concrete
+  `SparkLoggerProvider`). The new `GlobalInjector.rebind_singleton` also
+  evicts the cached instance; the extension uses it when the runtime has it.
+  Loggers and services that already hold the earlier provider keep it.
+
 ## [0.13.4] - 2026-10-13
 
 ### Fixed

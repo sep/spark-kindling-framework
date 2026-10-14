@@ -2192,9 +2192,15 @@ def _bind_plain_telemetry_providers(logger=None) -> None:
 
     Same forced-rebind pattern as kindling_ext_otel_azure._register_providers:
     the concrete SparkLoggerProvider stays bound (dual-bind) so callers that
-    resolve the concrete class keep working.
+    resolve the concrete class keep working. The bootstrap has already
+    resolved PythonLoggerProvider by now, so the rebind must also evict that
+    cached singleton (GlobalInjector.rebind_singleton).
+
+    An interface an extension has since rebound (a second initialize_framework
+    after kindling_ext_otel_azure registered its providers) is left alone:
+    the extension's module is already imported, so nothing would register
+    its override again.
     """
-    from injector import singleton
     from kindling.plain_telemetry import (
         PlainPythonLoggerProvider,
         PlainPythonTraceProvider,
@@ -2202,10 +2208,17 @@ def _bind_plain_telemetry_providers(logger=None) -> None:
     from kindling.spark_log_provider import SparkLoggerProvider
     from kindling.spark_trace import SparkTraceProvider
 
-    binder = GlobalInjector.get_injector().binder
-    binder.bind(PythonLoggerProvider, to=PlainPythonLoggerProvider, scope=singleton)
-    binder.bind(SparkLoggerProvider, to=PlainPythonLoggerProvider, scope=singleton)
-    binder.bind(SparkTraceProvider, to=PlainPythonTraceProvider, scope=singleton)
+    for interface, plain in (
+        (PythonLoggerProvider, PlainPythonLoggerProvider),
+        (SparkLoggerProvider, PlainPythonLoggerProvider),
+        (SparkTraceProvider, PlainPythonTraceProvider),
+    ):
+        override = GlobalInjector.rebound_to(interface)
+        if override is not None and override is not plain:
+            if logger:
+                logger.info(f"Keeping {override.__name__} for {interface.__name__}")
+            continue
+        GlobalInjector.rebind_singleton(interface, plain)
     if logger:
         logger.info("No py4j JVM bridge detected; using plain-python telemetry providers")
 

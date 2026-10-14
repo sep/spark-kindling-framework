@@ -652,9 +652,10 @@ class MemoryEntityProvider(
         """
         table_name = self._get_table_name(entity_metadata)
 
-        # Check memory table
+        # Check memory table. ``.columns`` forces analysis: ``spark.table()``
+        # is lazy on Spark Connect and would not raise for a missing table.
         try:
-            self.spark.table(table_name)
+            self.spark.table(table_name).columns
             self.logger.debug(
                 f"Memory entity '{entity_metadata.entityid}' exists (table: {table_name})"
             )
