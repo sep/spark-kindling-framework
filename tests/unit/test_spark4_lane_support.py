@@ -96,3 +96,19 @@ def test_known_failure_matching_covers_prefixes_and_reports_stale_entries():
         "tests/unit/test_b.py::TestB::test_x[1]": "HARNESS: class",
     }
     assert unmatched == ["tests/unit/test_gone.py::test_renamed"]
+
+
+def test_connect_server_gets_the_delta_extension_and_catalog():
+    # The server's static SQL confs otherwise come from whichever module's
+    # builder starts it first; a plain one left DeltaTable merges unresolved
+    # ([INVALID_USAGE_OF_STAR_OR_REGEX] Invalid usage of '*' in DeltaMergeInto).
+    from tests.spark_test_helper import connect_server_submit_args
+
+    args = connect_server_submit_args()
+
+    assert "--conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension" in args
+    assert (
+        "--conf spark.sql.catalog.spark_catalog="
+        "org.apache.spark.sql.delta.catalog.DeltaCatalog" in args
+    )
+    assert args.endswith("pyspark-shell")
