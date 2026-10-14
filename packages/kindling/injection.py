@@ -56,6 +56,7 @@ class GlobalInjector:
         """
         injector = cls.get_injector()
         injector.binder.bind(interface, to=implementation, scope=singleton)
+        injector.__dict__.setdefault("_kindling_rebound_singletons", {})[interface] = implementation
         try:
             scope_binding, _ = injector.binder.get_binding(SingletonScope)
             cached = getattr(scope_binding.provider.get(injector), "_context", None)
@@ -63,6 +64,13 @@ class GlobalInjector:
             return
         if isinstance(cached, dict):
             cached.pop(interface, None)
+
+    @classmethod
+    def rebound_to(cls, interface):
+        """The implementation ``rebind_singleton`` last bound ``interface`` to
+        on the current injector, or None if it never rebound it."""
+        rebound = cls.get_injector().__dict__.get("_kindling_rebound_singletons", {})
+        return rebound.get(interface)
 
     @classmethod
     def autobind(cls, *interfaces):

@@ -2195,6 +2195,11 @@ def _bind_plain_telemetry_providers(logger=None) -> None:
     resolve the concrete class keep working. The bootstrap has already
     resolved PythonLoggerProvider by now, so the rebind must also evict that
     cached singleton (GlobalInjector.rebind_singleton).
+
+    An interface an extension has since rebound (a second initialize_framework
+    after kindling_ext_otel_azure registered its providers) is left alone:
+    the extension's module is already imported, so nothing would register
+    its override again.
     """
     from kindling.plain_telemetry import (
         PlainPythonLoggerProvider,
@@ -2203,9 +2208,17 @@ def _bind_plain_telemetry_providers(logger=None) -> None:
     from kindling.spark_log_provider import SparkLoggerProvider
     from kindling.spark_trace import SparkTraceProvider
 
-    GlobalInjector.rebind_singleton(PythonLoggerProvider, PlainPythonLoggerProvider)
-    GlobalInjector.rebind_singleton(SparkLoggerProvider, PlainPythonLoggerProvider)
-    GlobalInjector.rebind_singleton(SparkTraceProvider, PlainPythonTraceProvider)
+    for interface, plain in (
+        (PythonLoggerProvider, PlainPythonLoggerProvider),
+        (SparkLoggerProvider, PlainPythonLoggerProvider),
+        (SparkTraceProvider, PlainPythonTraceProvider),
+    ):
+        override = GlobalInjector.rebound_to(interface)
+        if override is not None and override is not plain:
+            if logger:
+                logger.info(f"Keeping {override.__name__} for {interface.__name__}")
+            continue
+        GlobalInjector.rebind_singleton(interface, plain)
     if logger:
         logger.info("No py4j JVM bridge detected; using plain-python telemetry providers")
 

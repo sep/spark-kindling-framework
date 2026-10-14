@@ -101,6 +101,37 @@ class TestPlainTelemetryProviderSwap:
         assert isinstance(injector.get(SparkLoggerProvider), PlainPythonLoggerProvider)
         assert isinstance(injector.get(SparkTraceProvider), PlainPythonTraceProvider)
 
+    def test_reinitialization_keeps_an_extension_override(self, injector):
+        # A second initialize_framework runs the swap again after
+        # kindling_ext_otel_azure registered its providers; the extension is
+        # already imported, so nothing would register them again.
+        class ExtensionLoggerProvider(PythonLoggerProvider):
+            def get_logger(self, name, session=None):
+                return MagicMock()
+
+        class ExtensionTraceProvider(SparkTraceProvider):
+            pass
+
+        ExtensionTraceProvider.__abstractmethods__ = frozenset()
+        bootstrap_module._bind_plain_telemetry_providers()
+        GlobalInjector.rebind_singleton(PythonLoggerProvider, ExtensionLoggerProvider)
+        GlobalInjector.rebind_singleton(SparkLoggerProvider, ExtensionLoggerProvider)
+        GlobalInjector.rebind_singleton(SparkTraceProvider, ExtensionTraceProvider)
+        resolved = injector.get(PythonLoggerProvider)
+
+        bootstrap_module._bind_plain_telemetry_providers()
+
+        assert injector.get(PythonLoggerProvider) is resolved
+        assert isinstance(injector.get(SparkLoggerProvider), ExtensionLoggerProvider)
+        assert isinstance(injector.get(SparkTraceProvider), ExtensionTraceProvider)
+
+    def test_repeated_swap_keeps_the_plain_providers(self, injector):
+        bootstrap_module._bind_plain_telemetry_providers()
+        bootstrap_module._bind_plain_telemetry_providers()
+
+        assert isinstance(injector.get(PythonLoggerProvider), PlainPythonLoggerProvider)
+        assert isinstance(injector.get(SparkTraceProvider), PlainPythonTraceProvider)
+
     def test_rebound_providers_are_singletons(self, injector):
         bootstrap_module._bind_plain_telemetry_providers()
 
