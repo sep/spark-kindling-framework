@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 _SCRIPT_PATH = (
     Path(__file__).parent.parent.parent / "scripts" / "check_extension_runtime_packages.py"
 )
@@ -14,15 +16,51 @@ sys.modules[_spec.name] = check
 _spec.loader.exec_module(check)
 
 
-def test_extension_requirements_leave_out_kindling_distributions(tmp_path):
-    (tmp_path / "pyproject.toml").write_text(
-        "[project]\n"
-        'name = "x"\n'
-        'dependencies = ["spark-kindling>=0.14.0,<0.15", "spark_kindling_ext_sdp>=0.3",'
-        ' "matplotlib>=3.7.0"]\n'
+def _write_project(directory, name, dependencies, optional=""):
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "pyproject.toml").write_text(
+        f'[project]\nname = "{name}"\ndependencies = {dependencies}\n{optional}'
     )
 
-    assert check.extension_requirements(tmp_path) == ["matplotlib>=3.7.0"]
+
+def test_extension_requirements_follow_kindling_distributions(tmp_path, monkeypatch):
+    # pip resolves an extension's Kindling requirements too, so their own
+    # requirements (from the repo copies, extras included) are checked.
+    _write_project(
+        tmp_path,
+        "spark-kindling",
+        '["injector>=0.20.1"]',
+        '[project.optional-dependencies]\nadx = ["azure-kusto-data>=4.0"]\n',
+    )
+    _write_project(
+        tmp_path / "packages" / "extensions" / "sdp",
+        "spark-kindling-ext-sdp",
+        '["spark-kindling[adx]>=0.1", "pyyaml>=6.0"]',
+    )
+    extension = tmp_path / "packages" / "extensions" / "x"
+    _write_project(
+        extension,
+        "spark-kindling-ext-x",
+        '["spark-kindling>=0.14.0,<0.15", "spark_kindling_ext_sdp>=0.3", "matplotlib>=3.7.0"]',
+    )
+    monkeypatch.setattr(check, "REPO_ROOT", tmp_path)
+
+    assert sorted(check.extension_requirements(extension)) == [
+        "azure-kusto-data>=4.0",
+        "injector>=0.20.1",
+        "matplotlib>=3.7.0",
+        "pyyaml>=6.0",
+    ]
+
+
+def test_extension_requirements_reject_an_unknown_kindling_distribution(tmp_path, monkeypatch):
+    _write_project(tmp_path, "spark-kindling", "[]")
+    extension = tmp_path / "packages" / "extensions" / "x"
+    _write_project(extension, "spark-kindling-ext-x", '["spark-kindling-ext-missing>=1.0"]')
+    monkeypatch.setattr(check, "REPO_ROOT", tmp_path)
+
+    with pytest.raises(SystemExit, match="spark-kindling-ext-missing"):
+        check.extension_requirements(extension)
 
 
 def test_resolve_pins_the_runtime_key_packages(monkeypatch):

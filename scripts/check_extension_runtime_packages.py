@@ -5,7 +5,8 @@ replacing their key packages.
 The cluster bootstrap installs an extension's requirements with the
 runtime's key packages pinned at their installed versions, and drops the
 pins (replacing them) only when the requirements can't be met otherwise.
-This resolves each extension's requirements (`uv pip compile`, against the
+This resolves each extension's requirements, with those of the Kindling
+distributions it requires taken from this repo (`uv pip compile`, against the
 package index) with the key package versions each runtime ships pinned, and
 fails when a runtime would need one of them replaced.
 
@@ -111,15 +112,57 @@ def _is_kindling_requirement(requirement: str) -> bool:
     return _requirement_name(requirement).startswith("spark-kindling")
 
 
+def _requirement_extras(requirement: str) -> list[str]:
+    head = requirement.split(";")[0]
+    if "[" not in head:
+        return []
+    return [extra.strip() for extra in head.split("[", 1)[1].split("]", 1)[0].split(",")]
+
+
+def _workspace_projects() -> dict[str, dict]:
+    """The ``[project]`` table of each Kindling distribution in this repo."""
+    projects = {}
+    for pyproject in [REPO_ROOT / "pyproject.toml", *REPO_ROOT.glob("packages/**/pyproject.toml")]:
+        project = tomllib.loads(pyproject.read_text()).get("project", {})
+        if _is_kindling_requirement(project.get("name", "")):
+            projects[_requirement_name(project["name"])] = project
+    return projects
+
+
 def extension_requirements(extension_dir: Path) -> list[str]:
-    """An extension's install requirements, without Kindling's own
-    distributions (the bootstrap never installs those for an extension)."""
-    project = tomllib.loads((extension_dir / "pyproject.toml").read_text())["project"]
-    return [
-        requirement
-        for requirement in project.get("dependencies", [])
-        if not _is_kindling_requirement(requirement)
-    ]
+    """The requirements pip processes when the bootstrap installs the extension.
+
+    Its Kindling requirements (``spark-kindling``, other extensions) are
+    followed through this repo's copies, which are the versions the cluster
+    has installed, so their own requirements are checked too.
+    """
+    projects = _workspace_projects()
+    root = tomllib.loads((extension_dir / "pyproject.toml").read_text())["project"]
+    requirements: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    pending = [(root, "")]
+    while pending:
+        project, extra = pending.pop()
+        key = (_requirement_name(project["name"]), extra)
+        if key in seen:
+            continue
+        seen.add(key)
+        listed = (
+            project.get("optional-dependencies", {}).get(extra, [])
+            if extra
+            else project.get("dependencies", [])
+        )
+        for requirement in listed:
+            if not _is_kindling_requirement(requirement):
+                if requirement not in requirements:
+                    requirements.append(requirement)
+                continue
+            dependency = projects.get(_requirement_name(requirement))
+            if dependency is None:
+                raise SystemExit(f"{requirement!r} is not a Kindling distribution in this repo")
+            pending.append((dependency, ""))
+            pending.extend((dependency, name) for name in _requirement_extras(requirement))
+    return requirements
 
 
 def resolve(
