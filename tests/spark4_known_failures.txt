@@ -16,26 +16,6 @@
 # Categories: BUG (Kindling/extension defect on Spark 4), HARNESS (test assumes
 # classic/py4j or Spark 3.5), SPARK4 (expected Spark 4 behaviour change).
 
-# BUG: entity_provider_eventhub uses decode(binary, 'UTF-8'), which raises
-# MALFORMED_CHARACTER_CODING on invalid UTF-8 in Spark 4 (lenient U+FFFD in 3.5).
-all tests/integration/test_entity_provider_eventhub_preprocessing.py::TestAmqpHeaderDecodingIntegration::test_full_preprocessing_path_amqp_disabled_does_not_claim_decoded_values | BUG: Spark 4 decode() is strict on malformed UTF-8
-
-# BUG (Connect only): entity_provider_eventhub builds its AMQP header UDF at import time
-# (_decode_amqp_headers_udf = _build_decode_amqp_headers_udf()); imported before the Connect
-# session exists it is a classic UDF -> NOT_COLUMN_OR_STR on Connect columns.
-connect tests/integration/test_entity_provider_eventhub_preprocessing.py::TestAmqpPrimitiveDecodeParity | BUG: import-time classic UDF used on Spark Connect
-connect tests/integration/test_entity_provider_eventhub_preprocessing.py::TestAmqpHeaderDecoding::test_decodes_amqp_long_value | BUG: import-time classic UDF used on Spark Connect
-connect tests/integration/test_entity_provider_eventhub_preprocessing.py::TestAmqpHeaderDecoding::test_decodes_amqp_timestamp_value | BUG: import-time classic UDF used on Spark Connect
-connect tests/integration/test_entity_provider_eventhub_preprocessing.py::TestAmqpHeaderDecoding::test_decodes_amqp_str8_utf8_value | BUG: import-time classic UDF used on Spark Connect
-connect tests/integration/test_entity_provider_eventhub_preprocessing.py::TestAmqpHeaderDecoding::test_decodes_amqp_uint_and_boolean_values | BUG: import-time classic UDF used on Spark Connect
-connect tests/integration/test_entity_provider_eventhub_preprocessing.py::TestAmqpHeaderDecoding::test_unrecognized_constructor_falls_back_to_lossy_utf8 | BUG: import-time classic UDF used on Spark Connect
-connect tests/integration/test_entity_provider_eventhub_preprocessing.py::TestAmqpHeaderDecoding::test_decodes_amqp_value_under_non_x_opt_key_when_structurally_exact | BUG: import-time classic UDF used on Spark Connect
-connect tests/integration/test_entity_provider_eventhub_preprocessing.py::TestAmqpHeaderDecoding::test_non_x_opt_key_left_plain_when_not_structurally_exact_amqp | BUG: import-time classic UDF used on Spark Connect
-connect tests/integration/test_entity_provider_eventhub_preprocessing.py::TestAmqpHeaderDecoding::test_amqp_headers_composes_with_avro_mode | BUG: import-time classic UDF used on Spark Connect
-connect tests/integration/test_entity_provider_eventhub_preprocessing.py::TestAmqpHeaderDecodingIntegration::test_full_preprocessing_path_batch_amqp_enabled | BUG: import-time classic UDF used on Spark Connect
-connect tests/integration/test_entity_provider_eventhub_preprocessing.py::TestAmqpHeaderDecodingIntegration::test_streaming_schema_matches_batch_shape | BUG: import-time classic UDF used on Spark Connect
-connect tests/integration/test_entity_provider_eventhub_preprocessing.py::TestAmqpHeaderDecodingIntegration::test_pipe_extracts_identity_and_enqueue_time_without_amqp_decoder | BUG: import-time classic UDF used on Spark Connect
-
 # BUG (Connect only): MemoryEntityProvider.check_entity_exists probes with a bare
 # spark.table(name), which is lazy on Spark Connect and never raises -> a missing SCD2 entity
 # 'exists', the temporal-column bootstrap is skipped, and __is_current cannot be resolved.

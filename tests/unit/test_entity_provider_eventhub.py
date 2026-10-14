@@ -640,7 +640,7 @@ class TestDecodeAmqpPrimitiveFunction:
 
 
 class TestAmqpHeadersUdfWorkerSafety:
-    """The exact regression this guards: _decode_amqp_headers_udf must be
+    """The exact regression this guards: the header-decoding UDF must be
     unpicklable and callable in a process where `kindling` is not
     importable -- the condition on every Spark executor, by design (see
     _build_decode_amqp_headers_udf's docstring). No existing in-process
@@ -653,9 +653,9 @@ class TestAmqpHeadersUdfWorkerSafety:
         import sys
 
         import pyspark.cloudpickle as cloudpickle
-        from kindling.entity_provider_eventhub import _decode_amqp_headers_udf
+        from kindling.entity_provider_eventhub import _build_decode_amqp_headers_udf
 
-        pickled = cloudpickle.dumps(_decode_amqp_headers_udf.func)
+        pickled = cloudpickle.dumps(_build_decode_amqp_headers_udf().func)
 
         script = """
 import sys

@@ -66,6 +66,17 @@ All notable changes to spark-kindling are documented here.
   now looked up from the public type classes; the accepted names and
   aliases are unchanged (`char`/`varchar`, which need a length and always
   failed, are now rejected with the usual invalid-type error).
+- **Event Hubs `preprocess: kafka` tolerates invalid UTF-8 on Spark 4.**
+  Spark 4.0's `decode(bin, 'UTF-8')` fails the query with
+  `[MALFORMED_CHARACTER_CODING]` where Spark 3.x substituted U+FFFD. On
+  Spark 4 the body and plain header values now decode with
+  `make_valid_utf8(cast(... AS STRING))`, which keeps the lenient result on
+  classic and Spark Connect sessions alike.
+- **Event Hubs `amqp_headers` works over Spark Connect.** The header
+  decoding UDF was built at import time, so importing Kindling before a
+  Spark Connect session existed (Databricks standard/shared access mode)
+  produced a classic UDF that rejected Connect columns
+  (`[NOT_COLUMN_OR_STR]`). It is now built when the transform is applied.
 
 ## [0.13.4] - 2026-10-13
 
