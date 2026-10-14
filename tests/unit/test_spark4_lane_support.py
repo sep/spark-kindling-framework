@@ -11,7 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.conftest import SPARK4_KNOWN_FAILURES_FILE, load_spark4_known_failures
+from tests.conftest import (
+    SPARK4_KNOWN_FAILURES_FILE,
+    _match_spark4_known_failures,
+    load_spark4_known_failures,
+)
 
 _SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "ensure_spark4_runtime.py"
 _spec = importlib.util.spec_from_file_location("ensure_spark4_runtime", _SCRIPT_PATH)
@@ -73,3 +77,22 @@ def test_known_failures_rejects_malformed_lines(tmp_path, line):
     path.write_text(f"# comment\n\n{line}\n")
     with pytest.raises(ValueError, match="known.txt:3"):
         load_spark4_known_failures(path)
+
+
+def test_known_failure_matching_covers_prefixes_and_reports_stale_entries():
+    entries = [
+        ({"classic"}, "tests/unit/test_a.py::test_one", "BUG: one"),
+        ({"classic"}, "tests/unit/test_b.py::TestB", "HARNESS: class"),
+        ({"classic"}, "tests/unit/test_gone.py::test_renamed", "BUG: stale"),
+    ]
+    nodeids = [
+        "tests/unit/test_a.py::test_one",
+        "tests/unit/test_a.py::test_one_more",
+        "tests/unit/test_b.py::TestB::test_x[1]",
+    ]
+    matches, unmatched = _match_spark4_known_failures(nodeids, entries)
+    assert matches == {
+        "tests/unit/test_a.py::test_one": "BUG: one",
+        "tests/unit/test_b.py::TestB::test_x[1]": "HARNESS: class",
+    }
+    assert unmatched == ["tests/unit/test_gone.py::test_renamed"]

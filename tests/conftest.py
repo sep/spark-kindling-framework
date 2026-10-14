@@ -295,26 +295,51 @@ def load_spark4_known_failures(path=SPARK4_KNOWN_FAILURES_FILE):
     return entries
 
 
+def _match_spark4_known_failures(nodeids, entries):
+    """Pair each collected nodeid with its known-failure entry.
+
+    Returns ``(matches, unmatched)``: ``matches`` maps a nodeid to the reason
+    of the first entry equal to it or prefixing it (``<entry>::...``), and
+    ``unmatched`` lists the entries' nodeids that matched nothing.
+    """
+    matches = {}
+    used = set()
+    for nodeid in nodeids:
+        for _modes, entry, reason in entries:
+            if nodeid == entry or nodeid.startswith(entry + "::"):
+                matches[nodeid] = reason
+                used.add(entry)
+                break
+    unmatched = [entry for _modes, entry, _reason in entries if entry not in used]
+    return matches, unmatched
+
+
 def _mark_spark4_known_failures(items):
     """Spark 4 lane only: strict-xfail the curated known failures.
 
     Strict, so a fix (or a test that stops failing for another reason) turns
     the lane red with XPASS until its entry is removed -- the list cannot rot.
+    ``poe test-spark4`` also sets KINDLING_SPARK4_LANE_FULL=1, which makes an
+    entry that matches no collected test (renamed or deleted) a usage error;
+    a partial run (a single file, ``-k``) skips that check.
     No-op under Spark 3.x, so the default suites never see these markers.
     """
     mode = _spark4_mode()
     if mode is None:
         return
     entries = [e for e in load_spark4_known_failures() if mode in e[0]]
+    matches, unmatched = _match_spark4_known_failures([item.nodeid for item in items], entries)
+    if unmatched and os.getenv("KINDLING_SPARK4_LANE_FULL") == "1":
+        raise pytest.UsageError(
+            f"{SPARK4_KNOWN_FAILURES_FILE.name}: {mode} entries match no collected test "
+            f"(renamed or removed? delete or fix them): {', '.join(unmatched)}"
+        )
     for item in items:
-        for _modes, nodeid, reason in entries:
-            if item.nodeid == nodeid or item.nodeid.startswith(nodeid + "::"):
-                item.add_marker(
-                    pytest.mark.xfail(
-                        reason=f"Spark 4 ({mode}) known failure: {reason}", strict=True
-                    )
-                )
-                break
+        reason = matches.get(item.nodeid)
+        if reason is not None:
+            item.add_marker(
+                pytest.mark.xfail(reason=f"Spark 4 ({mode}) known failure: {reason}", strict=True)
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════

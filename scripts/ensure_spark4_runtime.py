@@ -21,7 +21,6 @@ stdout; ``poe test-spark4`` puts it first on PATH.
 
 Usage:
     poe spark4-runtime            # provision/reuse .venv-spark4
-    python scripts/ensure_spark4_runtime.py [venv_dir]
 
 Requires ``uv`` on PATH and Java 17+ (Spark 4.x floor) to run the tests.
 """
