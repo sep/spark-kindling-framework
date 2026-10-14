@@ -558,37 +558,76 @@ def test_colocate_reinstalls_regular_package_owner_next_to_added_modules(monkeyp
     """azure-core-tracing-opentelemetry adds azure/core/tracing/ext/... to the
     job's virtualenv while azure-core stays in the runtime's site-packages;
     azure.core resolves to the latter only, so the plugin can't be imported
-    until azure-core (same version) is installed next to it."""
+    until azure-core (same version) is installed next to it. A plugin that had
+    installed into azure-core there moves with it, or the new copy would hide
+    it. Loaded azure.core packages are kept (a preloaded SDK's exception
+    classes stay the ones later imports get) and gain the new directory."""
+    import types
+
     import kindling.bootstrap as bootstrap
 
-    dists = [
+    azure_core_files = [
+        "azure/core/__init__.py",
+        "azure/core/exceptions.py",
+        "azure/core/tracing/__init__.py",
+        "azure/core/tracing/ext/__init__.py",
+    ]
+    before = [
         _fake_dist(
             "azure-core-tracing-opentelemetry",
             "1.0.0b13",
             ["azure/core/tracing/ext/opentelemetry_span/__init__.py"],
             location="/venv/site",
         ),
+        _fake_dist("azure-core", "1.34.0", azure_core_files, location="/system/site"),
         _fake_dist(
-            "azure-core",
-            "1.34.0",
-            [
-                "azure/core/__init__.py",
-                "azure/core/tracing/__init__.py",
-                "azure/core/tracing/ext/__init__.py",
-            ],
+            "azure-core-plugin",
+            "2.0",
+            ["azure/core/plugin/__init__.py"],
             location="/system/site",
         ),
+        _fake_dist("unrelated", "1.0", ["unrelated/__init__.py"], location="/system/site"),
     ]
-    monkeypatch.setattr("importlib.metadata.distributions", lambda: iter(dists))
+    after = [
+        before[0],
+        _fake_dist("azure-core", "1.34.0", azure_core_files, location="/venv/site"),
+        _fake_dist(
+            "azure-core-plugin", "2.0", ["azure/core/plugin/__init__.py"], location="/venv/site"
+        ),
+        *before[1:],
+    ]
     run = MagicMock(return_value=_completed())
+    monkeypatch.setattr(
+        "importlib.metadata.distributions", lambda: iter(after if run.called else before)
+    )
     monkeypatch.setattr(bootstrap.subprocess, "run", run)
 
-    modules = bootstrap._colocate_extended_packages(MagicMock(), {"azure-core": "1.34.0"})
+    azure_core = types.ModuleType("azure.core")
+    azure_core.__path__ = ["/system/site/azure/core"]
+    tracing_ext = types.ModuleType("azure.core.tracing.ext")
+    tracing_ext.__path__ = ["/system/site/azure/core/tracing/ext"]
+    exceptions = types.ModuleType("azure.core.exceptions")
+    exceptions.HttpResponseError = type("HttpResponseError", (Exception,), {})
+    preloaded_error = exceptions.HttpResponseError
+    monkeypatch.setitem(sys.modules, "azure.core", azure_core)
+    monkeypatch.setitem(sys.modules, "azure.core.tracing.ext", tracing_ext)
+    monkeypatch.setitem(sys.modules, "azure.core.exceptions", exceptions)
 
+    result = bootstrap._colocate_extended_packages(
+        MagicMock(), {"azure-core": "1.34.0", "azure-core-plugin": "2.0", "unrelated": "1.0"}
+    )
+
+    assert result is None
     command = run.call_args.args[0]
-    assert command[-1] == "azure-core==1.34.0"
+    assert command[-2:] == ["azure-core==1.34.0", "azure-core-plugin==2.0"]
     assert "--no-deps" in command and "--ignore-installed" in command
-    assert modules == {"azure.core", "azure.core.tracing", "azure.core.tracing.ext"}
+    assert sys.modules["azure.core"] is azure_core
+    assert sys.modules["azure.core.exceptions"].HttpResponseError is preloaded_error
+    assert azure_core.__path__ == ["/system/site/azure/core", "/venv/site/azure/core"]
+    assert tracing_ext.__path__ == [
+        "/system/site/azure/core/tracing/ext",
+        "/venv/site/azure/core/tracing/ext",
+    ]
 
 
 def test_colocate_leaves_packages_installed_in_one_place_alone(monkeypatch):
@@ -608,11 +647,10 @@ def test_colocate_leaves_packages_installed_in_one_place_alone(monkeypatch):
     run = MagicMock()
     monkeypatch.setattr(bootstrap.subprocess, "run", run)
 
-    modules = bootstrap._colocate_extended_packages(
+    bootstrap._colocate_extended_packages(
         MagicMock(), {"azure-core": "1.30.2", "old-plugin": "1.0"}
     )
 
-    assert modules == set()
     run.assert_not_called()
 
 

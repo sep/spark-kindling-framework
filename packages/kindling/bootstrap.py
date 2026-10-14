@@ -1523,7 +1523,7 @@ def _pip_install_keeping_installed(logger, args: List[str]):
                 return result
 
 
-def _colocate_extended_packages(logger, before: Mapping[str, Any]) -> set:
+def _colocate_extended_packages(logger, before: Mapping[str, Any]) -> None:
     """Copy a regular package next to the files an install added into it.
 
     A distribution can install modules into another distribution's regular
@@ -1532,8 +1532,14 @@ def _colocate_extended_packages(logger, before: Mapping[str, Any]) -> set:
     owner where the runtime installed it (Databricks: the system
     site-packages, behind the job's virtualenv), Python resolves the package
     to that directory only and the added modules can't be imported. The owner
-    is reinstalled, at the same version, where the install put the new files.
-    Returns the module names whose cached imports are now stale."""
+    is reinstalled, at the same version, where the install put the new files,
+    together with the other distributions that had installed into it there
+    (their files would otherwise be hidden behind the new copy).
+
+    Loaded packages of a reinstalled distribution are kept, not evicted, so
+    classes already imported from them (an azure.core exception a preloaded
+    SDK raises) stay the ones later imports get; the new directory is
+    appended to each one's ``__path__`` so the added modules resolve."""
     from importlib.metadata import distributions
 
     owners: Dict[str, Tuple[str, str, str]] = {}  # package dir -> owner
@@ -1551,20 +1557,34 @@ def _colocate_extended_packages(logger, before: Mapping[str, Any]) -> set:
             if path.endswith("/__init__.py") and not path.startswith(".."):
                 owners.setdefault(path[: -len("/__init__.py")], (name, dist.version, location))
 
-    split: Dict[str, str] = {}
-    for name, version, location, files in installed:
-        if _distribution_version(before.get(name)) == version:
-            continue  # not added or changed by this install
+    def owners_of(files):
         for path in files:
             parts = path.split("/")[:-1]
             for depth in range(1, len(parts) + 1):
                 owner = owners.get("/".join(parts[:depth]))
-                if owner and owner[0] != name and owner[2] != location:
-                    split[owner[0]] = owner[1]
-    if not split:
-        return set()
+                if owner:
+                    yield owner
 
-    pins = [f"{name}=={version}" for name, version in sorted(split.items())]
+    split: Dict[str, Tuple[str, str]] = {}  # owner -> (version, location)
+    for name, version, location, files in installed:
+        if _distribution_version(before.get(name)) == version:
+            continue  # not added or changed by this install
+        for owner in owners_of(files):
+            if owner[0] != name and owner[2] != location:
+                split[owner[0]] = (owner[1], owner[2])
+    if not split:
+        return
+
+    relocated = dict(split)  # distribution -> (version, location it is moved from)
+    for name, version, location, files in installed:
+        if name in relocated:
+            continue
+        for owner in owners_of(files):
+            if owner[0] in split and owner[0] != name and location == split[owner[0]][1]:
+                relocated[name] = (version, location)  # installed into the owner there
+                break
+
+    pins = [f"{name}=={version}" for name, (version, _location) in sorted(relocated.items())]
     logger.info(f"Reinstalling {', '.join(pins)} next to the packages installed into it")
     result = subprocess.run(
         [
@@ -1582,12 +1602,23 @@ def _colocate_extended_packages(logger, before: Mapping[str, Any]) -> set:
     )
     if result.returncode != 0:
         logger.warning(f"Could not reinstall {', '.join(pins)}: {result.stderr}")
-        return set()
-    modules: set = set()
+        return
+
     for dist in distributions():
-        if _normalized_distribution_name(dist) in split:
-            modules |= _distribution_module_names(dist)
-    return modules
+        name = _normalized_distribution_name(dist)
+        location = os.path.realpath(str(dist.locate_file("")))
+        if name not in relocated or location == relocated[name][1]:
+            continue  # not reinstalled, or the original copy
+        for path in dist.files or []:
+            path = str(path).replace("\\", "/")
+            if not path.endswith("/__init__.py") or path.startswith(".."):
+                continue
+            package = path[: -len("/__init__.py")]
+            module = sys.modules.get(package.replace("/", "."))
+            search_path = getattr(module, "__path__", None)
+            directory = os.path.join(location, package)
+            if isinstance(search_path, list) and directory not in search_path:
+                search_path.append(directory)
 
 
 def _report_replaced_distributions(logger, before: Mapping[str, Any], package_spec: str) -> None:
@@ -1924,7 +1955,7 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                             sys.path.insert(0, path)
                             logger.debug(f"Moved to front of sys.path: {path}")
 
-                    colocated_modules = _colocate_extended_packages(logger, versions_before)
+                    _colocate_extended_packages(logger, versions_before)
                     _report_replaced_distributions(logger, versions_before, package_spec)
                     importlib.invalidate_caches()
                     _evict_stale_modules(
@@ -1937,7 +1968,6 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                             "azure.monitor.opentelemetry",
                             "opentelemetry",
                         }
-                        | colocated_modules
                         | _modules_of_changed_distributions(versions_before),
                     )
 
