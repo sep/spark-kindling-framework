@@ -15,19 +15,3 @@
 #
 # Categories: BUG (Kindling/extension defect on Spark 4), HARNESS (test assumes
 # classic/py4j or Spark 3.5), SPARK4 (expected Spark 4 behaviour change).
-
-# BUG (Connect only): MemoryEntityProvider.check_entity_exists probes with a bare
-# spark.table(name), which is lazy on Spark Connect and never raises -> a missing SCD2 entity
-# 'exists', the temporal-column bootstrap is skipped, and __is_current cannot be resolved.
-connect tests/integration/test_entity_provider_memory_scd2.py::TestMemoryProviderMergeSCD2::test_first_merge_bootstraps_temporal_columns_on_missing_entity | BUG: lazy spark.table() existence probe on Spark Connect
-connect tests/integration/test_entity_provider_memory_scd2.py::TestMemoryProviderMergeSCD2::test_unchanged_row_produces_no_new_version | BUG: lazy spark.table() existence probe on Spark Connect
-connect tests/integration/test_entity_provider_memory_scd2.py::TestMemoryProviderMergeSCD2::test_changed_row_closes_old_version_and_opens_new | BUG: lazy spark.table() existence probe on Spark Connect
-connect tests/integration/test_entity_provider_memory_scd2.py::TestMemoryProviderMergeSCD2::test_close_on_missing_closes_absent_key_but_not_unchanged_present_key | BUG: lazy spark.table() existence probe on Spark Connect
-connect tests/integration/test_entity_provider_memory_scd2.py::TestMemoryProviderMergeSCD2::test_sequence_by_stale_row_is_ignored | BUG: lazy spark.table() existence probe on Spark Connect
-connect tests/integration/test_entity_provider_memory_scd2.py::TestMemoryProviderMergeSCD2::test_sequence_by_effective_columns_carry_sequence_values | BUG: lazy spark.table() existence probe on Spark Connect
-connect tests/integration/test_entity_provider_memory_scd2.py::TestMemoryProviderMergeSCD2::test_delete_when_closes_without_inserting | BUG: lazy spark.table() existence probe on Spark Connect
-connect tests/integration/test_entity_provider_memory_scd2.py::TestMemoryProviderMergeSCD2::test_delete_when_unknown_key_is_a_no_op | BUG: lazy spark.table() existence probe on Spark Connect
-connect tests/integration/test_entity_provider_memory_scd2.py::TestMemoryProviderMergeSCD2::test_optimize_unchanged_matches_default_classification | BUG: lazy spark.table() existence probe on Spark Connect
-connect tests/integration/test_entity_provider_memory_scd2.py::TestMemoryProviderMergeSCD2::test_explicit_tracked_columns_ignore_untracked_changes | BUG: lazy spark.table() existence probe on Spark Connect
-connect tests/integration/test_entity_provider_memory_scd2.py::TestMemoryProviderMergeSCD2::test_auto_derived_tracked_columns_excludes_business_and_sequence_columns | BUG: lazy spark.table() existence probe on Spark Connect
-connect tests/integration/test_temporal_extension_integration.py::test_ingest_conditions_end_to_end_against_memory_provider | BUG: lazy spark.table() existence probe on Spark Connect (memory provider)

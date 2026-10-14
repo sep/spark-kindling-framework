@@ -77,6 +77,11 @@ All notable changes to spark-kindling are documented here.
   Spark Connect session existed (Databricks standard/shared access mode)
   produced a classic UDF that rejected Connect columns
   (`[NOT_COLUMN_OR_STR]`). It is now built when the transform is applied.
+- **The memory provider no longer reports missing entities as existing over
+  Spark Connect.** `check_entity_exists` probed with `spark.table(name)`,
+  which is lazy on Connect and never raises, so SCD2 merges into a new
+  memory entity skipped the temporal-column bootstrap. The probe now forces
+  analysis.
 
 ## [0.13.4] - 2026-10-13
 
