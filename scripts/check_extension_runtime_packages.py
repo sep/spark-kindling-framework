@@ -46,7 +46,11 @@ RUNTIMES = {
             "opentelemetry-semantic-conventions": "0.53b1",
             "pandas": "2.2.3",
             "protobuf": "5.29.4",
+            # Spark is bundled with the runtime, not a pip install; these
+            # are the versions it provides (Apache Spark 4.0.0).
+            "py4j": "0.10.9.9",
             "pyarrow": "19.0.1",
+            "pyspark": "4.0.0",
             "typing-extensions": "4.12.2",
         },
     ),
@@ -64,6 +68,9 @@ RUNTIMES = {
             "protobuf": "3.20.3",
             "py4j": "0.10.9.7",
             "pyarrow": "14.0.2",
+            # The runtime ships a vendor build (3.5.1.5.4.20240407, not on PyPI);
+            # its public base release stands in for it.
+            "pyspark": "3.5.1",
             "typing-extensions": "4.9.0",
         },
     ),
@@ -84,6 +91,9 @@ RUNTIMES = {
             "protobuf": "6.33.5",
             "py4j": "0.10.9.7",
             "pyarrow": "23.0.1",
+            # The runtime ships a vendor build (3.5.1.5.4.20240407, not on PyPI);
+            # its public base release stands in for it.
+            "pyspark": "3.5.1",
             "typing-extensions": "4.16.0",
         },
     ),
