@@ -26,6 +26,10 @@ These lanes run as part of normal CI:
 - unit tests / quality lanes
 - integration tests
 - KDA packaging tests
+- Spark 4 tests (`poe test-spark4`, classic and Spark Connect legs) when the
+  change is classified as runtime (anything other than CLI/SDK/docs-only);
+  they run in an isolated `.venv-spark4` (see
+  [Testing: Spark 4 Lane](testing.md#spark-4-lane))
 - summary reporting
 
 ### On Release Tags

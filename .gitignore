@@ -120,6 +120,7 @@ platform-wheels/
 security-reports/
 coverage.xml
 .venv-sdp41
+.venv-spark4
 dev-attach.sh
 
 # Beads / Dolt files (added by bd init)

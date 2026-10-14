@@ -68,6 +68,74 @@ def _worker_scoped_ivy_dir():
     return ivy_dir
 
 
+def spark_connect_mode() -> bool:
+    """Whether test sessions are Spark Connect sessions (the Spark 4 lane's
+    ``SPARK_API_MODE=connect`` switch).
+
+    PySpark 4.0+ honours ``SPARK_API_MODE=connect`` in every
+    ``SparkSession.builder...getOrCreate()``: with a ``local[...]`` master it
+    starts an in-process Spark Connect server (the builder's configs, Delta
+    packages included, go to that server) and returns a Connect client
+    session. Tests that build their own sessions therefore switch with no code
+    change; this helper only has to skip what a Connect session cannot do --
+    py4j/JVM introspection and ``sparkContext``. PySpark 3.x ignores the
+    variable, so it is reported as classic there.
+    """
+    if os.getenv("SPARK_API_MODE", "").strip().lower() != "connect":
+        return False
+    import pyspark
+
+    return int(pyspark.__version__.split(".")[0]) >= 4
+
+
+# Delta Connect server plugin for the in-process Spark Connect server. The
+# delta-spark Python client sends DeltaTable operations (forPath/forName,
+# merge, history, ...) as Spark Connect protocol extensions; without the
+# server-side plugin they fail with "No handler found for extension".
+# Databricks ships its own; locally it has to be on the server's classpath.
+# protobuf-java 3.25.x: delta-connect-common needs MapFieldReflectionAccessor,
+# which the 3.24.4 Ivy resolves transitively lacks.
+_DELTA_CONNECT_PROTOBUF = "com.google.protobuf:protobuf-java:3.25.1"
+_DELTA_CONNECT_PLUGINS = {
+    "spark.connect.extensions.relation.classes": (
+        "org.apache.spark.sql.connect.delta.DeltaRelationPlugin"
+    ),
+    "spark.connect.extensions.command.classes": (
+        "org.apache.spark.sql.connect.delta.DeltaCommandPlugin"
+    ),
+}
+
+
+def connect_server_submit_args() -> str:
+    """``PYSPARK_SUBMIT_ARGS`` that put Delta (and the Delta Connect plugin)
+    on the local Spark Connect server, for the Spark 4 lane's connect mode.
+
+    ``--packages`` takes precedence over the builder's ``spark.jars.packages``,
+    so delta-spark itself is listed too (same version as the installed
+    delta-spark wheel, Scala 2.13 as Spark 4 requires).
+    """
+    from importlib.metadata import version
+
+    delta = version("delta-spark")
+    packages = ",".join(
+        [
+            f"io.delta:delta-spark_2.13:{delta}",
+            f"io.delta:delta-connect-server_2.13:{delta}",
+            _DELTA_CONNECT_PROTOBUF,
+        ]
+    )
+    confs = " ".join(f"--conf {key}={value}" for key, value in _DELTA_CONNECT_PLUGINS.items())
+    return f"--packages {packages} {confs} pyspark-shell"
+
+
+def set_spark_log_level(spark, level: str) -> None:
+    """``sparkContext.setLogLevel`` for classic sessions; Connect sessions have
+    no ``sparkContext`` (the local Connect server logs at Spark's default)."""
+    if spark_connect_mode():
+        return
+    spark.sparkContext.setLogLevel(level)
+
+
 def _get_azure_cloud_config(cloud):
     """
     Get cloud-specific configuration for Azure storage.
@@ -215,7 +283,7 @@ def get_local_spark_session(
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
 
     # Set log level to reduce noise in tests
-    spark.sparkContext.setLogLevel("WARN")
+    set_spark_log_level(spark, "WARN")
 
     return spark
 
@@ -448,6 +516,11 @@ def _teardown_non_delta_jvm() -> bool:
     """
     from pyspark import SparkContext
 
+    if spark_connect_mode():
+        # The py4j gateway (if any) belongs to the in-process Connect server,
+        # which was started with this builder's Delta packages; the client
+        # session cannot be introspected or relaunched from here.
+        return False
     gateway = SparkContext._gateway
     if gateway is None:
         return False
@@ -509,7 +582,7 @@ def get_standalone_spark_session(app_name="KindlingTest"):
     )
 
     spark = configure_spark_with_delta_pip(builder).getOrCreate()
-    spark.sparkContext.setLogLevel("ERROR")
+    set_spark_log_level(spark, "ERROR")
 
     return spark
 

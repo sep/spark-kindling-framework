@@ -35,6 +35,8 @@ from kindling.watermarking import (
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StringType, StructField, StructType
 
+from tests.spark_test_helper import set_spark_log_level
+
 
 @pytest.fixture(scope="module")
 def spark():
@@ -45,7 +47,7 @@ def spark():
         .config("spark.ui.enabled", "false")
         .getOrCreate()
     )
-    session.sparkContext.setLogLevel("ERROR")
+    set_spark_log_level(session, "ERROR")
     yield session
     session.stop()
 

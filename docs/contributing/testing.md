@@ -313,6 +313,7 @@ poe test-unit         # Run unit tests only
 poe test-integration  # Run integration tests only
 poe test-quick        # Run unit + integration (skip system tests)
 poe test-coverage     # Run tests with HTML coverage report (output: test-results/htmlcov/)
+poe test-spark4       # Unit + integration on Spark 4.0 (--mode classic|connect); see "Spark 4 Lane"
 
 # System tests (require cloud credentials) - flexible filtering
 poe test-system                                    # All tests on all platforms
@@ -348,6 +349,51 @@ pytest tests/ -v -s
 # Run in parallel (requires pytest-xdist)
 pytest tests/ -n auto
 ```
+
+---
+
+## Spark 4 Lane
+
+The default environment (and every other CI lane) runs PySpark 3.5 with
+delta-spark 3.x, but Databricks Runtime 17.x (including the CI cluster,
+DBR 17.3 LTS) runs Spark 4.0 on Scala 2.13 / Python 3.12, and Spark 4
+changes behaviour Kindling relies on (for example, `functions.expr()` parses
+lazily, and `decode()` rejects malformed UTF-8). The Spark 4 lane runs the
+unit and integration suites against Spark 4.0 without touching the default
+environment:
+
+```bash
+poe spark4-runtime                                  # provision/reuse .venv-spark4
+poe test-spark4                                     # classic (py4j) sessions
+poe test-spark4 --mode connect --workers 4          # Spark Connect sessions
+```
+
+- `scripts/ensure_spark4_runtime.py` builds `.venv-spark4/` (gitignored)
+  with uv: Python 3.12, every non-Spark dependency at its `uv.lock` pin, and
+  `pyspark[connect]` 4.0 + `delta-spark` 4.0 (+ the pinned Connect gRPC
+  stack). `configure_spark_with_delta_pip` derives the Scala 2.13 Delta
+  coordinates from the installed delta-spark. The venv is rebuilt when
+  `uv.lock` or the Spark 4 pins change. `uv.lock`'s Spark 3.5 pins are
+  untouched.
+- `--mode connect` sets `SPARK_API_MODE=connect`, which makes every
+  `SparkSession.builder...getOrCreate()` (the shared helper and tests' own
+  fixtures alike) start an in-process Spark Connect server and return a
+  Connect session. `SPARK_TESTING=1` gives each server an ephemeral port so
+  xdist workers and subprocess tests do not collide on 15002, and
+  `tests/conftest.py` sets `PYSPARK_SUBMIT_ARGS` so the server loads the
+  Delta Connect plugin (`delta-connect-server`), which `DeltaTable` calls
+  need over Connect. It also disables PySpark 4.0's Connect session
+  finalizer, which can deadlock when a dropped session is garbage-collected
+  inside the client's own thread pool. Test fixtures must not touch
+  `sparkContext`/py4j; use `tests.spark_test_helper.set_spark_log_level`
+  instead of `spark.sparkContext.setLogLevel`.
+- Known Spark 4 failures live in `tests/spark4_known_failures.txt`
+  (`<all|classic|connect> <nodeid> | <category>: <reason>`). They are marked
+  strict `xfail` only under PySpark 4, so the default suites are unaffected
+  and a fix shows up as `XPASS` -- remove the entry in the same change.
+- CI runs the lane as the **Spark 4 Tests** job (classic and connect matrix
+  legs) for every change classified as a runtime change; see
+  [CI/CD Pipeline Setup](ci_cd_setup.md).
 
 ---
 
