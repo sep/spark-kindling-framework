@@ -1538,8 +1538,10 @@ def _colocate_extended_packages(logger, before: Mapping[str, Any]) -> None:
 
     Loaded packages of a reinstalled distribution are kept, not evicted, so
     classes already imported from them (an azure.core exception a preloaded
-    SDK raises) stay the ones later imports get; the new directory is
-    appended to each one's ``__path__`` so the added modules resolve."""
+    SDK raises) stay the ones later imports get. The new directory goes first
+    on each one's ``__path__``, so its not-yet-imported subpackages (a
+    preloaded azure.core, but not azure.core.tracing) load from the new copy,
+    next to the added modules."""
     from importlib.metadata import distributions
 
     owners: Dict[str, Tuple[str, str, str]] = {}  # package dir -> owner
@@ -1618,7 +1620,7 @@ def _colocate_extended_packages(logger, before: Mapping[str, Any]) -> None:
             search_path = getattr(module, "__path__", None)
             directory = os.path.join(location, package)
             if isinstance(search_path, list) and directory not in search_path:
-                search_path.append(directory)
+                search_path.insert(0, directory)
 
 
 def _report_replaced_distributions(logger, before: Mapping[str, Any], package_spec: str) -> None:

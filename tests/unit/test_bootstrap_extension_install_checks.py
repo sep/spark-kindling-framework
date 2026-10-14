@@ -1,3 +1,4 @@
+import os
 import site
 import sys
 from types import SimpleNamespace
@@ -623,11 +624,59 @@ def test_colocate_reinstalls_regular_package_owner_next_to_added_modules(monkeyp
     assert "--no-deps" in command and "--ignore-installed" in command
     assert sys.modules["azure.core"] is azure_core
     assert sys.modules["azure.core.exceptions"].HttpResponseError is preloaded_error
-    assert azure_core.__path__ == ["/system/site/azure/core", "/venv/site/azure/core"]
+    assert azure_core.__path__ == ["/venv/site/azure/core", "/system/site/azure/core"]
     assert tracing_ext.__path__ == [
-        "/system/site/azure/core/tracing/ext",
         "/venv/site/azure/core/tracing/ext",
+        "/system/site/azure/core/tracing/ext",
     ]
+
+
+def test_colocate_lets_unloaded_subpackages_of_a_preloaded_owner_reach_the_plugin(
+    monkeypatch, tmp_path
+):
+    """Only the owner's top package is loaded: its subpackages, imported
+    later, must come from the new copy, or the plugin module next to them in
+    it is still not found."""
+    import importlib
+
+    import kindling.bootstrap as bootstrap
+
+    owner_files = [
+        "kpkg_colocate/core/__init__.py",
+        "kpkg_colocate/core/tracing/__init__.py",
+        "kpkg_colocate/core/tracing/ext/__init__.py",
+    ]
+    plugin_files = ["kpkg_colocate/core/tracing/ext/span/__init__.py"]
+    system, venv = tmp_path / "system", tmp_path / "venv"
+    for root, files in ((system, owner_files), (venv, owner_files + plugin_files)):
+        for path in files:
+            (root / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / path).write_text("")
+    system, venv = os.path.realpath(system), os.path.realpath(venv)
+    plugin = _fake_dist("kpkg-plugin", "1.0", plugin_files, location=venv)
+    before = [plugin, _fake_dist("kpkg-core", "2.0", owner_files, location=system)]
+    after = [plugin, _fake_dist("kpkg-core", "2.0", owner_files, location=venv), before[1]]
+    run = MagicMock(return_value=_completed())
+    monkeypatch.setattr(
+        "importlib.metadata.distributions", lambda: iter(after if run.called else before)
+    )
+    monkeypatch.setattr(bootstrap.subprocess, "run", run)
+
+    monkeypatch.syspath_prepend(system)  # the runtime's copy, loaded first
+    for name in [m for m in sys.modules if m.startswith("kpkg_colocate")]:
+        monkeypatch.delitem(sys.modules, name)
+    owner = importlib.import_module("kpkg_colocate.core")
+    try:
+        bootstrap._colocate_extended_packages(MagicMock(), {"kpkg-core": "2.0"})
+        importlib.invalidate_caches()
+
+        span = importlib.import_module("kpkg_colocate.core.tracing.ext.span")
+
+        assert sys.modules["kpkg_colocate.core"] is owner
+        assert span.__file__.startswith(venv)
+    finally:
+        for name in [m for m in sys.modules if m.startswith("kpkg_colocate")]:
+            del sys.modules[name]
 
 
 def test_colocate_leaves_packages_installed_in_one_place_alone(monkeypatch):
