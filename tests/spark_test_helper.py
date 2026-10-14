@@ -96,6 +96,13 @@ def spark_connect_mode() -> bool:
 # protobuf-java 3.25.x: delta-connect-common needs MapFieldReflectionAccessor,
 # which the 3.24.4 Ivy resolves transitively lacks.
 _DELTA_CONNECT_PROTOBUF = "com.google.protobuf:protobuf-java:3.25.1"
+#
+# The server's static SQL confs come from the builder of whichever test
+# module starts it first on a worker. Delta's session extension and catalog
+# are set here too, so a plain session started first does not leave the
+# server without them (DeltaTable merges then fail to resolve updateAll /
+# insertAll: [INVALID_USAGE_OF_STAR_OR_REGEX] Invalid usage of '*' in
+# DeltaMergeInto).
 _DELTA_CONNECT_PLUGINS = {
     "spark.connect.extensions.relation.classes": (
         "org.apache.spark.sql.connect.delta.DeltaRelationPlugin"
@@ -103,12 +110,15 @@ _DELTA_CONNECT_PLUGINS = {
     "spark.connect.extensions.command.classes": (
         "org.apache.spark.sql.connect.delta.DeltaCommandPlugin"
     ),
+    "spark.sql.extensions": "io.delta.sql.DeltaSparkSessionExtension",
+    "spark.sql.catalog.spark_catalog": "org.apache.spark.sql.delta.catalog.DeltaCatalog",
 }
 
 
 def connect_server_submit_args() -> str:
-    """``PYSPARK_SUBMIT_ARGS`` that put Delta (and the Delta Connect plugin)
-    on the local Spark Connect server, for the Spark 4 lane's connect mode.
+    """``PYSPARK_SUBMIT_ARGS`` that put Delta (jars, session extension and
+    catalog, and the Delta Connect plugin) on the local Spark Connect server,
+    for the Spark 4 lane's connect mode.
 
     ``--packages`` takes precedence over the builder's ``spark.jars.packages``,
     so delta-spark itself is listed too (same version as the installed
