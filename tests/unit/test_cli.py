@@ -754,6 +754,39 @@ def test_env_bootstrap_rejects_nested_projects_with_mixed_pin_forms(monkeypatch,
     assert commands == []
 
 
+@pytest.mark.parametrize("root_pins_by_url", [False, True], ids=["root-version", "root-url"])
+def test_env_bootstrap_rejects_root_and_member_with_mixed_pin_forms(
+    monkeypatch, tmp_path, root_pins_by_url
+):
+    """A root that already declares Kindling is checked against its members
+    too: uv would fail the final sync with conflicting sources."""
+    url_pin = (
+        "dependencies = ['spark-kindling']\n\n"
+        f"[tool.uv.sources]\nspark-kindling = {{ url = '{_wheel_url('spark_kindling-1.2.3-py3-none-any.whl')}' }}\n"
+    )
+    version_pin = "dependencies = ['spark-kindling==1.2.3']\n"
+    root = tmp_path / "repo"
+    _write_pyproject(
+        root,
+        "[project]\nname = 'repo'\nversion = '0.1.0'\n"
+        + (url_pin if root_pins_by_url else version_pin),
+    )
+    _write_pyproject(
+        root / "packages" / "a",
+        "[project]\nname = 'a'\nversion = '0.1.0'\n"
+        + (version_pin if root_pins_by_url else url_pin),
+    )
+    commands = []
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append(cmd))
+
+    result = CliRunner().invoke(cli, ["env", "bootstrap", "--project", str(root)])
+
+    assert result.exit_code != 0
+    assert "two forms" in result.output
+    assert "kindling env update" in result.output
+    assert commands == []
+
+
 def test_env_bootstrap_allows_different_forms_for_different_packages(monkeypatch, tmp_path):
     """A PyPI-pinned runtime beside a URL-pinned (GitHub-only) extension is valid."""
     root = tmp_path / "repo"

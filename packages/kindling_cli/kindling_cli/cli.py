@@ -4062,14 +4062,17 @@ _BOOTSTRAP_PACKAGES: Tuple[Tuple[str, Optional[str], List[str]], ...] = (
 
 
 def _require_single_pin_form(project_path: Path) -> None:
-    """Fail when nested projects pin Kindling both by release URL and by
-    version. uv rejects a workspace that sources one package both ways, and
-    bootstrap adopts just one nested entry, so the sync would fail; `kindling
-    env update` rewrites every project to one form."""
+    """Fail when the project and its nested projects pin Kindling both by
+    release URL and by version. uv rejects a workspace that sources one
+    package both ways, so the sync would fail; `kindling env update`
+    rewrites every project to one form."""
     # Per distribution: a PyPI-pinned runtime beside a URL-pinned,
     # GitHub-only extension is fine; one package pinned both ways is not.
     forms: Dict[str, Dict[str, List[Path]]] = {}
-    for nested in _discover_descendant_pyprojects(project_path):
+    for nested in [
+        project_path / "pyproject.toml",
+        *_discover_descendant_pyprojects(project_path),
+    ]:
         try:
             entries = list(_iter_kindling_dependency_entries(nested))
         except Exception:
@@ -4089,7 +4092,7 @@ def _require_single_pin_form(project_path: Path) -> None:
             for name, by_form in sorted(mixed.items())
         )
         raise click.ClickException(
-            f"Nested projects pin a Kindling package in two forms ({details}); a uv "
+            f"Projects pin a Kindling package in two forms ({details}); a uv "
             "workspace must pin each package one way. Run `kindling env update` at the "
             "repo root to give every project the same form."
         )
@@ -4150,11 +4153,13 @@ def env_bootstrap(
     if not pyproject_path.exists():
         raise click.ClickException(f"No pyproject.toml found at {project_path}.")
 
+    # Before either branch: a root pinning by version beside a member pinning
+    # by URL (or the reverse) would only fail at the final sync.
+    _require_single_pin_form(project_path)
     if _find_kindling_dependencies(pyproject_path):
         click.echo(f"Kindling is already declared in {pyproject_path}.")
     else:
         to_copy = _reconcile_root_kindling_dependencies(pyproject_path, project_path)
-        _require_single_pin_form(project_path)
         if to_copy:
             click.echo(
                 f"No Kindling dependency found in {pyproject_path}; "

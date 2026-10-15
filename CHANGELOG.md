@@ -71,6 +71,11 @@ All notable changes to spark-kindling are documented here.
   old `<X.Y` requirement (or the Databricks extension met SDP's old pin).
   Every pin is now staged with `--frozen`, as for workspaces, and the final
   `uv sync` resolves the whole set.
+- **`kindling env bootstrap` checks the root's pin form too.** A root pinning
+  Kindling by version beside a member pinning it by release URL (or the
+  reverse) failed at the final `uv sync` with conflicting sources; it now
+  fails first with the error that points to `kindling env update`, whether or
+  not the root already declares Kindling.
 - **Span durations no longer go negative when the clock is corrected.**
   `totalTime` on trace span END events (the Spark event trace provider and
   the plain-python provider) was the difference of two wall-clock
