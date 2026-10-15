@@ -12,6 +12,12 @@ All notable changes to spark-kindling are documented here.
   timestamps, so an NTP or WSL clock correction during a span gave a
   negative or inflated duration. It is now measured with a monotonic clock;
   `startTime`/`endTime` stay wall-clock timestamps.
+- **Streaming recovery backoff no longer follows wall-clock corrections.**
+  The recovery manager scheduled each restart attempt as a wall-clock
+  time and compared it with `datetime.now()`, so a clock correction
+  delayed or hastened a recovery by the size of the step. Attempts are now
+  due on a monotonic clock; `next_attempt_time` is still reported as a
+  timestamp, and setting it directly still takes effect.
 
 ## [0.13.5] - 2026-10-14
 
