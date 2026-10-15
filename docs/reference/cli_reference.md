@@ -1,7 +1,7 @@
 # Kindling CLI Reference
 
-The `kindling` CLI is installed via `spark-kindling-cli` (from GitHub Release wheel
-URLs — Kindling is not on PyPI; scaffolded projects pin it in their dev group). Run any command with `-h`
+The `kindling` CLI is installed via `spark-kindling-cli` (`pip install spark-kindling-cli`,
+which also installs `spark-kindling-sdk`; scaffolded projects pin it in their dev group). Run any command with `-h`
 or `--help` for inline help. Use `-V` / `--version` to print CLI, SDK, and runtime
 versions.
 
@@ -191,23 +191,33 @@ Update every Kindling package a project already depends on. Scans
 `pyproject.toml` for any dependency named `spark-kindling` or
 `spark-kindling-*` (the framework, SDK, CLI, and any extensions added via
 `env add`), wherever it's declared — the main dependency table or any
-dependency group — and points each one at its matching wheel in the target
-Kindling release (default: latest) by running
-`uv add <release wheel URL>`. Every Kindling package in a release is
-versioned together, so one release resolves every dependency at once.
+dependency group — and points each one at the version the target Kindling
+release (default: latest) ships. The GitHub release is the version catalog:
+it names one coherent set of package versions, so one release resolves every
+dependency at once. Each package is then pinned as a PyPI version
+(`uv add <dist>==<version>`) when that version is on PyPI, otherwise as the
+release's wheel URL (`uv add <release wheel URL>`); `--source` forces either.
 Existing `extras` and dependency group placement are re-supplied on each
 call so they survive the update.
+
+A project pinned by release wheel URL (anything created before 0.14.0) is
+converted to version pins: the `[tool.uv.sources]` URL entry is removed and
+the dependency is re-added as `<dist>==<version>`. `--source github` keeps
+(or writes) URL pins instead.
 
 If nothing is declared at the project itself (e.g. a uv workspace root), the
 Kindling dependency of a nested package/app `pyproject.toml` is adopted into
 it first; this fails if nested projects disagree on the release. Every other
 nested project that declares its own Kindling pin (each `packages/*`
 workspace member) is moved to the same release too — members must match the
-root, or `uv sync` fails with "conflicting URLs". Run it at the repo root.
-Finishes with `uv sync --all-packages`.
+root (and pin it the same way, by version or by URL), or `uv sync` fails to
+resolve. Run it at the repo root. Finishes with `uv sync --all-packages`.
 
-No local wheel cache or package index configuration is required — each
-dependency points directly at its wheel's GitHub release asset URL.
+Whether a version is on PyPI is checked against `https://pypi.org`; set
+`KINDLING_PYPI_URL` to point the lookup elsewhere (for example
+`https://test.pypi.org` to dry-run a release candidate). If the lookup fails
+(offline, blocked egress), `auto` falls back to the release wheel URL, which
+needs no package index.
 
 | Option | Default | Description |
 |---|---|---|
@@ -215,23 +225,26 @@ dependency points directly at its wheel's GitHub release asset URL.
 | `--repo TEXT` | `sep/spark-kindling-framework` | GitHub repository containing release wheels |
 | `--project PATH` | `.` | uv project to update |
 | `--no-sync` | — | Run `uv sync` with `--inexact` (don't remove extraneous packages) |
+| `--source auto\|pypi\|github` | `auto` | `pypi`: version pins; `github`: release wheel URLs; `auto`: PyPI when that version is published there, else GitHub |
 
 ```bash
 kindling env update
-kindling env update --version 0.10.35
+kindling env update --version 0.14.0
+kindling env update --source github   # keep release wheel URL pins
 ```
 
 ### `env add`
 
 Add a Kindling framework or extension package as a project dependency,
-pinned to the exact wheel published in a Kindling GitHub release. Resolves
-`PACKAGE`'s wheel from the given release (default: latest) and runs
-`uv add <release wheel URL>`. If `PACKAGE` is already declared anywhere
+pinned to the version a Kindling GitHub release ships. Resolves `PACKAGE`'s
+version from the given release (default: latest) and pins it as
+`<dist>==<version>` from PyPI when that version is published there, otherwise
+as the release's wheel URL (the ADX, Auto Loader and visualization extensions
+are not on PyPI, so `auto` pins them by URL); `--source` forces either,
+as for `env update`. If `PACKAGE` is already declared anywhere
 in the project, its existing dependency group and `extras` are reused
 automatically (uv does not infer either from a prior entry on its own);
 `--group` only applies when adding `PACKAGE` for the first time.
-
-No local wheel cache or package index configuration is required.
 
 | Option | Default | Description |
 |---|---|---|
@@ -240,6 +253,7 @@ No local wheel cache or package index configuration is required.
 | `--repo TEXT` | `sep/spark-kindling-framework` | GitHub repository containing release wheels |
 | `--project PATH` | `.` | uv project to add the dependency to |
 | `--group TEXT` | — | Dependency group (e.g. `dev`) for a new dependency; ignored if `PACKAGE` already exists in a group |
+| `--source auto\|pypi\|github` | `auto` | `pypi`: version pins; `github`: release wheel URLs; `auto`: PyPI when that version is published there, else GitHub |
 
 ```bash
 kindling env add spark-kindling-ext-databricks
@@ -258,8 +272,10 @@ they disagree on the release; the adopted `spark-kindling` always gets the
 the root is the local dev environment and is never built into a wheel. Only if no nested project declares Kindling
 either (an empty repo) does it add `spark-kindling[standalone]` to
 `dependencies` and `spark-kindling-sdk`/`spark-kindling-cli` to the `dev`
-group, pinned to the target Kindling release (default: latest) as GitHub
-release wheel URLs in `[tool.uv.sources]`. If Kindling is already declared,
+group, pinned to the target Kindling release (default: latest): PyPI
+version pins when that release is on PyPI, otherwise GitHub release wheel URLs
+in `[tool.uv.sources]` (`--source` forces either, as for `env update`).
+Adopted nested pins keep their own form (version or URL). If Kindling is already declared,
 this leaves it untouched; the project's own `pyproject.toml`/`uv.lock` remain
 authoritative. Either way, finishes with `uv sync --all-packages`, which at a
 repo root gives one repo-wide `.venv/` and `uv.lock` with every package
@@ -269,8 +285,9 @@ installed editable and `.venv/bin/kindling`. Fails if the project has no
 This is the generated devcontainer's `postCreateCommand`, run on every
 container creation. The devcontainer image itself installs no Kindling
 packages: `kindling` there is a shim that runs `./.venv/bin/kindling` when
-the current directory has one, else a system-installed CLI, else installs the
-latest release CLI — so this command is always available to bring a project
+the current directory has one, else a system-installed CLI, else installs
+`spark-kindling-cli` from PyPI (falling back to the latest GitHub release's
+wheels) — so this command is always available to bring a project
 up to a working state.
 
 | Option | Default | Description |
@@ -279,6 +296,7 @@ up to a working state.
 | `--repo TEXT` | `sep/spark-kindling-framework` | GitHub repository containing release wheels |
 | `--project PATH` | `.` | uv project to bootstrap |
 | `--no-sync` | — | Run `uv sync` with `--inexact` (don't remove extraneous packages) |
+| `--source auto\|pypi\|github` | `auto` | `pypi`: version pins; `github`: release wheel URLs; `auto`: PyPI when that version is published there, else GitHub |
 
 ```bash
 kindling env bootstrap
@@ -906,17 +924,23 @@ Create and deploy Kindling domain packages.
 
 Create a Kindling package under an existing multi-package repo at
 `packages/<snake_name>/`, as a uv workspace member: its own `pyproject.toml`
-(uv_build, `src/<snake_name>/` layout, plain `spark-kindling` as the runtime
-dependency pinned by release wheel URL to the CLI's version, a `dev` group with
-pytest, pytest-cov, poethepoet, the SDK, the CLI and the local Spark stack
+(uv_build, `src/<snake_name>/` layout, plain unpinned `spark-kindling` in
+`dependencies`, a `dev` group with pytest, pytest-cov, poethepoet,
+`spark-kindling==X.Y.Z`, `spark-kindling-sdk==X.Y.Z`,
+`spark-kindling-cli==X.Y.Z` and the local Spark stack
 `pyspark`/`delta-spark`/`pandas`/`pyarrow` at the bounds of the `standalone`
 extra) with poe tasks `test`, `test-unit`, `test-component`
 (`test-integration`/`test-all` unless `--no-integration`), `build`
 (`uv build`; wheels land in the repo-root `dist/`) and `update-kindling`.
-The runtime dependency carries no `standalone` extra because the package's
+The runtime dependency carries no extra and no version because the package's
 wheel is installed on managed Spark runtimes (Databricks, Fabric, Synapse) that
-provide their own Spark and Delta; its `Requires-Dist` names plain
-`spark-kindling`. Every package must pin the same Kindling release as the repo root;
+provide their own Spark, Delta and Kindling; its `Requires-Dist` names plain
+`spark-kindling`. `X.Y.Z` is the release the repo root pins, or the CLI's own
+version when the root pins none. If the root still pins Kindling by release
+wheel URL, the package gets URL pins in `[tool.uv.sources]` instead (a uv
+workspace must pin a package one way); `kindling env update` converts both to
+version pins.
+Every package must pin the same Kindling release as the repo root;
 `kindling env update` moves the pins. Work in it with `uv run poe test` /
 `uv run poe build` (`uv run` syncs the package; a bare `uv sync` in a package
 directory would remove the other packages from the shared `.venv/`).

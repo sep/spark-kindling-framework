@@ -7,14 +7,8 @@ only move to remote workspaces when you want deployment or end-to-end tests.
 ## Quick Start
 
 ```bash
-# Install Kindling from this repo's latest GitHub release.
-CURRENT_RUNTIME_URL=$(curl -fsSL https://github.com/sep/spark-kindling-framework/releases/latest/download/spark_kindling-current-url.txt)
-CURRENT_CLI_URL="${CURRENT_RUNTIME_URL//spark_kindling-/spark_kindling_cli-}"
-CURRENT_SDK_URL="${CURRENT_RUNTIME_URL//spark_kindling-/spark_kindling_sdk-}"
-
-pip install "spark-kindling[standalone] @ ${CURRENT_RUNTIME_URL}"
-pip install "spark-kindling-cli @ ${CURRENT_CLI_URL}"
-pip install "spark-kindling-sdk @ ${CURRENT_SDK_URL}"
+# Install Kindling from PyPI (the CLI brings the SDK with it).
+pip install 'spark-kindling[standalone]' spark-kindling-cli
 
 # Then scaffold and work on your local repo, package, and app.
 kindling repo init my-pipeline --output-dir ./my_pipeline
@@ -106,20 +100,20 @@ uv run poe test
 
 `uv run` syncs what the package needs before running. Don't run a bare `uv sync` inside a package directory: in the workspace it is an exact sync of that one package and removes the others from the shared `.venv/`. Resync the whole repo with `uv sync --all-packages` (or `kindling env bootstrap`) at the root.
 
-The generated `pyproject.toml` depends on the published runtime distribution,
-pinned to a release wheel by URL, and keeps the local Spark stack in its `dev`
-dependency group:
+The generated `pyproject.toml` depends on plain `spark-kindling` at runtime and
+pins the Kindling release, by version from PyPI, in its `dev` dependency group,
+next to the local Spark stack:
 
 ```toml
 [project]
 dependencies = ["spark-kindling"]
 
-[tool.uv.sources]
-spark-kindling = { url = "https://github.com/sep/spark-kindling-framework/releases/download/vX.Y.Z/spark_kindling-X.Y.Z-py3-none-any.whl" }
-
 [dependency-groups]
 dev = [
-    # ...pytest, poethepoet, spark-kindling-sdk, spark-kindling-cli
+    # ...pytest, poethepoet
+    "spark-kindling==X.Y.Z",
+    "spark-kindling-sdk==X.Y.Z",
+    "spark-kindling-cli==X.Y.Z",
     "pyspark>=3.4.0,<4.0.0",
     "delta-spark>=2.4.0,<4.0.0",
     "pandas>=2.0.0",
@@ -127,25 +121,36 @@ dev = [
 ]
 ```
 
-The runtime dependency is plain `spark-kindling`, not
-`spark-kindling[standalone]`: the package's wheel is installed on Databricks,
-Fabric and Synapse clusters, which provide their own Spark and Delta, so its
-`Requires-Dist` must not pull in `pyspark` or `delta-spark`. The `dev` group
-carries the same packages as the `standalone` extra for local tests and runs,
-and the repo root (never built into a wheel) pins `spark-kindling[standalone]`
-so the shared `.venv/` always has local Spark.
+The runtime dependency is plain and unpinned: the package's wheel is installed
+on Databricks, Fabric and Synapse clusters, which provide their own Spark and
+Delta and get Kindling from the runtime the bootstrap installs. Its
+`Requires-Dist` therefore names neither `pyspark`/`delta-spark` nor a Kindling
+version that pip could swap in. The `dev` group pins the release for local
+work (uv resolves one version for the whole workspace) and carries the same
+packages as the `standalone` extra for local tests and runs; the repo root
+(never built into a wheel) pins `spark-kindling[standalone]==X.Y.Z` so the
+shared `.venv/` always has local Spark.
 
-`spark-kindling-cli` and `spark-kindling-sdk` are pinned the same way and sit in
-the `dev` dependency group. Every package must pin the same Kindling release as
-the root `pyproject.toml` (they share one lockfile). Run `kindling env update`
-at the repo root (or `uv run poe update-kindling`) to move every pin to a newer
-release together.
+Every package must pin the same Kindling release as the root `pyproject.toml`
+(they share one lockfile). Run `kindling env update` at the repo root (or
+`uv run poe update-kindling`) to move every pin to a newer release together. If
+the root still pins Kindling by release wheel URL (a project created before
+0.14.0), `kindling package init` writes URL pins in a `[tool.uv.sources]` table
+instead, since a workspace must pin a package one way; `kindling env update`
+converts the root and every package to version pins.
 
 The package import still stays `import kindling`.
 
 ## Installing the Framework Locally
 
-Assuming you are installing Kindling from this project's GitHub releases:
+Install the released packages from PyPI:
+
+```bash
+pip install 'spark-kindling[standalone]' spark-kindling-cli
+```
+
+Where PyPI is unreachable, install the same release from its GitHub Release
+wheels instead:
 
 ```bash
 CURRENT_RUNTIME_URL=$(curl -fsSL https://github.com/sep/spark-kindling-framework/releases/latest/download/spark_kindling-current-url.txt)
@@ -157,10 +162,7 @@ pip install "spark-kindling-cli @ ${CURRENT_CLI_URL}"
 pip install "spark-kindling-sdk @ ${CURRENT_SDK_URL}"
 ```
 
-Other supported paths are:
-
-Kindling is not published to PyPI; the release wheel URLs above are the
-supported install. For framework development:
+For framework development:
 
 ```bash
 # 1. Editable source install for framework iteration

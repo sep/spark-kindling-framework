@@ -56,7 +56,7 @@ def bump_version(current: str, bump_type: str) -> str:
 
     Args:
         current: Current version string (e.g., "0.4.1a1")
-        bump_type: One of: alpha, patch, minor, major
+        bump_type: One of: alpha, rc, release, patch, minor, major
 
     Returns:
         New version string
@@ -71,6 +71,23 @@ def bump_version(current: str, bump_type: str) -> str:
         else:
             # Start new alpha series (bump patch)
             return f"{parts['major']}.{parts['minor']}.{parts['patch'] + 1}a1"
+
+    elif bump_type == "rc":
+        # Next release candidate: rcN -> rc(N+1); from a final version, the
+        # first candidate of the next minor (0.13.1 -> 0.14.0rc1).
+        if parts["pre_type"] == "rc":
+            return (
+                f"{parts['major']}.{parts['minor']}.{parts['patch']}rc{(parts['pre_num'] or 0) + 1}"
+            )
+        if parts["pre_type"]:
+            return f"{parts['major']}.{parts['minor']}.{parts['patch']}rc1"
+        return f"{parts['major']}.{parts['minor'] + 1}.0rc1"
+
+    elif bump_type == "release":
+        # Finalize a prerelease: 0.14.0rc2 -> 0.14.0.
+        if not parts["pre_type"]:
+            raise ValueError(f"{current} is not a prerelease; nothing to finalize")
+        return f"{parts['major']}.{parts['minor']}.{parts['patch']}"
 
     elif bump_type == "patch":
         # Remove pre-release if exists, otherwise bump patch
@@ -115,6 +132,122 @@ def update_pyprojects(new_version: str) -> list[Path]:
     return updated_paths
 
 
+EXTENSIONS_DIR = Path("packages/extensions")
+_KINDLING_REQUIREMENT_RE = re.compile(
+    r"^spark-kindling(-ext-[a-z0-9-]+)?(\[[^\]]*\])?\s*(?:[<>=!~;]|$)"
+)
+
+
+def starts_minor_line(version: str) -> bool:
+    """True for X.Y.0 and its prereleases (X.Y.0rcN): the versions every
+    extension takes, since an extension's major.minor states which Kindling
+    major.minor it works with. Patch releases leave extensions alone; an
+    extension's own patch number counts its own fixes and additions."""
+    return parse_version(version)["patch"] == 0
+
+
+def kindling_range(version: str) -> str:
+    """The Kindling range an extension released at `version` declares:
+    from that version up to, not including, the next minor."""
+    parts = parse_version(version)
+    return f">={version},<{parts['major']}.{parts['minor'] + 1}"
+
+
+def _array_span(content: str, key: str) -> tuple[int, int]:
+    """(start, end) of the text between the brackets of `key = [...]` at the
+    start of a line, matching brackets outside quoted strings and comments."""
+    match = re.search(rf"(?m)^{re.escape(key)}\s*=\s*\[", content)
+    if not match:
+        raise ValueError(f"no {key} array")
+    depth, i, quote = 1, match.end(), None
+    while i < len(content):
+        c = content[i]
+        if quote:
+            if c == "\\" and quote == '"':
+                i += 1
+            elif c == quote:
+                quote = None
+        elif c in "\"'":
+            quote = c
+        elif c == "#":
+            newline = content.find("\n", i)
+            i = len(content) if newline == -1 else newline
+            continue
+        elif c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                return match.end(), i
+        i += 1
+    raise ValueError(f"unterminated {key} array")
+
+
+def _set_kindling_dependencies(content: str, version: str) -> str:
+    """Rewrite every spark-kindling / spark-kindling-ext-* requirement in
+    [project].dependencies to the minor line's range (adding spark-kindling
+    itself when the extension doesn't declare it yet). Other entries and
+    comment lines are kept; the array is written one entry per line."""
+    start, end = _array_span(content, "dependencies")
+    ranged = kindling_range(version)
+    kindling: list[str] = []
+    kept: list[str] = []
+    for line in content[start:end].splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            kept.append(f"    {stripped}")
+            continue
+        for entry in re.findall(r"\"([^\"]+)\"|'([^']+)'", line):
+            requirement = entry[0] or entry[1]
+            name_match = _KINDLING_REQUIREMENT_RE.match(requirement)
+            if name_match:
+                name = "spark-kindling" + (name_match.group(1) or "") + (name_match.group(2) or "")
+                kindling.append(f'    "{name}{ranged}",')
+            else:
+                kept.append(f'    "{requirement}",')
+    if not any(re.match(r'^\s*"spark-kindling(\[|>)', line) for line in kindling):
+        kindling.insert(0, f'    "spark-kindling{ranged}",')
+    body = "\n" + "\n".join(kindling + kept) + "\n"
+    return content[:start] + body + content[end:]
+
+
+def align_extensions(new_version: str, repo_root: Path) -> list[Path]:
+    """At the start of a minor line, give every extension Kindling's version
+    and the matching Kindling range. Returns the files changed."""
+    if not starts_minor_line(new_version):
+        return []
+    changed: list[Path] = []
+    for pyproject_path in sorted(
+        (repo_root / EXTENSIONS_DIR).glob("kindling_ext_*/pyproject.toml")
+    ):
+        content = pyproject_path.read_text()
+        new_content = re.sub(
+            r'^version\s*=\s*"[^"]+"',
+            f'version = "{new_version}"',
+            content,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        new_content = _set_kindling_dependencies(new_content, new_version)
+        if new_content != content:
+            pyproject_path.write_text(new_content)
+            changed.append(pyproject_path)
+        package_init = pyproject_path.parent / pyproject_path.parent.name / "__init__.py"
+        if package_init.is_file():
+            init_text = package_init.read_text()
+            new_init = re.sub(
+                r'^__version__\s*=\s*"[^"]+"',
+                f'__version__ = "{new_version}"',
+                init_text,
+                count=1,
+                flags=re.MULTILINE,
+            )
+            if new_init != init_text:
+                package_init.write_text(new_init)
+                changed.append(package_init)
+    return changed
+
+
 def run_command(cmd: list) -> int:
     """Run command and return exit code"""
     print(f"Running: {' '.join(cmd)}")
@@ -156,6 +289,12 @@ def main(
         for updated_path in updated_paths:
             rel_path = updated_path.relative_to(Path(__file__).parent.parent)
             print(f"✅ Updated {rel_path}")
+
+        # Extensions follow Kindling's major.minor (their major.minor states
+        # compatibility); a new minor line moves every extension with it.
+        for updated_path in align_extensions(new_version, Path(__file__).parent.parent):
+            rel_path = updated_path.relative_to(Path(__file__).parent.parent)
+            print(f"✅ Aligned {rel_path}")
 
         # uv.lock records the workspace members' versions; refresh it so
         # `uv sync --locked` keeps passing. Existing pins are kept as-is.

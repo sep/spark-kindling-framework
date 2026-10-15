@@ -1269,6 +1269,98 @@ def import_distribution_modules(dist_name: str, logger) -> bool:
     return imported_any
 
 
+def _is_kindling_distribution(name: str) -> bool:
+    normalized = name.strip().lower().replace("_", "-").replace(".", "-")
+    return normalized == "spark-kindling" or normalized.startswith("spark-kindling-")
+
+
+def _extension_requirements(wheel_path) -> Tuple[List[str], List[Any]]:
+    """Split a wheel's Requires-Dist into (other requirements to install,
+    Kindling requirements to check). Requirements whose marker doesn't apply
+    here (extras-only, other Python versions) are dropped."""
+    import zipfile
+
+    from packaging.requirements import Requirement
+
+    with zipfile.ZipFile(wheel_path) as wheel:
+        metadata_name = next(
+            name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")
+        )
+        metadata = wheel.read(metadata_name).decode("utf-8")
+
+    others: List[str] = []
+    kindling: List[Any] = []
+    for line in metadata.splitlines():
+        if not line.startswith("Requires-Dist:"):
+            continue
+        requirement = Requirement(line.split(":", 1)[1].strip())
+        if requirement.marker is not None and not requirement.marker.evaluate({"extra": ""}):
+            continue
+        if _is_kindling_distribution(requirement.name):
+            kindling.append(requirement)
+        else:
+            requirement.marker = None
+            others.append(str(requirement))
+    return others, kindling
+
+
+class ExtensionCompatibilityError(RuntimeError):
+    """An extension's Kindling requirement is not met by the installed
+    runtime. Fails the bootstrap rather than being logged and skipped like a
+    missing or uninstallable wheel."""
+
+
+def _installed_kindling_requirements(package_name: str) -> Optional[List[Any]]:
+    """The Kindling requirements of an installed extension (by its
+    distribution name or a rename alias), or None when it has no installed
+    package metadata (e.g. importable files left behind without it)."""
+    from importlib.metadata import PackageNotFoundError, requires
+
+    from packaging.requirements import Requirement
+
+    for candidate in dist_name_candidates(package_name):
+        try:
+            declared = requires(candidate) or []
+        except PackageNotFoundError:
+            continue
+        kindling = []
+        for line in declared:
+            requirement = Requirement(line)
+            if requirement.marker is not None and not requirement.marker.evaluate({"extra": ""}):
+                continue
+            if _is_kindling_distribution(requirement.name):
+                kindling.append(requirement)
+        return kindling
+    return None
+
+
+def _require_installed_kindling(package_spec: str, requirements: Iterable[Any]) -> None:
+    """Check an extension's Kindling requirements against what's installed.
+
+    Kindling's own distributions are never installed as an extension's
+    dependencies: pip would replace the runtime the bootstrap installed
+    (from the artifacts store, at kindling_version) with an index copy. An
+    extension's major.minor states which Kindling major.minor it works with,
+    so a mismatch is an error naming both versions."""
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as installed_version
+
+    for requirement in requirements:
+        try:
+            installed = installed_version(requirement.name)
+        except PackageNotFoundError:
+            raise ExtensionCompatibilityError(
+                f"{package_spec} requires {requirement}, which is not installed; "
+                f"list {requirement.name} before it in kindling.extensions"
+            ) from None
+        if not requirement.specifier.contains(installed, prereleases=True):
+            raise ExtensionCompatibilityError(
+                f"{package_spec} requires {requirement}, but {requirement.name} "
+                f"{installed} is installed; deploy the extension release that matches "
+                f"this Kindling version (kindling runtime deploy --extension)"
+            )
+
+
 def _normalized_distribution_name(dist) -> str:
     return (dist.metadata.get("Name") or "").strip().lower().replace("_", "-")
 
@@ -1768,10 +1860,23 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
     def load_extension_wheel(package_spec, storage_utils, artifacts_path, temp_path=None):
         """Install extension wheel from artifacts storage (like kindling-ext-otel-azure)"""
         if is_package_installed(package_spec, check_version=True):
-            logger.info(f"Extension already installed: {get_package_name(package_spec)}")
-            return
-
-        if is_package_installed(package_spec, check_version=False):
+            # Still check it against the runtime: after a runtime upgrade an
+            # extension installed earlier may require a different Kindling.
+            installed_requirements = _installed_kindling_requirements(
+                get_package_name(package_spec)
+            )
+            if installed_requirements is not None:
+                _require_installed_kindling(package_spec, installed_requirements)
+                logger.info(f"Extension already installed: {get_package_name(package_spec)}")
+                return
+            # Importable but without package metadata, so its requirements
+            # can't be checked: reinstall it from the artifacts store, which
+            # checks the wheel's.
+            logger.info(
+                f"Extension {get_package_name(package_spec)} is importable but has no "
+                "package metadata; reinstalling it to check it against this runtime"
+            )
+        elif is_package_installed(package_spec, check_version=False):
             logger.info(f"Extension version mismatch, upgrading to satisfy: {package_spec}")
 
         import os
@@ -1933,11 +2038,22 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
 
                 logger.debug(f"Downloaded wheel ({os.path.getsize(local_path)} bytes)")
 
-                # Install the downloaded wheel, keeping the runtime's packages
-                # wherever they satisfy its requirements.
+                # Check the wheel's Kindling requirements against the
+                # installed runtime (never install them), install its other
+                # requirements, keeping the runtime's packages wherever they
+                # satisfy them, and only then the wheel itself (--no-deps): a
+                # failed dependency install leaves the extension uninstalled,
+                # so the next bootstrap retries both.
                 logger.info(f"Installing {wheel_filename}")
                 versions_before = _installed_distribution_snapshot()
-                result = _pip_install_keeping_installed(logger, [local_path])
+                other_requirements, kindling_requirements = _extension_requirements(local_path)
+                _require_installed_kindling(package_spec, kindling_requirements)
+                result = None
+                if other_requirements:
+                    logger.debug(f"Installing extension dependencies: {other_requirements}")
+                    result = _pip_install_keeping_installed(logger, other_requirements)
+                if result is None or result.returncode == 0:
+                    result = _pip_install_keeping_installed(logger, ["--no-deps", local_path])
 
                 if result.returncode == 0:
                     # Mirror load_if_needed(): make the freshly installed user/venv packages
@@ -1978,6 +2094,8 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                     logger.error(f"Failed to install extension {package_spec}: {result.stderr}")
                     logger.debug(f"Extension install stdout: {result.stdout}")
 
+            except ExtensionCompatibilityError:
+                raise
             except Exception as e:
                 logger.error(f"Failed to find extension wheel {package_spec}: {e}")
                 return
@@ -2011,6 +2129,8 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
 
                     shutil.rmtree(temp_dir, ignore_errors=True)
 
+        except ExtensionCompatibilityError:
+            raise
         except Exception as e:
             logger.error(f"Failed to install extension {package_spec}: {e}")
 

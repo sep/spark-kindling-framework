@@ -7,7 +7,8 @@ Produces one runtime wheel (spark-kindling) that contains every
 (see ``[project.optional-dependencies]`` in the root pyproject.toml). Also builds the
 design-time wheels: spark-kindling-cli, spark-kindling-sdk, and
 kindling extension wheels — all produced with a single ``uv build`` per
-package dir.
+package dir. Each build writes a source distribution and a wheel built from
+it, so the wheel attached to the GitHub release is the one PyPI receives.
 
 Replaces the pre-rename three-wheel-per-platform build; users now install
 ``spark-kindling[synapse]`` / ``[databricks]`` / ``[fabric]`` rather than
@@ -80,7 +81,7 @@ def ensure_uv_installed() -> None:
 def build_runtime_wheel() -> tuple[str, int]:
     print("\n📦 Building spark-kindling runtime wheel...")
     result = subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(DIST_DIR)], capture_output=True, text=True
+        ["uv", "build", "--out-dir", str(DIST_DIR)], capture_output=True, text=True
     )
     if result.returncode != 0:
         raise RuntimeError(f"Error building runtime wheel:\n{result.stderr}")
@@ -102,7 +103,7 @@ def build_design_time_wheel(package_dir: Path) -> tuple[str, int]:
     if package_dist.exists():
         shutil.rmtree(package_dist)
     result = subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", "dist"],
+        ["uv", "build", "--out-dir", "dist"],
         cwd=package_dir,
         capture_output=True,
         text=True,
@@ -115,6 +116,8 @@ def build_design_time_wheel(package_dir: Path) -> tuple[str, int]:
     source_wheel = wheels[0]
     output_path = DIST_DIR / source_wheel.name
     shutil.copy2(source_wheel, output_path)
+    for sdist in package_dist.glob("*.tar.gz"):
+        shutil.copy2(sdist, DIST_DIR / sdist.name)
     size_kb = output_path.stat().st_size // 1024
     print(f"   ✅ Built: {source_wheel.name} ({size_kb}K)")
     return source_wheel.name, size_kb

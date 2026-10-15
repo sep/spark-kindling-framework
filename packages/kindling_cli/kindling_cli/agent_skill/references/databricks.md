@@ -193,11 +193,11 @@ every wheel must be a pipeline dependency.
    Keeping the imports inside it means importing the package declares nothing.
 
 2. Build the wheels, generate the bundle and deploy it. Serverless installs
-   dependencies one at a time, and Kindling isn't on PyPI, so pass the wheels
-   in this order: core, ext-sdp, ext-databricks, then your own.
+   dependencies one at a time, so pass the wheels in this order: core,
+   ext-sdp, ext-databricks, then your own.
 
    ```bash
-   kindling env add spark-kindling-ext-databricks --version 0.13.2   # records release wheel URLs in uv.lock
+   kindling env add spark-kindling-ext-databricks --version 0.13.2   # pins the release's extension version
    kindling runtime deploy --source github:0.13.2 --dest dist/kindling \
      --extension spark-kindling-ext-sdp --extension spark-kindling-ext-databricks   # stage release wheels in dist/kindling/packages/
    (cd packages/sales_core && uv build --wheel --out-dir ../../dist/lakeflow)
@@ -227,7 +227,8 @@ every wheel must be a pipeline dependency.
   (`silver.orders` becomes `silver_orders`). MVs need `CREATE MATERIALIZED VIEW`.
   Inputs from outside the pipeline resolve as in path A.
 - With no `--wheel`/`--dependency`, the bundle depends on an unpinned
-  `spark-kindling-ext-databricks` from PyPI, which can't install. The default
+  `spark-kindling-ext-databricks` from PyPI, which may not match your Kindling
+  release (and releases before 0.14.0 aren't on PyPI). Pass the wheels. The default
   `--workspace-root` is `/Workspace/Shared/kindling/<name>/<target>`, which
   is writable by everyone.
 - To own resource keys, permissions or clusters, run

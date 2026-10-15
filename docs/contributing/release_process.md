@@ -1,6 +1,6 @@
 # Release Process Guide
 
-This guide explains how to create releases for the Kindling framework and how wheels are validated and attached.
+This guide explains how to create releases for the Kindling framework, how wheels are validated and attached, and how they reach PyPI.
 
 ## 📦 What Happens on Release
 
@@ -14,6 +14,12 @@ changed since the previous version tag and chooses the required release lane:
 
 Workflow, build-system, runtime package, build-config, and system-test changes
 take the runtime lane. Unknown paths also take the runtime lane.
+
+Once the GitHub release is published, the `publish-pypi` job uploads the
+packages to PyPI (prerelease tags go to TestPyPI instead); see
+[Publishing to PyPI](#-publishing-to-pypi). Every `v*` tag builds wheels (the
+classifier never treats a tag as docs-only), so every release publishes; files
+already on PyPI under an unchanged version are skipped.
 
 ## 🚀 Creating a Release
 
@@ -99,9 +105,158 @@ After the workflow completes:
 Docs/proposal-only releases are expected to have generated release notes and
 source archives only.
 
-## 📥 Installing from Release
+3. **Check PyPI** (final releases; for a prerelease, the same paths on
+   `https://test.pypi.org`)
+   ```
+   https://pypi.org/project/spark-kindling/
+   ```
+   It should list `<version>` with a wheel and an sdist; so should
+   `spark-kindling-cli` and `spark-kindling-sdk`. An extension shows a new
+   version only when its own version was bumped.
 
-### Direct Download (Manual)
+## 🐍 Publishing to PyPI
+
+The `publish-pypi` job in `.github/workflows/ci.yml` runs after
+`publish-release`, so it only ever uploads files that passed every gate,
+cloud system tests included. It uploads the wheel and sdist built by
+`poe build` (the wheel is byte-identical to the release asset; the sdist goes
+to PyPI only).
+
+| Published to PyPI | GitHub Release only |
+|---|---|
+| `spark-kindling`, `spark-kindling-cli`, `spark-kindling-sdk` | `spark-kindling-ext-adx` |
+| `spark-kindling-ext-databricks`, `spark-kindling-ext-sdp` | `spark-kindling-ext-databricks-autoloader` |
+| `spark-kindling-ext-cosmos`, `spark-kindling-ext-temporal`, `spark-kindling-ext-otel-azure` | `spark-kindling-ext-visualization` |
+
+To publish another package, add it to `PUBLISHED` in
+`scripts/select_pypi_dists.sh` and to `_PYPI_PUBLISHED_DISTRIBUTIONS` in the
+CLI (a unit test keeps the two in step), then bootstrap it on PyPI (below).
+
+- **Where**: a prerelease tag (`a`, `b` or `rc`, e.g. `v0.14.0rc1`) goes to
+  [TestPyPI](https://test.pypi.org/project/spark-kindling/) through the
+  `testpypi` environment; a final tag (`v0.14.0`) goes to
+  [PyPI](https://pypi.org/project/spark-kindling/) through the `pypi`
+  environment. If the `pypi` environment requires a reviewer, the job waits
+  for that approval under the workflow run.
+- **Authentication**: trusted publishing. PyPI accepts the job's GitHub OIDC
+  identity (this repository, `ci.yml`, the environment); no API token is
+  stored anywhere.
+- **Unchanged extensions**: within a minor line, an extension keeps its
+  version across Kindling patch releases (see
+  [Build System](build_system.md): extensions follow Kindling's
+  major.minor), so an unchanged one is already on the index and is skipped
+  (`skip-existing`), not an error. Builds are reproducible, so the job first
+  compares every file against the one already on the index
+  (`scripts/check_pypi_artifacts.py`) and fails if they differ: an
+  extension whose code changed without a version bump. Bump the extension's
+  version whenever its code changes.
+- **If the job fails** after the GitHub release is published, fix the cause
+  and re-run the failed job; the GitHub release is not affected. Until it
+  succeeds, `kindling env update` pins that release by wheel URL.
+
+### Release candidate dry run
+
+Before a final release that changes packaging, tag a release candidate:
+`poe version --bump_type rc` (0.13.1 -> 0.14.0rc1, or rc1 -> rc2), commit,
+then `poe release 0.14.0rc1`. When the candidate checks out,
+`poe version --bump_type release` (0.14.0rc1 -> 0.14.0) prepares the final. When it lands, install it from TestPyPI in a
+scratch environment (TestPyPI does not carry the third-party dependencies, so
+keep PyPI as an extra index):
+
+```bash
+pip install --index-url https://test.pypi.org/simple/ \
+    --extra-index-url https://pypi.org/simple/ \
+    'spark-kindling[standalone]==0.14.0rc1' spark-kindling-cli==0.14.0rc1 \
+    spark-kindling-sdk==0.14.0rc1
+```
+
+`KINDLING_PYPI_URL=https://test.pypi.org` points the CLI's "is this version
+on PyPI?" lookup at TestPyPI, so `kindling env update --version 0.14.0rc1`
+writes version pins for the candidate; uv then needs TestPyPI as an index too
+(`UV_INDEX=https://test.pypi.org/simple/ UV_INDEX_STRATEGY=unsafe-best-match`)
+to resolve them.
+
+### Uploads are permanent
+
+PyPI never accepts a second upload of the same version, even after the file
+is deleted. A bad release is not replaced: yank it on pypi.org (the project's
+**Manage → Releases → Options → Yank**), which keeps exact `==` pins working
+but stops resolvers from picking it otherwise, and fix forward with a new
+patch version. This is another reason to dry-run packaging changes as an rc.
+
+### One-time setup
+
+PyPI allows one *pending* trusted publisher per publisher identity (owner,
+repository, workflow, environment), and a pending publisher creates a single
+project, so CI cannot create all eight projects itself. Create them with one
+manual upload of the first release candidate, then attach the publisher to
+each existing project (an existing publisher can serve any number of
+projects). Do this once, before tagging that candidate.
+
+1. **GitHub environments.** In **Settings → Environments**, create `pypi` and
+   `testpypi`. Add required reviewers to `pypi` to gate every upload behind
+   an approval, and restrict it to `v*` tags if desired.
+2. **Upload the candidate yourself.** After the rc version bump is merged
+   (`poe version --bump_type rc`), from an up-to-date `main`:
+
+   ```bash
+   poe pypi-bootstrap
+   ```
+
+   It builds, selects the 8 published packages, asks you to type the version
+   to confirm, and uploads them to TestPyPI and then PyPI with account-wide API
+   tokens (account settings → API tokens; set `TESTPYPI_TOKEN` and
+   `PYPI_TOKEN`, or type them at the prompt). Uploading the candidate to PyPI
+   claims the names now; prerelease versions are not installed unless asked
+   for by version. A rerun skips files already uploaded.
+3. **Attach the trusted publisher** to each of the eight projects, on both
+   sites. PyPI has no API for this, so it is one web form per project and
+   site; `poe pypi-bootstrap` prints the 16 links at the end
+   (`poe pypi-bootstrap --links` prints them again). In each form choose
+   **GitHub** and enter:
+
+   | Field | PyPI | TestPyPI |
+   |---|---|---|
+   | Owner | `sep` | `sep` |
+   | Repository | `spark-kindling-framework` | `spark-kindling-framework` |
+   | Workflow | `ci.yml` | `ci.yml` |
+   | Environment | `pypi` | `testpypi` |
+
+4. **Revoke the API tokens.** CI publishes with trusted publishing from here
+   on.
+
+Then `poe release` the candidate as usual. Its `publish-pypi` job finds the
+files already uploaded and skips them (`skip-existing`; builds are
+reproducible, so its files match the ones you uploaded); every later release
+is uploaded by
+CI. A package added to PyPI later needs the same bootstrap: one manual upload,
+then the publisher.
+
+## 📥 Installing a Release
+
+From 0.14.0 on, install a release from PyPI and pin the version:
+
+```bash
+pip install 'spark-kindling[synapse]==<version>'
+pip install spark-kindling-cli==<version> spark-kindling-sdk==<version>
+```
+
+```txt
+# requirements.txt
+spark-kindling[databricks]==<version>
+```
+
+On Databricks, add `spark-kindling[databricks]==<version>` as a cluster
+library (**Libraries → Install New → PyPI**) or `%pip install` it in a
+notebook.
+
+### Without PyPI access
+
+Every release also attaches its wheels to the GitHub release. Use these where
+PyPI is unreachable (locked-down workspaces) and for releases before 0.14.0,
+which exist only on GitHub.
+
+#### Direct Download (Manual)
 
 ```bash
 # 1. Download wheel from release page
@@ -112,7 +267,7 @@ source archives only.
 pip install 'spark-kindling[synapse] @ file:///path/to/spark_kindling-<version>-py3-none-any.whl'
 ```
 
-### Direct Install from URL
+#### Direct Install from URL
 
 ```bash
 # Install directly from GitHub Release (one wheel, pick your extra)
@@ -123,7 +278,7 @@ CURRENT_RUNTIME_URL=$(curl -fsSL https://github.com/sep/spark-kindling-framework
 pip install "spark-kindling[databricks] @ ${CURRENT_RUNTIME_URL}"
 ```
 
-### In requirements.txt
+#### In requirements.txt
 
 ```txt
 # requirements.txt
@@ -135,16 +290,14 @@ spark-kindling[synapse] @ https://github.com/sep/spark-kindling-framework/releas
 # (the wheel filename itself remains versioned)
 ```
 
-### In Databricks/Synapse/Fabric
+#### In Databricks/Synapse/Fabric
 
 ```python
 # Databricks notebook
 %pip install 'spark-kindling[databricks] @ https://github.com/sep/spark-kindling-framework/releases/download/v<version>/spark_kindling-<version>-py3-none-any.whl'
 
-# Or in cluster libraries
-# UI: Libraries → Install New → PyPI
-# Package: spark-kindling[databricks]
-# Source: https://github.com/sep/spark-kindling-framework/releases/download/v<version>/spark_kindling-<version>-py3-none-any.whl
+# Or in cluster libraries, as a wheel from a location the cluster can reach
+# UI: Libraries → Install New → File path/ADLS (upload the downloaded wheel first)
 ```
 
 ## 🏷️ Release Types
@@ -165,17 +318,14 @@ v1.0.0  - Breaking changes (major)
 
 ### Pre-releases
 
-For beta/alpha versions:
+A version with a PEP 440 prerelease suffix (`a`, `b` or `rc`, no hyphen:
+`0.14.0rc1`, `0.14.0a1`) is released like any other, with `poe release`. CI
+marks the GitHub release as a prerelease and publishes it to TestPyPI, not
+PyPI (see [Release candidate dry run](#release-candidate-dry-run)):
 
 ```bash
-# Create pre-release
-gh release create v<version>-beta.1 \
-  --prerelease \
-  --title "v<version> Beta 1" \
-  --notes "Beta release for testing"
-
-# Users can install with:
-pip install 'spark-kindling[synapse] @ https://github.com/sep/spark-kindling-framework/releases/download/v<version>-beta.1/spark_kindling-<version>b1-py3-none-any.whl'
+pip install --index-url https://test.pypi.org/simple/ \
+    --extra-index-url https://pypi.org/simple/ 'spark-kindling[synapse]==0.14.0rc1'
 ```
 
 ## 📊 What Shows Up in a Release
@@ -206,6 +356,8 @@ poe version --bump_type patch   # X.Y.Z -> X.Y.(Z+1)
 poe version --bump_type minor   # X.Y.Z -> X.(Y+1).0
 poe version --bump_type major   # X.Y.Z -> (X+1).0.0
 poe version --bump_type alpha   # X.Y.Z -> X.Y.(Z+1)a1
+poe version --bump_type rc      # X.Y.Z -> X.(Y+1).0rc1; rcN -> rc(N+1)
+poe version --bump_type release # X.Y.ZrcN -> X.Y.Z
 ```
 
 This updates the version in `pyproject.toml`, runs `uv lock` to refresh the
@@ -228,19 +380,19 @@ git push origin main
 
 # 4. Wait for CI to pass (check Actions tab)
 
-# 5. Create release
-gh release create v<version> \
-  --title "v<version> - Brief description" \
-  --notes-file docs/releases/<version>.md
+# 5. Create release (pushes the tag; CI creates the GitHub release)
+poe release <version>
 
 # 6. Monitor release build
-# Go to: Actions → wait for staged-artifact deploy + system tests + "Attach Wheels to Release"
+# Go to: Actions → wait for staged-artifact deploy + system tests + "Publish Release"
+# then "Publish to PyPI" (approve the `pypi` environment if it asks)
 
 # 7. Verify release
 gh release view v<version>
+# and https://pypi.org/project/spark-kindling/
 
 # 8. Test installation
-pip install 'spark-kindling[synapse] @ https://github.com/sep/spark-kindling-framework/releases/download/v<version>/spark_kindling-<version>-py3-none-any.whl'
+pip install 'spark-kindling[synapse]==<version>'
 ```
 
 ## 🔐 Access Control for Releases
@@ -324,11 +476,12 @@ poe version --bump_type patch
 # 4. Push and create PR
 git push origin hotfix/<version>
 
-# 5. After PR approval and merge
-gh release create v<version> \
-  --title "v<version> - Hotfix Release" \
-  --notes "Critical bug fix: platform detection"
+# 5. After PR approval and merge, release from main like any other version
+poe release <version>
 ```
+
+A hotfix goes through the same gates and the same PyPI upload as a normal
+release; CI owns the GitHub release object.
 
 ## 📊 Monitoring Releases
 
@@ -385,11 +538,12 @@ For Kindling framework:
 ✅ Building an open-source framework
 ✅ Want maximum discoverability
 
-**Current Setup**: Release assets are enabled! Wheels automatically attach to every release. You can add GitHub Packages or PyPI later if needed.
+**Current Setup**: Both. Wheels attach to every GitHub release, and from 0.14.0 the published packages also go to PyPI (see [Publishing to PyPI](#-publishing-to-pypi)). The GitHub release stays the version catalog that `kindling env update` reads.
 
 ## 📚 Additional Resources
 
 - [GitHub Releases Documentation](https://docs.github.com/en/repositories/releasing-projects-on-github)
+- [PyPI Trusted Publishers](https://docs.pypi.org/trusted-publishers/)
 - [Semantic Versioning](https://semver.org/)
 - [GitHub CLI Releases](https://cli.github.com/manual/gh_release)
 - [Kindling CI/CD Setup](./ci_cd_setup.md)

@@ -22,35 +22,35 @@ Spark Kindling Framework is a comprehensive solution for building robust data pi
 ## Documentation
 
 ### Core Features
-- [Introduction](./docs/intro.md) - Framework overview and architecture
-- [Setup Guide](./docs/guide/setup_guide.md) - Installation and configuration
-- [Local Python-First Development](./docs/guide/local_python_first.md) - Scaffold, run, and test without cloud credentials
-- [CLI Reference](./docs/reference/cli_reference.md) - Every `kindling` command (scaffolding, apps, migrate, notebooks, workspace)
-- [Data Entities](./docs/guide/data_entities.md) - Data entity management system
-- [Entity Configuration](./docs/guide/entity_configuration.md) - Tags-first declaration conventions
-- [Data Pipes](./docs/guide/data_pipes.md) - Transformation pipeline system
-- [Derived Datasets](./docs/guide/derived_datasets.md) - Replacement writes: derived datasets, slice replace, insert-only
-- [Entity Providers](./docs/contributing/entity_providers.md) - Storage abstraction system
-- [Migrating from runMultiple](./docs/guide/migrating_from_runmultiple.md) - Move Synapse/Fabric notebook DAGs to Kindling pipes
+- [Introduction](https://github.com/sep/spark-kindling-framework/blob/main/docs/intro.md) - Framework overview and architecture
+- [Setup Guide](https://github.com/sep/spark-kindling-framework/blob/main/docs/guide/setup_guide.md) - Installation and configuration
+- [Local Python-First Development](https://github.com/sep/spark-kindling-framework/blob/main/docs/guide/local_python_first.md) - Scaffold, run, and test without cloud credentials
+- [CLI Reference](https://github.com/sep/spark-kindling-framework/blob/main/docs/reference/cli_reference.md) - Every `kindling` command (scaffolding, apps, migrate, notebooks, workspace)
+- [Data Entities](https://github.com/sep/spark-kindling-framework/blob/main/docs/guide/data_entities.md) - Data entity management system
+- [Entity Configuration](https://github.com/sep/spark-kindling-framework/blob/main/docs/guide/entity_configuration.md) - Tags-first declaration conventions
+- [Data Pipes](https://github.com/sep/spark-kindling-framework/blob/main/docs/guide/data_pipes.md) - Transformation pipeline system
+- [Derived Datasets](https://github.com/sep/spark-kindling-framework/blob/main/docs/guide/derived_datasets.md) - Replacement writes: derived datasets, slice replace, insert-only
+- [Entity Providers](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/entity_providers.md) - Storage abstraction system
+- [Migrating from runMultiple](https://github.com/sep/spark-kindling-framework/blob/main/docs/guide/migrating_from_runmultiple.md) - Move Synapse/Fabric notebook DAGs to Kindling pipes
 
 ### Advanced Features
-- [Job Deployment](./docs/contributing/job_deployment.md) - Deploy apps as Spark jobs
-- [Hierarchical Configuration](./docs/contributing/platform_workspace_config.md) - Multi-level YAML config system
-- [Logging & Tracing](./docs/contributing/logging_tracing.md) - Observability foundation (including JVM-free telemetry for UC shared clusters)
-- [Watermarking](./docs/contributing/watermarking.md) - Change tracking and incremental processing
-- [File Ingestion](./docs/guide/file_ingestion.md) - Built-in file ingestion capabilities
-- [Stage Processing](./docs/contributing/stage_processing.md) - Pipeline stage orchestration
-- [Temporal End-to-End](./docs/guide/temporal_end_to_end.md) - Events, conditions, and episodes (spark-kindling-ext-temporal)
-- [Lakeflow App Selection](./docs/guide/lakeflow_app_selection.md) - Run Kindling data apps inside Databricks Lakeflow pipelines
-- [Dynamic Registration](./docs/guide/dynamic_registration.md) - Register entities and pipes at runtime
+- [Job Deployment](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/job_deployment.md) - Deploy apps as Spark jobs
+- [Hierarchical Configuration](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/platform_workspace_config.md) - Multi-level YAML config system
+- [Logging & Tracing](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/logging_tracing.md) - Observability foundation (including JVM-free telemetry for UC shared clusters)
+- [Watermarking](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/watermarking.md) - Change tracking and incremental processing
+- [File Ingestion](https://github.com/sep/spark-kindling-framework/blob/main/docs/guide/file_ingestion.md) - Built-in file ingestion capabilities
+- [Stage Processing](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/stage_processing.md) - Pipeline stage orchestration
+- [Temporal End-to-End](https://github.com/sep/spark-kindling-framework/blob/main/docs/guide/temporal_end_to_end.md) - Events, conditions, and episodes (spark-kindling-ext-temporal)
+- [Lakeflow App Selection](https://github.com/sep/spark-kindling-framework/blob/main/docs/guide/lakeflow_app_selection.md) - Run Kindling data apps inside Databricks Lakeflow pipelines
+- [Dynamic Registration](https://github.com/sep/spark-kindling-framework/blob/main/docs/guide/dynamic_registration.md) - Register entities and pipes at runtime
 
 ### Platform & Development
-- [Platform API Architecture](./docs/contributing/platform_api_architecture.md) - Multi-platform abstraction
-- [Platform Storage Utils](./docs/contributing/platform_storage_utils.md) - Storage operations
-- [Utilities](./docs/guide/utilities.md) - Common utilities and helper functions
-- [Build System](./docs/contributing/build_system.md) - How `poe build` produces the runtime, CLI, SDK and extension wheels
-- [CI/CD Setup](./docs/contributing/ci_cd_setup.md) - Continuous integration and deployment
-- [Testing](./docs/contributing/testing.md) - Unit, integration, and system testing
+- [Platform API Architecture](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/platform_api_architecture.md) - Multi-platform abstraction
+- [Platform Storage Utils](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/platform_storage_utils.md) - Storage operations
+- [Utilities](https://github.com/sep/spark-kindling-framework/blob/main/docs/guide/utilities.md) - Common utilities and helper functions
+- [Build System](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/build_system.md) - How `poe build` produces the runtime, CLI, SDK and extension wheels
+- [CI/CD Setup](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/ci_cd_setup.md) - Continuous integration and deployment
+- [Testing](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/testing.md) - Unit, integration, and system testing
 
 ## Core Modules
 
@@ -73,27 +73,26 @@ The framework consists of several modular components:
 
 ## Extensions
 
-- **[spark-kindling-ext-otel-azure](./packages/extensions/kindling_ext_otel_azure/)** - Azure Monitor OpenTelemetry integration
-- **[spark-kindling-ext-sdp](./packages/extensions/kindling_ext_sdp/)** - Spark Declarative Pipelines (SDP) declaration engine
-- **[spark-kindling-ext-databricks](./packages/extensions/kindling_ext_databricks/)** - Databricks Lakeflow adapter for the SDP declaration engine
-- **[spark-kindling-ext-databricks-autoloader](./packages/extensions/kindling_ext_databricks_autoloader/)** - Auto Loader (`cloudFiles`) discovery for file ingestion
-- **[spark-kindling-ext-temporal](./packages/extensions/kindling_ext_temporal/)** - Temporal event, condition, and episode primitives
-- **[spark-kindling-ext-adx](./packages/extensions/kindling_ext_adx/)** - Azure Data Explorer entity provider (Kusto Spark connector; an API-based `adx-api` provider ships in core)
-- **[spark-kindling-ext-cosmos](./packages/extensions/kindling_ext_cosmos/)** - Azure Cosmos DB entity provider (idempotent upsert writes)
-- **[spark-kindling-ext-visualization](./packages/extensions/kindling_ext_visualization/)** - Matplotlib visualization helpers
+- **[spark-kindling-ext-otel-azure](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_otel_azure)** - Azure Monitor OpenTelemetry integration
+- **[spark-kindling-ext-sdp](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_sdp)** - Spark Declarative Pipelines (SDP) declaration engine
+- **[spark-kindling-ext-databricks](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_databricks)** - Databricks Lakeflow adapter for the SDP declaration engine
+- **[spark-kindling-ext-databricks-autoloader](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_databricks_autoloader)** - Auto Loader (`cloudFiles`) discovery for file ingestion
+- **[spark-kindling-ext-temporal](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_temporal)** - Temporal event, condition, and episode primitives
+- **[spark-kindling-ext-adx](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_adx)** - Azure Data Explorer entity provider (Kusto Spark connector; an API-based `adx-api` provider ships in core)
+- **[spark-kindling-ext-cosmos](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_cosmos)** - Azure Cosmos DB entity provider (idempotent upsert writes)
+- **[spark-kindling-ext-visualization](https://github.com/sep/spark-kindling-framework/blob/main/packages/extensions/kindling_ext_visualization)** - Matplotlib visualization helpers
+
+In a Kindling project, add any extension with `kindling env add <name>`. The Databricks, SDP, Cosmos DB, Temporal and OpenTelemetry Azure extensions are also on PyPI (`pip install <name>`). The ADX, Auto Loader and visualization extensions are not; they are attached to each [GitHub Release](https://github.com/sep/spark-kindling-framework/releases) as wheels, which `kindling env add` pins by URL (or `pip install` the wheel's release URL).
 
 ## Install
 
-Kindling is not on PyPI. Each [GitHub Release](https://github.com/sep/spark-kindling-framework/releases)
-publishes the wheels; install them by URL. One distribution, platform-specific extras:
+Kindling is on [PyPI](https://pypi.org/project/spark-kindling/). One distribution, platform-specific extras:
 
 ```bash
-V=0.13.0  # any release, without the leading v
-BASE=https://github.com/sep/spark-kindling-framework/releases/download/v$V
-pip install "spark-kindling[synapse] @ $BASE/spark_kindling-$V-py3-none-any.whl"      # Azure Synapse Analytics
-pip install "spark-kindling[databricks] @ $BASE/spark_kindling-$V-py3-none-any.whl"   # Databricks
-pip install "spark-kindling[fabric] @ $BASE/spark_kindling-$V-py3-none-any.whl"       # Microsoft Fabric
-pip install "spark-kindling[standalone] @ $BASE/spark_kindling-$V-py3-none-any.whl"   # Local development / generic Spark
+pip install 'spark-kindling[synapse]'      # Azure Synapse Analytics
+pip install 'spark-kindling[databricks]'   # Databricks
+pip install 'spark-kindling[fabric]'       # Microsoft Fabric
+pip install 'spark-kindling[standalone]'   # Local development / generic Spark
 ```
 
 The Python import name is `kindling` (unchanged):
@@ -105,17 +104,28 @@ from kindling.data_entities import DataEntities
 Design-time tooling ships separately:
 
 ```bash
-# `kindling` CLI for scaffolding and deploy; it requires the SDK (programmatic access to platform APIs)
+# `kindling` CLI for scaffolding and deploy; it pulls in spark-kindling-sdk (programmatic access to platform APIs)
+pip install spark-kindling-cli
+```
+
+The runtime, CLI and SDK are versioned together: pin all three to one release (`spark-kindling[...]==0.14.0 spark-kindling-cli==0.14.0 spark-kindling-sdk==0.14.0`; the CLI alone only requires a minimum SDK). Extensions keep their own versions; each GitHub release lists the extension versions that go with it, and `kindling env add` picks them. Projects scaffolded with `kindling repo init` / `kindling package init` pin these versions in `pyproject.toml` for you, and `kindling env update` moves them to a newer release.
+
+### Without PyPI access
+
+Each [GitHub Release](https://github.com/sep/spark-kindling-framework/releases) also attaches the wheels, so environments that cannot reach PyPI (and releases before 0.14.0, which exist only on GitHub) can install by URL:
+
+```bash
+V=0.14.0  # any release, without the leading v
+BASE=https://github.com/sep/spark-kindling-framework/releases/download/v$V
+pip install "spark-kindling[databricks] @ $BASE/spark_kindling-$V-py3-none-any.whl"
 pip install "$BASE/spark_kindling_cli-$V-py3-none-any.whl" "$BASE/spark_kindling_sdk-$V-py3-none-any.whl"
 ```
 
-Projects scaffolded with `kindling repo init` / `kindling package init` pin these wheel URLs in `pyproject.toml` for you.
-
-See [docs/release_process.md](./docs/contributing/release_process.md) for install-from-release examples and [docs/developer_workflow.md](./docs/contributing/developer_workflow.md) for local development.
+See [docs/release_process.md](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/release_process.md) for how releases are published and [docs/developer_workflow.md](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/developer_workflow.md) for local development.
 
 ## CLI Quick Start
 
-Install the CLI (as above; you also need [uv](https://docs.astral.sh/uv/)) and scaffold a repo, package, and app explicitly:
+Install the CLI (`pip install spark-kindling-cli`; you also need [uv](https://docs.astral.sh/uv/)) and scaffold a repo, package, and app explicitly:
 
 ```bash
 kindling repo init my-app --output-dir ./my_app
@@ -128,7 +138,7 @@ uv run kindling app run my_app --env local
 
 Or open the generated repo in its devcontainer (`.devcontainer/devcontainer.json`), which runs `kindling env bootstrap` for you.
 No Azure credentials needed — the scaffold uses in-memory entity providers by default.
-See [Local Python-First Development](./docs/guide/local_python_first.md) for the full local workflow.
+See [Local Python-First Development](https://github.com/sep/spark-kindling-framework/blob/main/docs/guide/local_python_first.md) for the full local workflow.
 
 ## Notebook Quick Start
 
@@ -231,7 +241,7 @@ This framework builds upon several excellent open source projects:
 
 
 ## Contributing
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+We welcome contributions! Please see [CONTRIBUTING.md](https://github.com/sep/spark-kindling-framework/blob/main/CONTRIBUTING.md) for guidelines.
 
 ## Support
 This is open source software provided without warranty or guaranteed support.
@@ -240,7 +250,7 @@ This is open source software provided without warranty or guaranteed support.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](https://github.com/sep/spark-kindling-framework/blob/main/LICENSE) file for details.
 
 ## Developed By
 **Software Engineering Professionals, Inc.**

@@ -13,7 +13,7 @@ This guide walks a **domain project developer** through standing up a local dev 
 
 ## 1. Open the Dev Container
 
-If you are starting a new repo, scaffold the repo root and a domain package first (the `kindling` CLI can come from a one-off install — see the [Setup Guide](setup_guide.md#installation)):
+If you are starting a new repo, scaffold the repo root and a domain package first (the `kindling` CLI can come from a one-off `pip install spark-kindling-cli` — see the [Setup Guide](setup_guide.md#installation)):
 
 ```bash
 kindling repo init my-project              # .devcontainer/, CI, .gitignore, root pyproject.toml, packages/, apps/
@@ -31,7 +31,7 @@ In VS Code:
 
 Once inside the container the `postCreateCommand` automatically runs `kindling env bootstrap` at the repo root. If the root `pyproject.toml` declares no Kindling dependency yet, it adopts the release your packages pin (or, for an empty repo, pins the latest release), then runs `uv sync --all-packages`. The result is one repo-wide `.venv/` with every package installed editable, including the `dev` group and `.venv/bin/kindling`; VS Code's interpreter is set to `.venv/bin/python`. It then runs `kindling agent setup`, which installs the Kindling skill for your coding agents (Claude Code, Codex, Copilot — whichever `repo init --agents` selected) from that pinned CLI, so agents get guidance for the exact release you use. You don't need to run either manually.
 
-> `kindling` in the image is a shim: it runs `./.venv/bin/kindling` when one exists in the **current directory**, otherwise a system-wide CLI. Run `kindling` commands from the repo root, or use `uv run kindling ...` from a subdirectory, so you get the project's pinned CLI and its packages.
+> `kindling` in the image is a shim: it runs `./.venv/bin/kindling` when one exists in the **current directory**, otherwise a system-wide CLI, otherwise it installs `spark-kindling-cli` from PyPI (falling back to the latest GitHub release). Run `kindling` commands from the repo root, or use `uv run kindling ...` from a subdirectory, so you get the project's pinned CLI and its packages.
 
 Verify the environment:
 
@@ -43,7 +43,9 @@ This validates Java, PySpark, delta-spark, and the Hadoop/Azure JARs. Fix any re
 
 To pick up a newer Kindling release inside an existing devcontainer without
 rebuilding the container, run this from the repo root (it moves the root's pin
-and every package's pin together — all of them must pin the same release):
+and every package's pin together — all of them must pin the same release).
+Each package is pinned as a PyPI version (`spark-kindling==X.Y.Z`); a project
+still pinned by release wheel URL is converted to version pins:
 
 ```bash
 kindling env update
@@ -573,7 +575,7 @@ kindling app run my_domain_app --platform fabric --env prod
 | `kindling env check` reports missing JARs | Run `kindling env ensure --cloud azure` (downloads into `/tmp/hadoop-jars`; without `--cloud` it needs `az` on PATH to detect Azure). The devcontainer image ships them at `/opt/hadoop-jars`, symlinked to `/tmp/hadoop-jars` |
 | Spark session fails to start | Java 11+ must be active (the devcontainer ships Java 21): `java -version`; set `JAVA_HOME` if wrong |
 | `kindling` or `import kindling` not found | Run `kindling env bootstrap` at the repo root to recreate `.venv/`; run `kindling` from the repo root or via `uv run kindling` |
-| `uv sync` fails with conflicting URLs for `spark-kindling` | A package pins a different Kindling release than the root; run `kindling env update` at the repo root |
+| `uv sync` fails with conflicting URLs or unsatisfiable requirements for `spark-kindling` | A package pins a different Kindling release than the root (or pins it by URL while the root pins a version); run `kindling env update` at the repo root |
 | `entity not found` at runtime | Ensure the package defining the entity is listed in the app's `lake-reqs.txt` and installed (`uv sync --all-packages` at the repo root) |
 | Merge fails with schema mismatch | Run `kindling migrate plan` to inspect pending schema changes |
 | Remote deploy fails with auth error | Re-run `az login`; check `kindling env check --platform <platform>` |

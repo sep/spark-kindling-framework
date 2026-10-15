@@ -12,7 +12,7 @@ __all__ = [
     "register_provider",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.14.0rc1"
 
 
 register_provider()

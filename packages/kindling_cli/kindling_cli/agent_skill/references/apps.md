@@ -30,8 +30,9 @@ the packages it runs in `lake-reqs.txt`.
   .devcontainer/  .github/workflows/ci.yml  scripts/setup-local-dev.sh
   packages/
     <pkg>/                # workspace member (distribution name <pkg-kebab>)
-      pyproject.toml      # runtime dep: plain spark-kindling, pinned via [tool.uv.sources] wheel URLs;
-                          # dev group: pytest, poe, SDK/CLI + pyspark/delta-spark/pandas/pyarrow; poe tasks
+      pyproject.toml      # runtime dep: plain, unpinned spark-kindling; dev group: spark-kindling/SDK/CLI
+                          # ==X.Y.Z pins, pytest, poe, pyspark/delta-spark/pandas/pyarrow; poe tasks
+                          # (repos pinned by release URL use [tool.uv.sources] instead)
       settings.yaml  settings.local.yaml  .env.example
       src/<pkg>/
         entities/         # @DataEntities.entity declarations   -> auto-registered
@@ -266,16 +267,19 @@ kindling bundle build --name sales --target dev --app daily-orders   # Databrick
 - **Never run a bare `uv sync` inside a package directory.** It does an exact sync
   of that one member and prunes the other packages from the shared `.venv/`. To
   resync, run `uv sync --all-packages` or `kindling env bootstrap` at the root.
-- Every package must pin the **same Kindling release** as the root. Otherwise uv
-  fails with "conflicting URLs". Move every pin together with `kindling env
-  update` (`--version X.Y.Z`) at the root, or `uv run poe update-kindling`.
-  Never hand-edit one package's `[tool.uv.sources]` URL.
+- Every package must pin the **same Kindling release** as the root, in the same
+  form (PyPI `==` versions, or release wheel URLs in `[tool.uv.sources]` for
+  older repos). Otherwise uv fails to resolve the workspace. Move every pin
+  together with `kindling env update` (`--version X.Y.Z`) at the root, or
+  `uv run poe update-kindling`; it also converts URL pins to PyPI versions.
+  Never hand-edit one package's pin.
 - Kindling extensions are added with `kindling env add spark-kindling-ext-databricks`,
   never with `uv add` and a version you guessed.
-- A package's runtime `dependencies` take plain `spark-kindling`. Never put
-  `spark-kindling[standalone]`, `pyspark` or `delta-spark` there: lake wheels
-  are pip-installed with their dependencies on clusters that already supply
-  Spark and Delta. Local Spark comes from the root's `[standalone]` pin and
+- A package's runtime `dependencies` take plain, unpinned `spark-kindling`.
+  Never put `spark-kindling[standalone]`, `spark-kindling==X`, `pyspark` or
+  `delta-spark` there: lake wheels are pip-installed with their dependencies
+  on clusters that already supply Spark, Delta and the Kindling the bootstrap
+  installed. Local Spark comes from the root's `[standalone]` pin and
   each package's `dev` group.
 - Run `kindling` from the repo `.venv/` (or `uv run kindling ...`).
 

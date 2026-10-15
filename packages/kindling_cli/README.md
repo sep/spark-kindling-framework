@@ -5,21 +5,31 @@ Command-line tooling for the Spark Kindling Framework. Distributed as
 
 ## Install
 
-Kindling packages are not on PyPI; install them from a
+```bash
+pip install spark-kindling-cli
+```
+
+The CLI depends on `spark-kindling-sdk` (used for remote platform lifecycle
+operations), so this installs the SDK too. The CLI only requires a minimum SDK
+version, so to pin one Kindling release, pin both:
+`pip install spark-kindling-cli==0.14.0 spark-kindling-sdk==0.14.0`.
+
+Without PyPI access (or for a release before 0.14.0, which exists only on
+GitHub), install both from a
 [GitHub Release](https://github.com/sep/spark-kindling-framework/releases)'s
-wheel URLs. The CLI depends on `spark-kindling-sdk` (used for remote platform
-lifecycle operations), and the SDK only resolves from its release URL too, so
-install both:
+wheel URLs:
 
 ```bash
-V=0.13.0  # any release, without the leading v
+V=0.14.0  # any release, without the leading v
 BASE=https://github.com/sep/spark-kindling-framework/releases/download/v$V
 pip install "$BASE/spark_kindling_cli-$V-py3-none-any.whl" \
     "$BASE/spark_kindling_sdk-$V-py3-none-any.whl"
 ```
 
 Inside the Kindling devcontainer, `kindling` is a shim that runs the project's
-own `./.venv/bin/kindling` (pinned in `pyproject.toml`) when present.
+own `./.venv/bin/kindling` (pinned in `pyproject.toml`) when present, and
+otherwise installs `spark-kindling-cli` from PyPI (falling back to the latest
+GitHub release's wheels).
 
 ## Commands
 
@@ -30,7 +40,7 @@ own `./.venv/bin/kindling` (pinned in `pyproject.toml`) when present.
 - `kindling config set <key> <value>` — set a config value using dot-notation
 - `kindling env check` — validate the local Python/config environment
 - `kindling env bootstrap` — pin Kindling if nothing declares it yet and `uv sync --all-packages` (the devcontainer's `postCreateCommand`)
-- `kindling env update` / `kindling env add` — move or add Kindling release wheel pins
+- `kindling env update` / `kindling env add` — move or add Kindling pins to a release (PyPI version pins; release wheel URLs for packages not on PyPI; `--source` forces either)
 - `kindling env ensure` — download Hadoop/ABFSS JARs into `/tmp/hadoop-jars/`
 - `kindling workspace check` — validate the configured platform workspace
 - `kindling workspace init` — scaffold bootstrap + starter notebook files for a platform
@@ -110,9 +120,10 @@ See `docs/proposals/databricks_bundle_deployment.md`.
 Wheels passed with `--wheel` are uploaded by `databricks bundle deploy` under
 the bundle's own workspace root and become the pipeline environment's
 dependencies in the order given. Serverless installs them one at a time and
-Kindling packages are not on PyPI, so list dependencies first: framework
-core, then `spark-kindling-ext-sdp`, then `spark-kindling-ext-databricks`,
-then the app wheel.
+a wheel's missing dependency would otherwise be fetched from PyPI (or fail
+where PyPI is unreachable) instead of using the uploaded wheel, so list
+dependencies first: framework core, then `spark-kindling-ext-sdp`, then
+`spark-kindling-ext-databricks`, then the app wheel.
 
 The default `--workspace-root` is `/Workspace/Shared/kindling/<name>/<target>`:
 a stable path that survives redeploys by different principals, which is
@@ -179,5 +190,5 @@ kindling app init sales-ops --package sales-ops --repo-root .
 
 ## Related
 
-- Runtime framework: `pip install "spark-kindling[<platform>] @ $BASE/spark_kindling-$V-py3-none-any.whl"` where `<platform>` is one of `synapse`, `databricks`, `fabric`, `standalone`.
-- Design-time SDK: `pip install "$BASE/spark_kindling_sdk-$V-py3-none-any.whl"`.
+- Runtime framework: `pip install 'spark-kindling[<platform>]'` where `<platform>` is one of `synapse`, `databricks`, `fabric`, `standalone`.
+- Design-time SDK: `pip install spark-kindling-sdk`.

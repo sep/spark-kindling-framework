@@ -29,7 +29,7 @@ from kindling_ext_databricks.lakeflow_app_selector import (
     declare_from_pipeline_config,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.14.0rc1"
 
 __all__ = [
     "DatabricksSdpEngine",

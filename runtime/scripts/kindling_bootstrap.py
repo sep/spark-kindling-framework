@@ -1,6 +1,7 @@
 import importlib
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -604,15 +605,21 @@ def _install_wheel(
             else:
                 print(f"   (no kindling directory here)")
 
-        # Also check for .dist-info and .egg-info directories
+        # Also remove the metadata of the distributions uninstalled above.
+        # Only those: an extension's (spark_kindling_ext_*) metadata must stay
+        # with its package, or the framework can no longer check the
+        # installed extension against this runtime.
         print("🧹 Removing kindling metadata directories...")
+        core_metadata = re.compile(
+            r"^(spark_kindling|kindling|kindling_fabric|kindling_databricks|kindling_synapse)"
+            r"-\d[^/]*\.(dist-info|egg-info)$",
+            re.IGNORECASE,
+        )
         for site_dir in site_dirs:
             if not os.path.exists(site_dir):
                 continue
             for item in os.listdir(site_dir):
-                if "kindling" in item.lower() and (
-                    item.endswith(".dist-info") or item.endswith(".egg-info")
-                ):
+                if core_metadata.match(item):
                     metadata_path = os.path.join(site_dir, item)
                     print(f"   🗑️  Deleting: {metadata_path}")
                     shutil.rmtree(metadata_path, ignore_errors=True)

@@ -4,20 +4,35 @@ build-backend = "uv_build"
 
 [project]
 name = "spark-kindling-ext-databricks"
-version = "0.2.0"
+version = "0.14.0rc1"
 description = "Databricks Lakeflow adapter for Kindling's SDP declaration engine"
 authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 # The adapter layers Databricks-only capabilities (expectations, AUTO CDC
 # in Phase 5) on top of the OSS core. Lakeflow "extends and is
 # interoperable with" the OSS pyspark.pipelines API, so everything the
 # core emits runs unchanged here; the adapter only augments.
 dependencies = [
-    "spark-kindling>=0.12.39",
-    "spark-kindling-ext-sdp>=0.3.2",
+    "spark-kindling>=0.14.0rc1,<0.15",
+    "spark-kindling-ext-sdp>=0.14.0rc1,<0.15",
 ]
+
+[project.urls]
+Homepage = "https://github.com/sep/spark-kindling-framework"
+Documentation = "https://github.com/sep/spark-kindling-framework/tree/main/docs"
+Changelog = "https://github.com/sep/spark-kindling-framework/blob/main/CHANGELOG.md"
+Issues = "https://github.com/sep/spark-kindling-framework/issues"
 
 [tool.uv.build-backend]
 module-root = ""

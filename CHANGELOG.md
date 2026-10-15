@@ -4,8 +4,78 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Added
+
+- **Kindling is published to PyPI.** `pip install 'spark-kindling[standalone]'
+  spark-kindling-cli` now works without release URLs. Published:
+  `spark-kindling`, `spark-kindling-cli`, `spark-kindling-sdk` and the
+  Databricks, SDP, Cosmos DB, Temporal and OpenTelemetry Azure extensions;
+  the ADX, Databricks Auto Loader and visualization extensions remain on
+  GitHub Releases only. Releases upload from CI after every gate passes,
+  through PyPI trusted publishing; release candidates go to TestPyPI.
+  GitHub Releases keep carrying the same wheels; sdists are published to
+  PyPI only.
+  The upload refuses a package whose files changed under an already
+  published version (bump the extension's version when its code changes).
+- `kindling env update` / `env add` / `env bootstrap` take `--source
+  auto|pypi|github`.
+
+### Changed
+
+- **Kindling dependencies are pinned as PyPI versions.** `kindling package
+  init` scaffolds `==` pins for `spark-kindling`, the SDK and the CLI in the
+  package's `dev` group instead of release wheel URLs, unless the repo root
+  still pins by URL. The runtime dependency stays plain, unpinned
+  `spark-kindling`, so a lake wheel's `Requires-Dist` never makes pip replace
+  the Kindling the cluster bootstrap installed. `kindling env update` / `env add` / `env bootstrap` write version
+  pins for any package version on PyPI and fall back to the release wheel URL
+  otherwise; running `kindling env update` on a URL-pinned project converts it.
+  Only the packages this repository publishes are ever pinned from PyPI; the
+  GitHub-only extensions always pin their release wheel URL.
+- The devcontainer image's lazy `kindling` shim installs the latest GitHub
+  release's exact CLI and SDK version from PyPI, falling back to that
+  release's wheels while PyPI doesn't have it yet.
+- **Extensions follow Kindling's major.minor.** An extension's major.minor
+  states which Kindling major.minor it works with; its patch number counts
+  its own fixes and additions. At the start of each minor line (X.Y.0 and its
+  release candidates) `poe version` gives every extension Kindling's version
+  and declares `spark-kindling>=X.Y.0,<X.(Y+1)` (and the same range for an
+  extension it builds on). From 0.14.0 every extension is 0.14.x, so each
+  version number is tied to one set of files across GitHub releases and PyPI.
+- **The cluster bootstrap never reinstalls Kindling for an extension.** It
+  installed extension wheels with their dependencies, so an extension
+  declaring `spark-kindling` could make pip fetch Kindling from the package
+  index over the runtime the bootstrap installed from the artifacts store
+  (or fail where no index has it). Extensions are now installed with
+  `--no-deps`; their other requirements are installed separately, keeping
+  the runtime's packages as in 0.13.5, and their Kindling requirements are
+  checked against the installed runtime, failing with both versions named.
+- `kindling package init --source auto|pypi|github`: with no Kindling pin at
+  the repo root, `auto` writes PyPI version pins only when the release is on
+  PyPI, and release wheel URLs otherwise.
+- Package metadata on PyPI: project URLs, classifiers and keywords; README
+  links are absolute so they work on pypi.org.
+
 ### Fixed
 
+- **`kindling env add` / `env update` pin an extension's Kindling extension
+  dependencies** from the same release (e.g. SDP for the Databricks
+  extension), before the extension itself. `kindling env add
+  spark-kindling-ext-databricks` failed with GitHub pins because uv looked
+  SDP up on a package index. `env add` also moves a required extension the
+  project already declares from another release to the selected one,
+  keeping its group and extras, so the new extension's requirements resolve.
+- **`kindling env update` resolves once, after every pin is rewritten.** A
+  single-project update locked after each `uv add`, so moving Kindling and an
+  extension to a new minor failed when the new core pin met the extension's
+  old `<X.Y` requirement (or the Databricks extension met SDP's old pin).
+  Every pin is now staged with `--frozen`, as for workspaces, and the final
+  `uv sync` resolves the whole set.
+- **`kindling env bootstrap` checks the root's pin form too.** A root pinning
+  Kindling by version beside a member pinning it by release URL (or the
+  reverse) failed at the final `uv sync` with conflicting sources; it now
+  fails first with the error that points to `kindling env update`, whether or
+  not the root already declares Kindling.
 - **Span durations no longer go negative when the clock is corrected.**
   `totalTime` on trace span END events (the Spark event trace provider and
   the plain-python provider) was the difference of two wall-clock

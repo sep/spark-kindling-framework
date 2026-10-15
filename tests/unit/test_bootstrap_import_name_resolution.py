@@ -186,9 +186,16 @@ def test_install_skipped_when_distribution_installed_under_legacy_name():
             return "0.4.0"
         raise importlib_metadata.PackageNotFoundError(name)
 
+    def fake_requires(name):
+        # Metadata exists only under the legacy name, like its version.
+        if name == "kindling-ext-otel-azure":
+            return []
+        raise importlib_metadata.PackageNotFoundError(name)
+
     with (
         patch("kindling.bootstrap._get_storage_utils", return_value=storage_utils),
         patch("importlib.metadata.version", side_effect=fake_version),
+        patch("importlib.metadata.requires", side_effect=fake_requires),
         patch("kindling.bootstrap.importlib.util.find_spec", return_value=object()),
         patch("kindling.bootstrap.importlib.import_module", return_value=object()),
     ):
