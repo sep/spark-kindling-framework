@@ -19,7 +19,6 @@ import time
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-
 from kindling.signaling import SignalProvider
 from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.streaming_query_manager import StreamingQueryManager
@@ -39,9 +38,9 @@ def _wait_until(condition, timeout=2.0, interval=0.02):
     last (falsy) value on timeout so callers still get a normal assertion
     failure rather than a bare timeout error.
     """
-    deadline = time.time() + timeout
+    deadline = time.monotonic() + timeout
     result = condition()
-    while not result and time.time() < deadline:
+    while not result and time.monotonic() < deadline:
         time.sleep(interval)
         result = condition()
     return result
@@ -738,3 +737,45 @@ class TestRecoveryManagerIntegration:
 
         finally:
             recovery_manager.stop()
+
+
+class TestRecoverySchedulingUsesMonotonicClock:
+    """Recovery timing must not follow wall-clock corrections."""
+
+    def test_wall_clock_step_back_does_not_delay_a_scheduled_attempt(self, monkeypatch):
+        import kindling.streaming_recovery_manager as module
+
+        state = RecoveryState(query_id="q", query_name="Q", initial_backoff=0.05)
+        state.schedule_next_attempt()
+        time.sleep(0.06)
+
+        class _ClockSteppedBack:
+            @staticmethod
+            def now():
+                return dt.datetime.now() - dt.timedelta(hours=1)
+
+        monkeypatch.setattr(module, "datetime", _ClockSteppedBack)
+        assert state.is_ready_for_attempt()
+
+    def test_wall_clock_step_forward_does_not_hasten_a_scheduled_attempt(self, monkeypatch):
+        import kindling.streaming_recovery_manager as module
+
+        state = RecoveryState(query_id="q", query_name="Q", initial_backoff=10.0)
+        state.schedule_next_attempt()
+
+        class _ClockSteppedForward:
+            @staticmethod
+            def now():
+                return dt.datetime.now() + dt.timedelta(hours=1)
+
+        monkeypatch.setattr(module, "datetime", _ClockSteppedForward)
+        assert not state.is_ready_for_attempt()
+
+    def test_directly_set_next_attempt_time_still_applies(self):
+        state = RecoveryState(query_id="q", query_name="Q", initial_backoff=10.0)
+        state.schedule_next_attempt()
+        assert not state.is_ready_for_attempt()
+
+        state.next_attempt_time = dt.datetime.now() - dt.timedelta(seconds=1)
+
+        assert state.is_ready_for_attempt()

@@ -273,3 +273,13 @@ def test_runner_module_imports_without_click():
 
     assert result.returncode == 0, result.stderr
     assert "import-ok" in result.stdout
+
+
+def test_build_pytest_args_keeps_files_on_one_worker_for_combined_suites(monkeypatch):
+    monkeypatch.setattr(test_runner, "ensure_xdist_available", lambda workers: None)
+
+    for suite in ("unit", "integration", "all"):
+        args = test_runner.build_pytest_args(
+            test_runner.TestRunOptions(suite=suite, paths=["tests/unit"], workers="8")
+        )
+        assert args[args.index("-n") :][:4] == ["-n", "8", "--dist", "loadscope"], suite

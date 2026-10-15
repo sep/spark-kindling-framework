@@ -306,3 +306,33 @@ class TestPlainRecordSpan:
             line, details = _emitted(logger, event)[0]
             assert details.get("parentSpanId") == outer_id
             assert f"trace_id:{expected_trace_id}" in line
+
+
+def test_plain_span_duration_survives_a_wall_clock_step(monkeypatch):
+    """totalTime comes from the monotonic clock: a wall clock stepped 3 s
+    backwards during the span (NTP, WSL resync) no longer makes it negative."""
+    import time
+    from datetime import timedelta
+
+    import kindling.plain_telemetry as plain_module
+    import kindling.spark_trace as spark_trace_module
+
+    class _ClockSteppedBack:
+        calls = 0
+        base = datetime(2026, 10, 15, 12, 0, 0)
+
+        def now(self):
+            self.calls += 1
+            return self.base if self.calls == 1 else self.base - timedelta(seconds=3)
+
+    clock = _ClockSteppedBack()
+    monkeypatch.setattr(plain_module, "datetime", clock)
+    monkeypatch.setattr(spark_trace_module, "datetime", clock)
+    trace, logger = _trace_provider()
+
+    with trace.span(operation="Op", component="Comp"):
+        time.sleep(0.05)
+
+    end_line = next(c[0][0] for c in logger.debug.call_args_list if "Op_END" in c[0][0])
+    total = float(re.search(r'"totalTime": "([-0-9.]+)"', end_line).group(1))
+    assert 0.05 <= total < 1.0

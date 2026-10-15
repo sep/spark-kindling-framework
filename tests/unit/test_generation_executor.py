@@ -6,8 +6,11 @@ from an ExecutionPlan, supporting both batch and streaming modes.
 See: GitHub Issue #24 - Generation Executor
 """
 
+import sys
+import threading
 import time
 from concurrent.futures import Future
+from contextlib import contextmanager
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
@@ -1499,6 +1502,37 @@ class TestConvenienceMethods:
 # ---- Config-Driven Execution Option Tests ----
 
 
+@contextmanager
+def _executor_sleep_spy():
+    """Record the executor's own ``time.sleep`` calls.
+
+    Patching ``kindling.generation_executor.time.sleep`` replaces the global
+    ``time.sleep``, so a plain mock also records (and stops) the sleeps of
+    any background thread an earlier test left running -- it once saw 453
+    ``sleep(1)`` calls. Only calls made directly from the executor module are
+    recorded; every other caller still sleeps for real."""
+    real_sleep = time.sleep
+    spy = Mock()
+
+    def sleep(seconds):
+        if sys._getframe(1).f_globals.get("__name__") == "kindling.generation_executor":
+            spy(seconds)
+        else:
+            real_sleep(seconds)
+
+    with patch("kindling.generation_executor.time.sleep", new=sleep):
+        yield spy
+
+
+def test_executor_sleep_spy_ignores_other_threads():
+    with _executor_sleep_spy() as spy:
+        sleeper = threading.Thread(target=time.sleep, args=(0.01,))
+        sleeper.start()
+        sleeper.join()
+
+    spy.assert_not_called()
+
+
 def make_config(values):
     """Mock config service backed by a dict of kindling.execution.* values."""
     service = Mock()
@@ -1751,7 +1785,7 @@ class TestRetry:
         )
 
         with (
-            patch("kindling.generation_executor.time.sleep") as sleep_spy,
+            _executor_sleep_spy() as sleep_spy,
             patch.object(executor, "emit", wraps=executor.emit) as emit_spy,
         ):
             result = executor.execute(plan)
@@ -1845,7 +1879,7 @@ class TestRetry:
             Mock(side_effect=[RuntimeError("transient"), Mock()]),
         )
 
-        with patch("kindling.generation_executor.time.sleep") as sleep_spy:
+        with _executor_sleep_spy() as sleep_spy:
             executor.execute(plan)
 
         sleep_spy.assert_called_once_with(5.0)

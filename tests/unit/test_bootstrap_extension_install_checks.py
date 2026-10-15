@@ -1,8 +1,10 @@
+import os
 import site
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 from kindling.bootstrap import (
     _build_run_scoped_staging_path,
     _dbfs_uri_to_local_path,
@@ -194,7 +196,8 @@ def test_extension_install_uses_explicit_dbfs_temp_path_for_databricks():
     assert copied_path.endswith("/extensions/kindling_ext_otel_azure-0.4.0-py3-none-any.whl")
     subprocess_run.assert_called_once()
     install_args = subprocess_run.call_args.args[0]
-    assert "--ignore-installed" in install_args
+    assert "--ignore-installed" not in install_args
+    assert "--upgrade" not in install_args
     assert _dbfs_uri_to_local_path(copied_path) in install_args
     storage_utils.fs.rm.assert_called_once_with(copied_path)
 
@@ -292,8 +295,6 @@ def test_extension_install_prioritizes_new_site_packages_and_clears_stale_depend
                 artifacts_storage_path="abfss://artifacts@acct/path",
             )
 
-        install_args = subprocess_run.call_args.args[0]
-        assert "--ignore-installed" in install_args
         assert "typing_extensions" not in sys.modules
         assert "opentelemetry" not in sys.modules
         assert sys.path[0] == "/user/site"
@@ -533,3 +534,294 @@ def test_modules_of_changed_distributions_includes_modules_the_upgrade_removed(m
     modules = bootstrap._modules_of_changed_distributions(before)
 
     assert modules == {"opentelemetry.util.types", "opentelemetry.util._old"}
+
+
+def _fake_dist(name, version, files, location="/venv/site"):
+    return SimpleNamespace(
+        metadata={"Name": name},
+        version=version,
+        files=files,
+        locate_file=lambda path, location=location: f"{location}/{path}".rstrip("/"),
+    )
+
+
+def test_key_distribution_constraints_pin_installed_key_packages_only():
+    from kindling.bootstrap import _key_distribution_constraints
+
+    constraints = _key_distribution_constraints(
+        {
+            "opentelemetry-api": ("1.32.1", frozenset()),
+            "azure-core": "1.30.2",
+            "azure-identity": "2023.12.01-conda",  # not a PEP 440 version
+            "requests": "2.32.3",  # not a key package
+        }
+    )
+
+    assert constraints == ["azure-core==1.30.2", "opentelemetry-api==1.32.1"]
+
+
+def _completed(returncode=0, stdout="", stderr=""):
+    return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+def _run_pip_install(monkeypatch, results, installed):
+    """Run _pip_install_keeping_installed with subprocess.run returning
+    `results` in turn; returns (result, [(command, constraints file text)])."""
+    import kindling.bootstrap as bootstrap
+
+    calls = []
+    pending = list(results)
+
+    def run(command, **kwargs):
+        constraints = None
+        if "-c" in command:
+            with open(command[command.index("-c") + 1], encoding="utf-8") as handle:
+                constraints = handle.read()
+        calls.append((command, constraints))
+        return pending.pop(0)
+
+    monkeypatch.setattr(bootstrap, "_installed_distribution_versions", lambda: dict(installed))
+    monkeypatch.setattr(bootstrap.subprocess, "run", run)
+    result = bootstrap._pip_install_keeping_installed(MagicMock(), ["/tmp/ext.whl"])
+    return result, calls
+
+
+def test_pip_install_keeps_installed_packages_and_pins_key_ones(monkeypatch):
+    result, calls = _run_pip_install(
+        monkeypatch,
+        [_completed()],
+        {"opentelemetry-sdk": "1.32.1", "azure-core": "1.34.0", "requests": "2.32.3"},
+    )
+
+    assert result.returncode == 0
+    [(command, constraints)] = calls
+    assert command[:4] == [sys.executable, "-m", "pip", "install"]
+    assert command[-1] == "/tmp/ext.whl"
+    for flag in ("--ignore-installed", "--upgrade", "--upgrade-strategy", "--force-reinstall"):
+        assert flag not in command
+    assert constraints == "azure-core==1.34.0\nopentelemetry-sdk==1.32.1\n"
+
+
+def test_pip_install_retries_with_ignore_installed_when_pip_cannot_uninstall(monkeypatch):
+    uninstall_error = _completed(
+        1, stderr="error: uninstall-no-record-file\n× Cannot uninstall typing_extensions 4.9.0"
+    )
+    result, calls = _run_pip_install(
+        monkeypatch, [uninstall_error, _completed()], {"azure-core": "1.30.2"}
+    )
+
+    assert result.returncode == 0
+    assert "--ignore-installed" not in calls[0][0]
+    assert "--ignore-installed" in calls[1][0]
+    assert calls[1][1] == "azure-core==1.30.2\n"  # key packages stay pinned
+
+
+def test_pip_install_drops_key_pins_only_when_requirements_cannot_be_met(monkeypatch):
+    conflict = _completed(1, stderr="ERROR: ResolutionImpossible: ...")
+    result, calls = _run_pip_install(
+        monkeypatch, [conflict, _completed()], {"opentelemetry-api": "1.16.0"}
+    )
+
+    assert result.returncode == 0
+    assert calls[0][1] == "opentelemetry-api==1.16.0\n"
+    assert "-c" not in calls[1][0]
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "ERROR: Could not install packages due to an OSError: [Errno 28] No space left on device",
+        "ERROR: THESE PACKAGES DO NOT MATCH THE HASHES FROM THE REQUIREMENTS FILE.",
+        "WARNING: Retrying (Retry(total=4)) after connection broken by 'ReadTimeoutError'",
+    ],
+)
+def test_pip_install_keeps_pins_for_failures_that_are_not_conflicts(monkeypatch, stderr):
+    """Only a resolver conflict drops the runtime pins: retrying unpinned after
+    an unrelated failure could replace the packages the pins protect."""
+    failure = _completed(1, stderr=stderr)
+    result, calls = _run_pip_install(monkeypatch, [failure], {"azure-core": "1.30.2"})
+
+    assert result.returncode == 1
+    assert len(calls) == 1
+
+
+def test_pip_install_returns_the_failure_once_fallbacks_are_exhausted(monkeypatch):
+    failure = _completed(1, stderr="ERROR: No matching distribution found for x")
+    result, calls = _run_pip_install(monkeypatch, [failure, failure], {"numpy": "1.26.4"})
+
+    assert result.returncode == 1
+    assert len(calls) == 2  # pinned, then unpinned
+
+    result, calls = _run_pip_install(monkeypatch, [failure], {})
+    assert result.returncode == 1
+    assert len(calls) == 1  # nothing to unpin
+
+
+def test_colocate_reinstalls_regular_package_owner_next_to_added_modules(monkeypatch):
+    """azure-core-tracing-opentelemetry adds azure/core/tracing/ext/... to the
+    job's virtualenv while azure-core stays in the runtime's site-packages;
+    azure.core resolves to the latter only, so the plugin can't be imported
+    until azure-core (same version) is installed next to it. A plugin that had
+    installed into azure-core there moves with it, or the new copy would hide
+    it. Loaded azure.core packages are kept (a preloaded SDK's exception
+    classes stay the ones later imports get) and gain the new directory."""
+    import types
+
+    import kindling.bootstrap as bootstrap
+
+    azure_core_files = [
+        "azure/core/__init__.py",
+        "azure/core/exceptions.py",
+        "azure/core/tracing/__init__.py",
+        "azure/core/tracing/ext/__init__.py",
+    ]
+    before = [
+        _fake_dist(
+            "azure-core-tracing-opentelemetry",
+            "1.0.0b13",
+            ["azure/core/tracing/ext/opentelemetry_span/__init__.py"],
+            location="/venv/site",
+        ),
+        _fake_dist("azure-core", "1.34.0", azure_core_files, location="/system/site"),
+        _fake_dist(
+            "azure-core-plugin",
+            "2.0",
+            ["azure/core/plugin/__init__.py"],
+            location="/system/site",
+        ),
+        _fake_dist("unrelated", "1.0", ["unrelated/__init__.py"], location="/system/site"),
+    ]
+    after = [
+        before[0],
+        _fake_dist("azure-core", "1.34.0", azure_core_files, location="/venv/site"),
+        _fake_dist(
+            "azure-core-plugin", "2.0", ["azure/core/plugin/__init__.py"], location="/venv/site"
+        ),
+        *before[1:],
+    ]
+    run = MagicMock(return_value=_completed())
+    monkeypatch.setattr(
+        "importlib.metadata.distributions", lambda: iter(after if run.called else before)
+    )
+    monkeypatch.setattr(bootstrap.subprocess, "run", run)
+
+    azure_core = types.ModuleType("azure.core")
+    azure_core.__path__ = ["/system/site/azure/core"]
+    tracing_ext = types.ModuleType("azure.core.tracing.ext")
+    tracing_ext.__path__ = ["/system/site/azure/core/tracing/ext"]
+    exceptions = types.ModuleType("azure.core.exceptions")
+    exceptions.HttpResponseError = type("HttpResponseError", (Exception,), {})
+    preloaded_error = exceptions.HttpResponseError
+    monkeypatch.setitem(sys.modules, "azure.core", azure_core)
+    monkeypatch.setitem(sys.modules, "azure.core.tracing.ext", tracing_ext)
+    monkeypatch.setitem(sys.modules, "azure.core.exceptions", exceptions)
+
+    result = bootstrap._colocate_extended_packages(
+        MagicMock(), {"azure-core": "1.34.0", "azure-core-plugin": "2.0", "unrelated": "1.0"}
+    )
+
+    assert result is None
+    command = run.call_args.args[0]
+    assert command[-2:] == ["azure-core==1.34.0", "azure-core-plugin==2.0"]
+    assert "--no-deps" in command and "--ignore-installed" in command
+    assert sys.modules["azure.core"] is azure_core
+    assert sys.modules["azure.core.exceptions"].HttpResponseError is preloaded_error
+    assert azure_core.__path__ == ["/venv/site/azure/core", "/system/site/azure/core"]
+    assert tracing_ext.__path__ == [
+        "/venv/site/azure/core/tracing/ext",
+        "/system/site/azure/core/tracing/ext",
+    ]
+
+
+def test_colocate_lets_unloaded_subpackages_of_a_preloaded_owner_reach_the_plugin(
+    monkeypatch, tmp_path
+):
+    """Only the owner's top package is loaded: its subpackages, imported
+    later, must come from the new copy, or the plugin module next to them in
+    it is still not found."""
+    import importlib
+
+    import kindling.bootstrap as bootstrap
+
+    owner_files = [
+        "kpkg_colocate/core/__init__.py",
+        "kpkg_colocate/core/tracing/__init__.py",
+        "kpkg_colocate/core/tracing/ext/__init__.py",
+    ]
+    plugin_files = ["kpkg_colocate/core/tracing/ext/span/__init__.py"]
+    system, venv = tmp_path / "system", tmp_path / "venv"
+    for root, files in ((system, owner_files), (venv, owner_files + plugin_files)):
+        for path in files:
+            (root / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / path).write_text("")
+    system, venv = os.path.realpath(system), os.path.realpath(venv)
+    plugin = _fake_dist("kpkg-plugin", "1.0", plugin_files, location=venv)
+    before = [plugin, _fake_dist("kpkg-core", "2.0", owner_files, location=system)]
+    after = [plugin, _fake_dist("kpkg-core", "2.0", owner_files, location=venv), before[1]]
+    run = MagicMock(return_value=_completed())
+    monkeypatch.setattr(
+        "importlib.metadata.distributions", lambda: iter(after if run.called else before)
+    )
+    monkeypatch.setattr(bootstrap.subprocess, "run", run)
+
+    monkeypatch.syspath_prepend(system)  # the runtime's copy, loaded first
+    for name in [m for m in sys.modules if m.startswith("kpkg_colocate")]:
+        monkeypatch.delitem(sys.modules, name)
+    owner = importlib.import_module("kpkg_colocate.core")
+    try:
+        bootstrap._colocate_extended_packages(MagicMock(), {"kpkg-core": "2.0"})
+        importlib.invalidate_caches()
+
+        span = importlib.import_module("kpkg_colocate.core.tracing.ext.span")
+
+        assert sys.modules["kpkg_colocate.core"] is owner
+        assert span.__file__.startswith(venv)
+    finally:
+        for name in [m for m in sys.modules if m.startswith("kpkg_colocate")]:
+            del sys.modules[name]
+
+
+def test_colocate_leaves_packages_installed_in_one_place_alone(monkeypatch):
+    import kindling.bootstrap as bootstrap
+
+    dists = [
+        _fake_dist(
+            "azure-core-tracing-opentelemetry",
+            "1.0.0b13",
+            ["azure/core/tracing/ext/opentelemetry_span/__init__.py"],
+        ),
+        _fake_dist("azure-core", "1.30.2", ["azure/core/__init__.py"]),
+        # unchanged by the install, so not checked even though split
+        _fake_dist("old-plugin", "1.0", ["azure/core/x/__init__.py"], location="/other"),
+    ]
+    monkeypatch.setattr("importlib.metadata.distributions", lambda: iter(dists))
+    run = MagicMock()
+    monkeypatch.setattr(bootstrap.subprocess, "run", run)
+
+    bootstrap._colocate_extended_packages(
+        MagicMock(), {"azure-core": "1.30.2", "old-plugin": "1.0"}
+    )
+
+    run.assert_not_called()
+
+
+def test_report_warns_about_each_replaced_installed_package(monkeypatch):
+    import kindling.bootstrap as bootstrap
+
+    monkeypatch.setattr(
+        bootstrap,
+        "_installed_distribution_versions",
+        lambda: {"opentelemetry-api": "1.36.0", "azure-core": "1.34.0", "new-dep": "1.0"},
+    )
+    logger = MagicMock()
+
+    bootstrap._report_replaced_distributions(
+        logger,
+        {"opentelemetry-api": ("1.32.1", frozenset()), "azure-core": ("1.34.0", frozenset())},
+        "spark-kindling-ext-otel-azure",
+    )
+
+    logger.warning.assert_called_once_with(
+        "Installing spark-kindling-ext-otel-azure replaced installed opentelemetry-api "
+        "1.32.1 with 1.36.0"
+    )

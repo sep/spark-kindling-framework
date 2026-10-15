@@ -43,12 +43,12 @@ All notable changes to spark-kindling are documented here.
   extension it builds on). From 0.14.0 every extension is 0.14.x, so each
   version number is tied to one set of files across GitHub releases and PyPI.
 - **The cluster bootstrap never reinstalls Kindling for an extension.** It
-  installed extension wheels with `pip install --ignore-installed --upgrade`
-  and their dependencies, so an extension declaring `spark-kindling` would
-  make pip fetch Kindling from the package index over the runtime the
-  bootstrap installed from the artifacts store (or fail where no index has
-  it). Extensions are now installed with `--no-deps`; their other
-  requirements are installed separately, and their Kindling requirements are
+  installed extension wheels with their dependencies, so an extension
+  declaring `spark-kindling` could make pip fetch Kindling from the package
+  index over the runtime the bootstrap installed from the artifacts store
+  (or fail where no index has it). Extensions are now installed with
+  `--no-deps`; their other requirements are installed separately, keeping
+  the runtime's packages as in 0.13.5, and their Kindling requirements are
   checked against the installed runtime, failing with both versions named.
 - `kindling package init --source auto|pypi|github`: with no Kindling pin at
   the repo root, `auto` writes PyPI version pins only when the release is on
@@ -63,6 +63,111 @@ All notable changes to spark-kindling are documented here.
   extension), before the extension itself. `kindling env add
   spark-kindling-ext-databricks` failed with GitHub pins because uv looked
   SDP up on a package index.
+- **Span durations no longer go negative when the clock is corrected.**
+  `totalTime` on trace span END events (the Spark event trace provider and
+  the plain-python provider) was the difference of two wall-clock
+  timestamps, so an NTP or WSL clock correction during a span gave a
+  negative or inflated duration. It is now measured with a monotonic clock;
+  `startTime`/`endTime` stay wall-clock timestamps.
+- **Streaming recovery backoff no longer follows wall-clock corrections.**
+  The recovery manager scheduled each restart attempt as a wall-clock
+  time and compared it with `datetime.now()`, so a clock correction
+  delayed or hastened a recovery by the size of the step. Attempts are now
+  due on a monotonic clock; `next_attempt_time` is still reported as a
+  timestamp, and setting it directly still takes effect.
+
+## [0.13.5] - 2026-10-14
+
+### Changed
+
+- **Extension installs keep the runtime's packages.** The cluster bootstrap
+  installed extension wheels with `pip install --ignore-installed --upgrade
+  --upgrade-strategy eager`, which copied the newest version of every
+  dependency over the runtime's own (on Databricks Runtime 17.3 the
+  otel-azure extension replaced OpenTelemetry 1.32.1, azure-core,
+  azure-identity, msal, typing-extensions, psutil and more; on Fabric it
+  replaced azure-core 1.30.2). Extensions now install without those flags,
+  so pip keeps every installed version that satisfies their requirements,
+  and with the runtime's key packages (azure-core, azure-identity, msal,
+  azure-monitor-opentelemetry, OpenTelemetry API/SDK/semantic conventions,
+  typing-extensions, numpy, pandas, pyarrow, protobuf, pyspark, py4j) pinned
+  at their installed versions, so pip picks the highest extension
+  dependency versions that work with them. If pip can't replace an
+  installed package (installed by conda or distutils), the install is
+  retried with `--ignore-installed` (the key packages stay pinned); if the
+  requirements can't be met with the key packages pinned, it is retried
+  without the pins. When an install adds modules into a package the runtime
+  installed elsewhere (azure-core-tracing-opentelemetry into
+  `azure.core` on Databricks), that package is reinstalled, at the same
+  version, next to them so they can be imported. Every installed package an
+  extension or `kindling.required_packages` install changes the version of
+  is logged as a warning. `required_packages` still install with
+  `--ignore-installed`: they are an explicit request.
+- **otel-azure extension accepts azure-monitor-opentelemetry 1.6 through
+  1.8** (spark-kindling-ext-otel-azure 0.4.1; was `<1.7.0`). Synapse 3.5
+  ships 1.8.2, which the extension had to replace; Databricks 17.3 now gets
+  1.6.7 and Fabric 1.3 gets 1.6.10, the highest that work with their
+  OpenTelemetry and azure-core.
+- **The lock tests the highest versions the dependency ranges allow** for
+  packages a supported runtime doesn't ship, since clusters install those:
+  databricks-sdk 0.152.0, packaging 26.3, azure-storage-file-datalake
+  12.23.0, azure-storage-blob 12.28.0, typing-extensions 4.16.0, msal
+  1.39.0. (azure-core and azure-identity stay at 1.30.x / 1.17.x, the
+  ceiling under Fabric's cap.) No range changes.
+
+### Added
+
+- `poe check-extension-runtimes` resolves each extension's requirements
+  (against the package index) with the key package versions Databricks
+  17.3, Fabric 1.3 and Synapse 3.5 ship pinned, and fails when a runtime
+  would need one of them replaced.
+- **Spark 4 test lane.** `poe test-spark4 [--mode classic|connect]` runs the
+  unit and integration suites against Spark 4.0 (the Spark line of
+  Databricks Runtime 17.x) in an isolated `.venv-spark4`, built by
+  `poe spark4-runtime` from `uv.lock` with the Spark stack swapped for
+  `pyspark[connect]` 4.0 + `delta-spark` 4.0 (Scala 2.13); the default
+  environment and its Spark 3.5 pins are unchanged. `--mode connect` runs
+  every test session over an in-process Spark Connect server. CI runs both
+  modes as the **Spark 4 Tests** job for runtime changes. Known Spark 4
+  failures are listed in `tests/spark4_known_failures.txt` and strict-xfailed
+  only in this lane, so a fix shows up as `XPASS`.
+
+### Fixed
+
+- **YAML `add_columns` types parse on Spark 4.** `{name, type}` entries
+  used the private `pyspark.sql.types._all_atomic_types`, which Spark 4.0
+  removed, so every typed column raised `ImportError`. The atomic types are
+  now looked up from the public type classes; the accepted names and
+  aliases are unchanged (`char`/`varchar`, which need a length and always
+  failed, are now rejected with the usual invalid-type error).
+- **Event Hubs `preprocess: kafka` tolerates invalid UTF-8 on Spark 4.**
+  Spark 4.0's `decode(bin, 'UTF-8')` fails the query with
+  `[MALFORMED_CHARACTER_CODING]` where Spark 3.x substituted U+FFFD. On
+  Spark 4 the body and plain header values now decode with
+  `make_valid_utf8(cast(... AS STRING))`, which keeps the lenient result on
+  classic and Spark Connect sessions alike.
+- **Event Hubs `amqp_headers` works over Spark Connect.** The header
+  decoding UDF was built at import time, so importing Kindling before a
+  Spark Connect session existed (Databricks standard/shared access mode)
+  produced a classic UDF that rejected Connect columns
+  (`[NOT_COLUMN_OR_STR]`). It is now built when the transform is applied.
+- **The memory provider no longer reports missing entities as existing over
+  Spark Connect.** `check_entity_exists` probed with `spark.table(name)`,
+  which is lazy on Connect and never raises, so SCD2 merges into a new
+  memory entity skipped the temporal-column bootstrap. The probe now forces
+  analysis.
+- **Telemetry provider overrides take effect after the bootstrap resolved the
+  defaults** (spark-kindling-ext-otel-azure 0.4.1). Rebinding an interface
+  in the DI container left the singleton already resolved for it in place,
+  so after the bootstrap had resolved `PythonLoggerProvider`,
+  `get_kindling_service(PythonLoggerProvider)` kept returning the default
+  provider even with the Azure Monitor extension loaded (and the plain-python
+  swap on runtimes without a JVM bridge only reached the concrete
+  `SparkLoggerProvider`). The new `GlobalInjector.rebind_singleton` also
+  evicts the cached instance; the extension uses it when the runtime has it.
+  Loggers and services that already hold the earlier provider keep it.
+  Re-running `initialize_framework` on a runtime without a JVM bridge keeps
+  an extension's providers instead of swapping the plain ones back in.
 
 ## [0.13.4] - 2026-10-13
 

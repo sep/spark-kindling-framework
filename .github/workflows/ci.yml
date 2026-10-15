@@ -412,6 +412,36 @@ jobs:
           name: code-quality-reports
           path: output/
 
+  extension-runtime-check:
+    name: Extension Runtime Check
+    runs-on: ubuntu-latest
+    needs: [classify-changes, build-ci-image]
+    # Resolves each extension's requirements with the key packages Databricks,
+    # Fabric and Synapse ship pinned (scripts/check_extension_runtime_packages.py),
+    # so a dependency change that would make a cluster install replace a runtime
+    # package fails here instead of on the cluster. Runs when a pyproject.toml,
+    # the check (with its runtime pin table) or this workflow changes, and for
+    # release tags.
+    if: >-
+      needs.classify-changes.outputs.fast_track != 'true' && (
+        startsWith(github.ref, 'refs/tags/v') ||
+        contains(needs.classify-changes.outputs.changed_files, 'pyproject.toml') ||
+        contains(needs.classify-changes.outputs.changed_files, 'scripts/check_extension_runtime_packages.py') ||
+        contains(needs.classify-changes.outputs.changed_files, '.github/workflows/ci.yml')
+      )
+    container:
+      image: ${{ needs.build-ci-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Check extensions against the runtimes' key packages
+        run: poe check-extension-runtimes
+
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
@@ -449,6 +479,52 @@ jobs:
         with:
           name: integration-test-results
           path: test-results/integration-test-results.xml
+
+  spark4-tests:
+    name: Spark 4 Tests (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    needs: [classify-changes, build-ci-image]
+    container:
+      image: ${{ needs.build-ci-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    # Every other lane runs PySpark 3.5, but Databricks Runtime 17.x (the CI
+    # cluster's DBR 17.3 LTS included) is Spark 4.0 / Scala 2.13 / Python 3.12
+    # -- a Temporal bug that only Spark 4 exposed shipped that way. This lane
+    # runs the unit + integration suites in an isolated .venv-spark4 (built
+    # from uv.lock with the Spark stack swapped for pyspark[connect] 4.0 +
+    # delta-spark 4.0; the default environment is untouched), once with
+    # classic sessions and once over Spark Connect. Known Spark 4 failures are
+    # strict-xfailed from tests/spark4_known_failures.txt, so new breakage and
+    # fixed entries (XPASS) both turn it red. Gated like the other runtime
+    # work: any change not classified as CLI/SDK/docs-only.
+    if: |
+      needs.classify-changes.outputs.fast_track != 'true' &&
+      needs.classify-changes.outputs.release_kind == 'runtime'
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [classic, connect]
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Provision the Spark 4 runtime (.venv-spark4)
+        run: poe spark4-runtime
+
+      - name: Run unit + integration suites on Spark 4 (${{ matrix.mode }})
+        run: |
+          poe test-spark4 --mode "${{ matrix.mode }}" --ci --workers "${KINDLING_SPARK4_TEST_CI_WORKERS:-4}"
+
+      - name: Upload Spark 4 test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spark4-${{ matrix.mode }}-test-results
+          path: test-results/all-test-*
 
   full-suite-single-process:
     name: Full Suite (single process)
@@ -912,6 +988,7 @@ jobs:
         full-suite-single-process,
         security-scan,
         system-tests,
+        extension-runtime-check,
       ]
     if: |
       always() &&
@@ -923,7 +1000,8 @@ jobs:
           needs.lint-and-format.result == 'success' &&
           needs.integration-tests.result == 'success' &&
           needs.full-suite-single-process.result == 'success' &&
-          needs.security-scan.result == 'success'
+          needs.security-scan.result == 'success' &&
+          needs.extension-runtime-check.result == 'success'
         )
       ) &&
       (
@@ -1170,9 +1248,11 @@ jobs:
         unit-tests,
         integration-tests,
         full-suite-single-process,
+        spark4-tests,
         kda-packaging-tests,
         system-tests,
         security-scan,
+        extension-runtime-check,
       ]
     if: always()
 
@@ -1222,6 +1302,15 @@ jobs:
           fi
 
 
+          # Check the Spark 4 lane (both matrix legs report one aggregate result)
+          if [ "${{ needs.spark4-tests.result }}" == "success" ]; then
+            echo "| Spark 4 Tests (classic + connect) | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.spark4-tests.result }}" == "skipped" ]; then
+            echo "| Spark 4 Tests (classic + connect) | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Spark 4 Tests (classic + connect) | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+
           # Check KDA tests
           if [ "${{ needs.kda-packaging-tests.result }}" == "success" ]; then
             echo "| KDA Packaging Tests | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
@@ -1243,4 +1332,13 @@ jobs:
             echo "| Security Scan | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
           else
             echo "| Security Scan | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Check the extension runtime check (runs only for dependency changes and tags)
+          if [ "${{ needs.extension-runtime-check.result }}" == "success" ]; then
+            echo "| Extension Runtime Check | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.extension-runtime-check.result }}" == "skipped" ]; then
+            echo "| Extension Runtime Check | ⏭️ Skipped (no dependency changes) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Extension Runtime Check | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
           fi

@@ -242,7 +242,7 @@ wheels = [
 
 [[package]]
 name = "azure-storage-blob"
-version = "12.27.0"
+version = "12.28.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "azure-core" },
@@ -250,14 +250,14 @@ dependencies = [
     { name = "isodate" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/02/32/0476f18ac82ef1def115dfabaa53170c5a71605c00b4e66c740b07abae71/azure_storage_blob-12.27.0.tar.gz", hash = "sha256:99e8e2cd2a6a723930c364ea0a0539d28e465bc77cf94ef12813c465dc09cb9a", size = 597402, upload-time = "2025-10-15T13:26:15.718Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/71/24/072ba8e27b0e2d8fec401e9969b429d4f5fc4c8d4f0f05f4661e11f7234a/azure_storage_blob-12.28.0.tar.gz", hash = "sha256:e7d98ea108258d29aa0efbfd591b2e2075fa1722a2fae8699f0b3c9de11eff41", size = 604225, upload-time = "2026-01-06T23:48:57.282Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b5/55/5c8aec0544007ec8f9ddd0e3b69939a3a41eb6c3897e2454797021753478/azure_storage_blob-12.27.0-py3-none-any.whl", hash = "sha256:b7bef8acb79825f96f2fa24c7535e2924fb3dbc4840a2eebb5f117175bde3657", size = 428916, upload-time = "2025-10-15T13:26:17.607Z" },
+    { url = "https://files.pythonhosted.org/packages/d8/3a/6ef2047a072e54e1142718d433d50e9514c999a58f51abfff7902f3a72f8/azure_storage_blob-12.28.0-py3-none-any.whl", hash = "sha256:00fb1db28bf6a7b7ecaa48e3b1d5c83bfadacc5a678b77826081304bd87d6461", size = 431499, upload-time = "2026-01-06T23:48:58.995Z" },
 ]
 
 [[package]]
 name = "azure-storage-file-datalake"
-version = "12.22.0"
+version = "12.23.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "azure-core" },
@@ -265,9 +265,9 @@ dependencies = [
     { name = "isodate" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/16/df/9c768fb369a02652177ce91884152db6c00566294d77563ddb710181dfe2/azure_storage_file_datalake-12.22.0.tar.gz", hash = "sha256:9aed0d35f3327baeeb11b1950b140f97b356cfd368fc2cd105c32c820c49af77", size = 285355, upload-time = "2025-10-15T16:10:38.93Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d6/cb/12f98b44bc6144f21ffb08ee839aea294a3e413f8f2ef161a18c21317201/azure_storage_file_datalake-12.23.0.tar.gz", hash = "sha256:94ce1a209e726bce3a54266822901fa190d2029c89b52be6f5e78d7e5fb1092f", size = 300460, upload-time = "2026-01-07T01:22:21.072Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e4/5a/0f506865dada0301ae93aad72c986b28ff1ded3a593f5307de5e8e1b88ad/azure_storage_file_datalake-12.22.0-py3-none-any.whl", hash = "sha256:dba235d2fa21135205dbcbba884ea5f8a3aff800a8f89205a1a5a404843a1fc5", size = 264750, upload-time = "2025-10-15T16:10:40.296Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/21/624c95ddf0e643d3cceb629ce7be415b760617dcdfcc31cf85b896824726/azure_storage_file_datalake-12.23.0-py3-none-any.whl", hash = "sha256:bec9324295d4311eb2e8fad28cf174532e9c768d2f60bdb139634cd719567f5b", size = 284480, upload-time = "2026-01-07T01:22:22.203Z" },
 ]
 
 [[package]]
@@ -948,16 +948,17 @@ wheels = [
 
 [[package]]
 name = "databricks-sdk"
-version = "0.110.0"
+version = "0.152.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "google-auth" },
     { name = "protobuf" },
     { name = "requests" },
+    { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/07/0f/488d61ece084f70a6d4d0ab8b5e38b0902e0b9029d0b72cde99e3f2c6b4a/databricks_sdk-0.110.0.tar.gz", hash = "sha256:b62d806982b37f8160f700d657c37b3bd586c649eb5c8c4c1216090d888c5820", size = 945261, upload-time = "2026-05-19T09:18:46.23Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a7/9b/f10a9320d02c394ffc035af92139368b3dbe01f6cc9df66b4f76a6220a11/databricks_sdk-0.152.0.tar.gz", hash = "sha256:471661106b4d6ca4a2a1bfea04f72cccc49aa89bafad6094b373f7885ab1f457", size = 1144735, upload-time = "2026-10-13T04:42:56.839Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9d/23/7c2a827890ab120ac349847ec17ab5a37eb4e3bf8f1d0989fd9eec0c1e6a/databricks_sdk-0.110.0-py3-none-any.whl", hash = "sha256:8a23db05be7a304bea43b4fa78b437051ed0f3755b19594429c649ee4159b546", size = 892096, upload-time = "2026-05-19T09:18:44.313Z" },
+    { url = "https://files.pythonhosted.org/packages/46/7e/fa7bbc3e131a494e58fd38654d2d4760c4e974c26c3c56b3e300ddf48e17/databricks_sdk-0.152.0-py3-none-any.whl", hash = "sha256:e216880c6b35ac251c1637c4f13e9ba0d2703c27b11fe985dc565add4b2b7eba", size = 1089006, upload-time = "2026-10-13T04:42:55.055Z" },
 ]
 
 [[package]]
@@ -2021,16 +2022,16 @@ wheels = [
 
 [[package]]
 name = "msal"
-version = "1.34.0"
+version = "1.39.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cf/0e/c857c46d653e104019a84f22d4494f2119b4fe9f896c92b4b864b3b045cc/msal-1.34.0.tar.gz", hash = "sha256:76ba83b716ea5a6d75b0279c0ac353a0e05b820ca1f6682c0eb7f45190c43c2f", size = 153961, upload-time = "2025-09-22T23:05:48.989Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bb/85/747d28986a44b715cc51cf57aa021c8fd94e9614064261ceec77320e8b0b/msal-1.39.0.tar.gz", hash = "sha256:6ab7de335e6d7f5717e2c7e1dbf86e4dda2f6acf3c56773b78dc53ebc6395b5f", size = 205360, upload-time = "2026-09-17T16:07:45.1Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c2/dc/18d48843499e278538890dc709e9ee3dea8375f8be8e82682851df1b48b5/msal-1.34.0-py3-none-any.whl", hash = "sha256:f669b1644e4950115da7a176441b0e13ec2975c29528d8b9e81316023676d6e1", size = 116987, upload-time = "2025-09-22T23:05:47.294Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/32/178457385925ce301c7b3232bd85665d4df57da39568b62dcfc74031873f/msal-1.39.0-py3-none-any.whl", hash = "sha256:2d2577886906cd7293850dffa2da29119966c213bfc6ec0cecf8bf7621e1ca77", size = 131629, upload-time = "2026-09-17T16:07:46.722Z" },
 ]
 
 [[package]]
@@ -2353,11 +2354,11 @@ wheels = [
 
 [[package]]
 name = "packaging"
-version = "25.0"
+version = "26.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a1/d4/1fc4078c65507b51b96ca8f8c3ba19e6a61c8253c72794544580a7b6c24d/packaging-25.0.tar.gz", hash = "sha256:d443872c98d677bf60f6a1f2f8c1cb748e8fe762d2bf9d3148b5599295b0fc4f", size = 165727, upload-time = "2025-04-19T11:48:59.673Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7d/fa/3944b40b07da9ce895c0e6303a5ab7d53da063554f534556b134a54d6093/packaging-26.3.tar.gz", hash = "sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79", size = 313412, upload-time = "2026-08-04T18:15:28.737Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/20/12/38679034af332785aac8774540895e234f4d07f7545804097de4b666afd8/packaging-25.0-py3-none-any.whl", hash = "sha256:29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484", size = 66469, upload-time = "2025-04-19T11:48:57.875Z" },
+    { url = "https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl", hash = "sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c", size = 129956, upload-time = "2026-08-04T18:15:27.159Z" },
 ]
 
 [[package]]
@@ -3359,7 +3360,7 @@ wheels = [
 
 [[package]]
 name = "spark-kindling"
-version = "0.13.4"
+version = "0.13.5"
 source = { editable = "." }
 dependencies = [
     { name = "azure-core" },
@@ -3485,7 +3486,7 @@ dev = [
 
 [[package]]
 name = "spark-kindling-cli"
-version = "0.13.4"
+version = "0.13.5"
 source = { editable = "packages/kindling_cli" }
 dependencies = [
     { name = "click" },
@@ -3521,7 +3522,7 @@ provides-extras = ["deploy", "test-cleanup"]
 
 [[package]]
 name = "spark-kindling-sdk"
-version = "0.13.4"
+version = "0.13.5"
 source = { editable = "packages/kindling_sdk" }
 dependencies = [
     { name = "azure-core" },
@@ -3686,11 +3687,11 @@ wheels = [
 
 [[package]]
 name = "typing-extensions"
-version = "4.15.0"
+version = "4.16.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/72/94/1a15dd82efb362ac84269196e94cf00f187f7ed21c242792a923cdb1c61f/typing_extensions-4.15.0.tar.gz", hash = "sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466", size = 109391, upload-time = "2025-08-25T13:49:26.313Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f6/cc/6253133b5bb138fc3306cebfbda2c520f545d36b5be2c7255cc528bb45d6/typing_extensions-4.16.0.tar.gz", hash = "sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5", size = 113555, upload-time = "2026-07-02T08:40:05.92Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/18/67/36e9267722cc04a6b9f15c7f3441c2363321a3ea07da7ae0c0707beb2a9c/typing_extensions-4.15.0-py3-none-any.whl", hash = "sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548", size = 44614, upload-time = "2025-08-25T13:49:24.86Z" },
+    { url = "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8", size = 45571, upload-time = "2026-07-02T08:40:04.659Z" },
 ]
 
 [[package]]

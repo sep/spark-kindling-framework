@@ -10,7 +10,6 @@ from abc import ABC, abstractmethod
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from kindling.injection import GlobalInjector, get_kindling_service
 
 
@@ -611,6 +610,54 @@ class TestInjectionIntegration:
         result = service.process(2)
 
         assert result == "processed_item2", "Service should process data from repository"
+
+
+class TestGlobalInjectorRebindSingleton:
+    """rebind_singleton replaces a binding even after the interface was resolved."""
+
+    @pytest.fixture
+    def injector(self, monkeypatch):
+        from injector import Injector
+
+        injector = Injector(auto_bind=True)
+        monkeypatch.setattr(GlobalInjector, "get_injector", classmethod(lambda cls: injector))
+        return injector
+
+    def test_rebind_evicts_the_cached_singleton(self, injector):
+        from injector import singleton
+
+        class Port(ABC):
+            @abstractmethod
+            def name(self): ...
+
+        class Default(Port):
+            def name(self):
+                return "default"
+
+        class Override(Port):
+            def name(self):
+                return "override"
+
+        injector.binder.bind(Port, to=Default, scope=singleton)
+        assert isinstance(GlobalInjector.get(Port), Default)  # cached per interface key
+
+        GlobalInjector.rebind_singleton(Port, Override)
+
+        resolved = GlobalInjector.get(Port)
+        assert isinstance(resolved, Override)
+        assert GlobalInjector.get(Port) is resolved  # still a singleton
+
+    def test_rebind_before_any_resolution(self, injector):
+        class Port(ABC):
+            pass
+
+        class Impl(Port):
+            pass
+
+        GlobalInjector.rebind_singleton(Port, Impl)
+
+        assert isinstance(GlobalInjector.get(Port), Impl)
+        assert GlobalInjector.get(Port) is GlobalInjector.get(Port)
 
 
 if __name__ == "__main__":

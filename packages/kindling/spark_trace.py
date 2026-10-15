@@ -180,6 +180,27 @@ class SparkSpan:
     # Id of the enclosing span at open time (None for roots). Appended with a
     # default so existing positional constructions keep working.
     parent_id: Optional[str] = None
+    # Monotonic clock readings for the span's duration: start_time/end_time
+    # are wall-clock timestamps, which a clock correction (NTP, WSL resync)
+    # can step backwards, giving a negative or inflated totalTime.
+    _monotonic_start: float = field(
+        default_factory=time.perf_counter, init=False, repr=False, compare=False
+    )
+    _monotonic_end: Optional[float] = field(default=None, init=False, repr=False, compare=False)
+
+    def mark_end(self) -> None:
+        """Record the span's end, on both the wall clock and the monotonic clock."""
+        self.end_time = datetime.now()
+        self._monotonic_end = time.perf_counter()
+
+    def total_time(self) -> str:
+        """Elapsed seconds (3 decimals) from the monotonic clock once
+        ``mark_end`` ran; otherwise from the wall-clock timestamps."""
+        if self._monotonic_end is not None:
+            seconds = self._monotonic_end - self._monotonic_start
+        else:
+            seconds = (self.end_time - self.start_time).total_seconds()
+        return f"{seconds:.3f}"
 
 
 class SparkTraceProvider(ABC):
@@ -347,16 +368,14 @@ class EventBasedSparkTrace(SparkTraceProvider):
 
             finally:
                 try:
-                    current_span.end_time = datetime.now()
+                    current_span.mark_end()
                     end_base = self._add_timestamp_to_dict(
                         live_details, "startTime", current_span.start_time
                     )
                     end_details = self._add_timestamp_to_dict(
                         end_base, "endTime", current_span.end_time
                     )
-                    end_details["totalTime"] = self._calculate_time_diff(
-                        current_span.start_time, current_span.end_time
-                    )
+                    end_details["totalTime"] = current_span.total_time()
                     if current_span.parent_id is not None:
                         end_details["parentSpanId"] = current_span.parent_id
                     self.emitter.emit_custom_event(
@@ -442,7 +461,7 @@ class EventBasedSparkTrace(SparkTraceProvider):
         span: SparkSpan,
         error: Optional[str] = None,
     ) -> None:
-        span.end_time = datetime.now()
+        span.mark_end()
 
         if error:
             error_details = self._add_timestamp_to_dict({}, "startTime", span.start_time)
@@ -463,7 +482,7 @@ class EventBasedSparkTrace(SparkTraceProvider):
 
         end_details = self._add_timestamp_to_dict({}, "startTime", span.start_time)
         end_details = self._add_timestamp_to_dict(end_details, "endTime", span.end_time)
-        end_details["totalTime"] = self._calculate_time_diff(span.start_time, span.end_time)
+        end_details["totalTime"] = span.total_time()
         if span.parent_id is not None:
             end_details["parentSpanId"] = span.parent_id
         try:

@@ -1,0 +1,17 @@
+# Spark 4 lane known failures (poe test-spark4; CI job "Spark 4 Tests").
+#
+# Applied only under PySpark 4+ (tests/conftest.py::_mark_spark4_known_failures);
+# the default Spark 3.5 suites get no markers from it, though
+# tests/unit/test_spark4_lane_support.py parses it there to catch malformed
+# lines. Each entry is STRICT xfail: when a fix lands the lane goes red with
+# XPASS until the entry is removed. In a full lane run (poe test-spark4) an
+# entry that matches no collected test is an error.
+#
+# Format:  <all|classic|connect> <nodeid or nodeid prefix> | <category>: <reason>
+#   all      -- fails on Spark 4 classic AND Spark Connect
+#   classic  -- fails only on classic (py4j) sessions
+#   connect  -- fails only on Spark Connect sessions (SPARK_API_MODE=connect)
+# A prefix (a file, or file::Class) covers every test under it.
+#
+# Categories: BUG (Kindling/extension defect on Spark 4), HARNESS (test assumes
+# classic/py4j or Spark 3.5), SPARK4 (expected Spark 4 behaviour change).

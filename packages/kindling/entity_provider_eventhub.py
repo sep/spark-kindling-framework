@@ -333,7 +333,28 @@ def _build_decode_amqp_headers_udf():
     return udf(decode_headers_map, MapType(StringType(), StringType()))
 
 
-_decode_amqp_headers_udf = _build_decode_amqp_headers_udf()
+def _spark_major_version(df: DataFrame) -> int:
+    """Major version of the Spark runtime executing ``df`` -- the server's
+    version over Spark Connect, which need not match the client library."""
+    return int(str(df.sparkSession.version).split(".")[0])
+
+
+def _lenient_utf8(column, spark_major: int):
+    """Decode a binary column to UTF-8 text, replacing malformed sequences
+    with U+FFFD rather than failing the query.
+
+    Spark 3.x ``decode(bin, 'UTF-8')`` is lenient, but Spark 4.0 makes it
+    strict ([MALFORMED_CHARACTER_CODING]). Its lenient equivalent is
+    ``make_valid_utf8(cast(bin AS STRING))``; the bare cast is not enough,
+    since it leaves the invalid bytes in the string and a Spark Connect
+    client then fails to decode the result. ``call_function`` keeps this
+    working when an older client library talks to a Spark 4 server.
+    """
+    if spark_major >= 4:
+        from pyspark.sql.functions import call_function
+
+        return call_function("make_valid_utf8", column.cast(StringType()))
+    return spark_decode(column, "UTF-8")
 
 
 def _flatten_kafka_headers(df: DataFrame, amqp_headers: bool = False) -> DataFrame:
@@ -371,8 +392,13 @@ def _flatten_kafka_headers(df: DataFrame, amqp_headers: bool = False) -> DataFra
     """
     if "headers" in df.columns and isinstance(df.schema["headers"].dataType, ArrayType):
         if amqp_headers:
-            df = df.withColumn("headers", _decode_amqp_headers_udf(col("headers")))
+            # Built per call, not at import: ``udf()`` binds to the classic or
+            # Spark Connect implementation when it is created, so a UDF built
+            # before a Connect session existed would reject Connect columns.
+            decode_headers = _build_decode_amqp_headers_udf()
+            df = df.withColumn("headers", decode_headers(col("headers")))
         else:
+            spark_major = _spark_major_version(df)
             df = df.withColumn(
                 "headers",
                 map_from_entries(
@@ -380,7 +406,7 @@ def _flatten_kafka_headers(df: DataFrame, amqp_headers: bool = False) -> DataFra
                         col("headers"),
                         lambda entry: struct(
                             entry["key"].alias("key"),
-                            spark_decode(entry["value"], "UTF-8").alias("value"),
+                            _lenient_utf8(entry["value"], spark_major).alias("value"),
                         ),
                     )
                 ),
@@ -399,7 +425,7 @@ def _preprocess_kafka(df: DataFrame, amqp_headers: bool = False) -> DataFrame:
     DataFrame that already has a text ``body``, is safe.
     """
     if "body" in df.columns and isinstance(df.schema["body"].dataType, BinaryType):
-        df = df.withColumn("body", spark_decode(col("body"), "UTF-8"))
+        df = df.withColumn("body", _lenient_utf8(col("body"), _spark_major_version(df)))
     return _flatten_kafka_headers(df, amqp_headers=amqp_headers)
 
 

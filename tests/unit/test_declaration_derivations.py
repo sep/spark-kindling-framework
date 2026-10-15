@@ -16,10 +16,29 @@ from kindling.declaration_derivations import (
     PipeDerivation,
     add_columns_to_schema,
     derivation_entries,
+    parse_column_type,
     strip_derivation_keys,
     wrap_execute,
 )
-from pyspark.sql.types import IntegerType, StringType, StructField, StructType
+from pyspark.sql.types import (
+    ArrayType,
+    BinaryType,
+    BooleanType,
+    ByteType,
+    DateType,
+    DecimalType,
+    DoubleType,
+    FloatType,
+    IntegerType,
+    LongType,
+    NullType,
+    ShortType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampNTZType,
+    TimestampType,
+)
 
 ORDERS_SCHEMA = StructType(
     [StructField("order_id", StringType(), False), StructField("amount", IntegerType(), True)]
@@ -71,6 +90,45 @@ def test_add_columns_accumulates_and_rejects_type_conflicts():
         add_columns_to_schema(None, [{"name": "x", "type": "string"}], "e")
     with pytest.raises(DerivationError, match="invalid type"):
         add_columns_to_schema(ORDERS_SCHEMA, [{"name": "x", "type": "nope"}], "e")
+
+
+@pytest.mark.parametrize(
+    "type_name, expected",
+    [
+        ("string", StringType()),
+        ("str", StringType()),
+        ("binary", BinaryType()),
+        ("boolean", BooleanType()),
+        ("bool", BooleanType()),
+        ("float", FloatType()),
+        ("double", DoubleType()),
+        ("byte", ByteType()),
+        ("tinyint", ByteType()),
+        ("short", ShortType()),
+        ("smallint", ShortType()),
+        ("integer", IntegerType()),
+        ("int", IntegerType()),
+        ("long", LongType()),
+        ("bigint", LongType()),
+        ("date", DateType()),
+        ("timestamp", TimestampType()),
+        ("timestamp_ntz", TimestampNTZType()),
+        ("void", NullType()),
+        (" Long ", LongType()),
+        ("decimal", DecimalType(10, 0)),
+        ("decimal(12, 3)", DecimalType(12, 3)),
+        ("array<bigint>", ArrayType(LongType())),
+    ],
+)
+def test_parse_column_type_accepts_every_atomic_name_and_alias(type_name, expected):
+    # Uses only public pyspark types: the private _all_atomic_types map is gone in Spark 4.
+    assert parse_column_type(type_name, "c") == expected
+
+
+@pytest.mark.parametrize("type_name", ["nope", "struct<a:int>", "map<string,int>", "char"])
+def test_parse_column_type_rejects_non_atomic_names(type_name):
+    with pytest.raises(DerivationError, match="invalid type"):
+        parse_column_type(type_name, "c")
 
 
 def test_wrap_execute_routes_inputs_and_composes():

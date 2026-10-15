@@ -265,6 +265,19 @@ class TestMemoryEntityProvider:
 
         assert result is False
 
+    def test_check_entity_exists_forces_analysis_of_lazy_table(self, provider, entity_metadata):
+        """Spark Connect's spark.table() is lazy and only fails when the plan is
+        analyzed; the probe must force analysis rather than trust the call."""
+        from unittest.mock import PropertyMock
+
+        lazy_df = MagicMock()
+        type(lazy_df).columns = PropertyMock(side_effect=Exception("TABLE_OR_VIEW_NOT_FOUND"))
+        provider.spark.table.return_value = lazy_df
+
+        result = provider.check_entity_exists(entity_metadata)
+
+        assert result is False
+
     def test_get_table_name_from_config(self, provider, entity_metadata):
         """Test table name resolution from config"""
         table_name = provider._get_table_name(entity_metadata)

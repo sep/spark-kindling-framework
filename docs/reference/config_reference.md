@@ -90,10 +90,17 @@ Job-deployment (system-test / deployment API) keys:
 - `kindling.bootstrap.declaration_only`: Same intent as bootstrap `declaration_only`.
 - `kindling.bootstrap.load_workspace_packages`: Same intent as bootstrap `load_workspace_packages`.
 - `kindling.bootstrap.ignored_folders`: Folder names ignored when loading workspace packages/notebooks.
-- `kindling.required_packages`: List of PyPI packages to `pip install` at startup.
+- `kindling.required_packages`: List of PyPI packages to `pip install` at startup
+  (with `--ignore-installed`, so a listed version replaces the runtime's).
 - `kindling.extensions`: List of Kindling extension wheels to load from artifacts storage
   (`{artifacts}/packages/`). Upload them with
-  `kindling runtime deploy --extension <name>` (or `--all-extensions`).
+  `kindling runtime deploy --extension <name>` (or `--all-extensions`). An extension's
+  requirements are installed keeping the runtime's packages: pip keeps any installed
+  version that satisfies them, and the runtime's key packages (azure-core,
+  azure-identity, msal, azure-monitor-opentelemetry, OpenTelemetry, typing-extensions,
+  numpy, pandas, pyarrow, protobuf, pyspark, py4j) stay at their installed versions
+  unless the extension can't be installed otherwise. Each installed package an install
+  replaces is logged as a warning.
 
 Legacy/compat keys (still accepted by config translation, logged as deprecated):
 

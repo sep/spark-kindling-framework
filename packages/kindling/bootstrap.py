@@ -1468,6 +1468,237 @@ def _evict_stale_modules(logger, modules: Iterable[str]) -> None:
                 setattr(fresh, child.rsplit(".", 1)[1], sys.modules[child])
 
 
+# Packages a Spark runtime ships that an extension install keeps at the
+# installed version (when installed): the runtime's own code and preloaded
+# modules depend on them. pip may still add packages the runtime lacks and
+# upgrade other ones whose installed version doesn't satisfy a requirement.
+_RUNTIME_KEY_DISTRIBUTIONS = frozenset(
+    {
+        "azure-core",
+        "azure-identity",
+        "azure-monitor-opentelemetry",
+        "msal",
+        "numpy",
+        "opentelemetry-api",
+        "opentelemetry-sdk",
+        "opentelemetry-semantic-conventions",
+        "pandas",
+        "protobuf",
+        "py4j",
+        "pyarrow",
+        "pyspark",
+        "typing-extensions",
+    }
+)
+
+# pip can't replace a package installed without uninstall records (conda,
+# distutils) or shadow a site-packages one from the user site.
+_PIP_UNINSTALL_FAILURES = (
+    "Cannot uninstall",
+    "uninstall-no-record-file",
+    "lack sys.path precedence",
+)
+
+
+# pip's messages for requirements that can't be met together, e.g. because a
+# pinned runtime package conflicts with what the extension needs.
+_PIP_RESOLVER_CONFLICTS = (
+    "ResolutionImpossible",
+    "conflicting dependencies",
+    "Could not find a version that satisfies the requirement",
+    "No matching distribution found",
+)
+
+
+def _distribution_version(entry) -> Optional[str]:
+    """The version from a _installed_distribution_snapshot entry or a plain
+    version string."""
+    return entry[0] if isinstance(entry, tuple) else entry
+
+
+def _key_distribution_constraints(versions: Mapping[str, Any]) -> List[str]:
+    """pip constraints pinning each installed key distribution at its
+    installed version."""
+    from packaging.version import InvalidVersion, Version
+
+    constraints = []
+    for name in sorted(_RUNTIME_KEY_DISTRIBUTIONS):
+        version = _distribution_version(versions.get(name))
+        if not version:
+            continue
+        try:
+            Version(version)
+        except InvalidVersion:
+            continue
+        constraints.append(f"{name}=={version}")
+    return constraints
+
+
+def _pip_install_keeping_installed(logger, args: List[str]):
+    """Run `pip install <args>`, keeping what the runtime has installed.
+
+    pip keeps every installed version that satisfies the requirements (no
+    --upgrade or --ignore-installed), and the runtime's key distributions are
+    pinned at their installed versions, so pip picks the highest versions of
+    the new requirements that work with them. Fallbacks, each logged:
+    - pip can't replace an installed package (no uninstall records, or a
+      user-site install under a virtualenv): retry with --ignore-installed;
+      the key distributions stay pinned.
+    - the requirements can't be met with the key distributions pinned (a
+      resolver conflict): retry without the pins; the bootstrap then reports
+      what was replaced. Any other failure is returned unchanged.
+    """
+    pip_install = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
+    constraints = _key_distribution_constraints(_installed_distribution_versions())
+    ignore_installed = False
+    with tempfile.TemporaryDirectory(prefix="kindling_pip_") as work_dir:
+        constraints_file = os.path.join(work_dir, "runtime-constraints.txt")
+        with open(constraints_file, "w", encoding="utf-8") as handle:
+            handle.write("".join(f"{line}\n" for line in constraints))
+        while True:
+            command = [*pip_install]
+            if ignore_installed:
+                command.append("--ignore-installed")
+            if constraints:
+                command += ["-c", constraints_file]
+            result = subprocess.run([*command, *args], capture_output=True, text=True)
+            if result.returncode == 0:
+                return result
+            output = f"{result.stdout}\n{result.stderr}"
+            if not ignore_installed and any(
+                failure in output for failure in _PIP_UNINSTALL_FAILURES
+            ):
+                logger.warning(
+                    "pip could not replace an installed package; retrying with "
+                    f"--ignore-installed: {' '.join(args)}"
+                )
+                ignore_installed = True
+            elif constraints and any(conflict in output for conflict in _PIP_RESOLVER_CONFLICTS):
+                logger.warning(
+                    f"{' '.join(args)} can't be installed with the runtime's "
+                    f"{', '.join(constraints)}; retrying without keeping them"
+                )
+                constraints = []
+            else:
+                # Anything else (network, a corrupt wheel, disk) is returned as
+                # is: retrying unpinned could replace the runtime's packages.
+                return result
+
+
+def _colocate_extended_packages(logger, before: Mapping[str, Any]) -> None:
+    """Copy a regular package next to the files an install added into it.
+
+    A distribution can install modules into another distribution's regular
+    package (azure-core-tracing-opentelemetry adds
+    azure/core/tracing/ext/opentelemetry_span). When pip keeps that package's
+    owner where the runtime installed it (Databricks: the system
+    site-packages, behind the job's virtualenv), Python resolves the package
+    to that directory only and the added modules can't be imported. The owner
+    is reinstalled, at the same version, where the install put the new files,
+    together with the other distributions that had installed into it there
+    (their files would otherwise be hidden behind the new copy).
+
+    Loaded packages of a reinstalled distribution are kept, not evicted, so
+    classes already imported from them (an azure.core exception a preloaded
+    SDK raises) stay the ones later imports get. The new directory goes first
+    on each one's ``__path__``, so its not-yet-imported subpackages (a
+    preloaded azure.core, but not azure.core.tracing) load from the new copy,
+    next to the added modules."""
+    from importlib.metadata import distributions
+
+    owners: Dict[str, Tuple[str, str, str]] = {}  # package dir -> owner
+    installed = []
+    seen: set = set()
+    for dist in distributions():
+        name = _normalized_distribution_name(dist)
+        if not name or name in seen:
+            continue
+        seen.add(name)  # the copy import resolves (first on sys.path)
+        location = os.path.realpath(str(dist.locate_file("")))
+        files = [str(file).replace("\\", "/") for file in dist.files or []]
+        installed.append((name, dist.version, location, files))
+        for path in files:
+            if path.endswith("/__init__.py") and not path.startswith(".."):
+                owners.setdefault(path[: -len("/__init__.py")], (name, dist.version, location))
+
+    def owners_of(files):
+        for path in files:
+            parts = path.split("/")[:-1]
+            for depth in range(1, len(parts) + 1):
+                owner = owners.get("/".join(parts[:depth]))
+                if owner:
+                    yield owner
+
+    split: Dict[str, Tuple[str, str]] = {}  # owner -> (version, location)
+    for name, version, location, files in installed:
+        if _distribution_version(before.get(name)) == version:
+            continue  # not added or changed by this install
+        for owner in owners_of(files):
+            if owner[0] != name and owner[2] != location:
+                split[owner[0]] = (owner[1], owner[2])
+    if not split:
+        return
+
+    relocated = dict(split)  # distribution -> (version, location it is moved from)
+    for name, version, location, files in installed:
+        if name in relocated:
+            continue
+        for owner in owners_of(files):
+            if owner[0] in split and owner[0] != name and location == split[owner[0]][1]:
+                relocated[name] = (version, location)  # installed into the owner there
+                break
+
+    pins = [f"{name}=={version}" for name, (version, _location) in sorted(relocated.items())]
+    logger.info(f"Reinstalling {', '.join(pins)} next to the packages installed into it")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--no-deps",
+            "--ignore-installed",
+            *pins,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        logger.warning(f"Could not reinstall {', '.join(pins)}: {result.stderr}")
+        return
+
+    for dist in distributions():
+        name = _normalized_distribution_name(dist)
+        location = os.path.realpath(str(dist.locate_file("")))
+        if name not in relocated or location == relocated[name][1]:
+            continue  # not reinstalled, or the original copy
+        for path in dist.files or []:
+            path = str(path).replace("\\", "/")
+            if not path.endswith("/__init__.py") or path.startswith(".."):
+                continue
+            package = path[: -len("/__init__.py")]
+            module = sys.modules.get(package.replace("/", "."))
+            search_path = getattr(module, "__path__", None)
+            directory = os.path.join(location, package)
+            if isinstance(search_path, list) and directory not in search_path:
+                search_path.insert(0, directory)
+
+
+def _report_replaced_distributions(logger, before: Mapping[str, Any], package_spec: str) -> None:
+    """Warn about each installed distribution an install changed the version
+    of, so a runtime package replaced by an extension shows in the job log."""
+    after = _installed_distribution_versions()
+    for name in sorted(before):
+        old_version = _distribution_version(before[name])
+        new_version = after.get(name)
+        if new_version is not None and new_version != old_version:
+            logger.warning(
+                f"Installing {package_spec} replaced installed {name} "
+                f"{old_version} with {new_version}"
+            )
+
+
 def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_path=None):
     """Install packages needed for framework bootstrap
 
@@ -1556,7 +1787,9 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
         try:
             versions_before = _installed_distribution_snapshot()
             # Use --ignore-installed to force installation even if package exists in system site-packages
-            # This is critical for platforms like Databricks where system packages may be outdated
+            # This is critical for platforms like Databricks where system packages may be outdated.
+            # A required package is an explicit request, so it may replace runtime packages
+            # (unlike an extension's requirements); the replacements are reported.
             subprocess.check_call(
                 [sys.executable, "-m", "pip", "install", "-q", "--ignore-installed", package_spec]
             )
@@ -1580,6 +1813,8 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                     sys.path.remove(path)
                     sys.path.insert(0, path)
                     logger.debug(f"Moved to front of sys.path: {path}")
+
+            _report_replaced_distributions(logger, versions_before, package_spec)
 
             # Clear any cached imports of this package to force reload from new location
             importlib.invalidate_caches()
@@ -1762,34 +1997,16 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
 
                 # Install the downloaded wheel without its Kindling
                 # dependencies (checked against the installed runtime
-                # instead), then its other dependencies.
+                # instead), then its other dependencies, keeping the runtime's
+                # packages wherever they satisfy them.
                 logger.info(f"Installing {wheel_filename}")
                 versions_before = _installed_distribution_snapshot()
                 other_requirements, kindling_requirements = _extension_requirements(local_path)
                 _require_installed_kindling(package_spec, kindling_requirements)
-                pip_install = [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    "--ignore-installed",
-                    "--upgrade",
-                    "--upgrade-strategy",
-                    "eager",  # Upgrade dependencies too (e.g., typing-extensions)
-                    "--disable-pip-version-check",
-                ]
-                result = subprocess.run(
-                    [*pip_install, "--no-deps", local_path],
-                    capture_output=True,
-                    text=True,
-                )
+                result = _pip_install_keeping_installed(logger, ["--no-deps", local_path])
                 if result.returncode == 0 and other_requirements:
                     logger.debug(f"Installing extension dependencies: {other_requirements}")
-                    result = subprocess.run(
-                        [*pip_install, *other_requirements],
-                        capture_output=True,
-                        text=True,
-                    )
+                    result = _pip_install_keeping_installed(logger, other_requirements)
 
                 if result.returncode == 0:
                     # Mirror load_if_needed(): make the freshly installed user/venv packages
@@ -1809,6 +2026,8 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                             sys.path.insert(0, path)
                             logger.debug(f"Moved to front of sys.path: {path}")
 
+                    _colocate_extended_packages(logger, versions_before)
+                    _report_replaced_distributions(logger, versions_before, package_spec)
                     importlib.invalidate_caches()
                     _evict_stale_modules(
                         logger,
@@ -2042,9 +2261,15 @@ def _bind_plain_telemetry_providers(logger=None) -> None:
 
     Same forced-rebind pattern as kindling_ext_otel_azure._register_providers:
     the concrete SparkLoggerProvider stays bound (dual-bind) so callers that
-    resolve the concrete class keep working.
+    resolve the concrete class keep working. The bootstrap has already
+    resolved PythonLoggerProvider by now, so the rebind must also evict that
+    cached singleton (GlobalInjector.rebind_singleton).
+
+    An interface an extension has since rebound (a second initialize_framework
+    after kindling_ext_otel_azure registered its providers) is left alone:
+    the extension's module is already imported, so nothing would register
+    its override again.
     """
-    from injector import singleton
     from kindling.plain_telemetry import (
         PlainPythonLoggerProvider,
         PlainPythonTraceProvider,
@@ -2052,10 +2277,17 @@ def _bind_plain_telemetry_providers(logger=None) -> None:
     from kindling.spark_log_provider import SparkLoggerProvider
     from kindling.spark_trace import SparkTraceProvider
 
-    binder = GlobalInjector.get_injector().binder
-    binder.bind(PythonLoggerProvider, to=PlainPythonLoggerProvider, scope=singleton)
-    binder.bind(SparkLoggerProvider, to=PlainPythonLoggerProvider, scope=singleton)
-    binder.bind(SparkTraceProvider, to=PlainPythonTraceProvider, scope=singleton)
+    for interface, plain in (
+        (PythonLoggerProvider, PlainPythonLoggerProvider),
+        (SparkLoggerProvider, PlainPythonLoggerProvider),
+        (SparkTraceProvider, PlainPythonTraceProvider),
+    ):
+        override = GlobalInjector.rebound_to(interface)
+        if override is not None and override is not plain:
+            if logger:
+                logger.info(f"Keeping {override.__name__} for {interface.__name__}")
+            continue
+        GlobalInjector.rebind_singleton(interface, plain)
     if logger:
         logger.info("No py4j JVM bridge detected; using plain-python telemetry providers")
 

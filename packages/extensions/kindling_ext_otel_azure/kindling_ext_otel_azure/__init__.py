@@ -8,7 +8,7 @@ __all__ = [
     "AzureMonitorTraceProvider",
 ]
 
-__version__ = "0.3.2"
+__version__ = "0.4.1"
 
 
 def _register_providers():
@@ -16,32 +16,32 @@ def _register_providers():
 
     This is called automatically when the module is imported.
     It forcibly rebinds the log and trace providers to the Azure Monitor implementations.
+
+    The Kindling bootstrap resolves ``PythonLoggerProvider`` before it imports
+    extensions, and injector caches singletons per interface, so a plain
+    rebind would leave that interface returning the default provider.
+    ``GlobalInjector.rebind_singleton`` also evicts the cached instance; the
+    plain rebind is the fallback for Kindling runtimes without it. Loggers
+    already handed out (e.g. the bootstrap's own) are not replaced.
     """
     from injector import singleton
-
     from kindling.injection import GlobalInjector
     from kindling.spark_log_provider import PythonLoggerProvider, SparkLoggerProvider
     from kindling.spark_trace import SparkTraceProvider
 
-    # Get the injector
-    injector = GlobalInjector.get_injector()
+    rebind = getattr(GlobalInjector, "rebind_singleton", None)
+    if rebind is None:
+        binder = GlobalInjector.get_injector().binder
 
-    # Rebind the providers by creating new bindings (injector will replace existing)
-    # This ensures Azure Monitor providers override the defaults
+        def rebind(interface, implementation):
+            binder.bind(interface, to=implementation, scope=singleton)
 
     # Bind log provider to both base and concrete classes
-    injector.binder.bind(
-        PythonLoggerProvider, to=singleton(AzureMonitorLoggerProvider), scope=singleton
-    )
-
-    injector.binder.bind(
-        SparkLoggerProvider, to=singleton(AzureMonitorLoggerProvider), scope=singleton
-    )
+    rebind(PythonLoggerProvider, singleton(AzureMonitorLoggerProvider))
+    rebind(SparkLoggerProvider, singleton(AzureMonitorLoggerProvider))
 
     # Bind trace provider
-    injector.binder.bind(
-        SparkTraceProvider, to=singleton(AzureMonitorTraceProvider), scope=singleton
-    )
+    rebind(SparkTraceProvider, singleton(AzureMonitorTraceProvider))
 
     print("✅ Azure Monitor providers registered (overriding defaults)")
 

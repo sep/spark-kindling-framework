@@ -169,12 +169,10 @@ class PlainPythonTraceProvider(SparkTraceProvider):
             if reraise:
                 raise
         finally:
-            current_span.end_time = datetime.now()
+            current_span.mark_end()
             end_details = self._with_timestamp(live_details, "startTime", current_span.start_time)
             end_details = self._with_timestamp(end_details, "endTime", current_span.end_time)
-            end_details["totalTime"] = self._total_time(
-                current_span.start_time, current_span.end_time
-            )
+            end_details["totalTime"] = current_span.total_time()
             if current_span.parent_id is not None:
                 end_details["parentSpanId"] = current_span.parent_id
             self._emit(current_span, f"{current_span.operation}_END", end_details)
@@ -219,7 +217,7 @@ class PlainPythonTraceProvider(SparkTraceProvider):
         span: SparkSpan,
         error: Optional[str] = None,
     ) -> None:
-        span.end_time = datetime.now()
+        span.mark_end()
 
         if error:
             error_details = self._with_timestamp({}, "startTime", span.start_time)
@@ -229,7 +227,7 @@ class PlainPythonTraceProvider(SparkTraceProvider):
 
         end_details = self._with_timestamp({}, "startTime", span.start_time)
         end_details = self._with_timestamp(end_details, "endTime", span.end_time)
-        end_details["totalTime"] = self._total_time(span.start_time, span.end_time)
+        end_details["totalTime"] = span.total_time()
         if span.parent_id is not None:
             end_details["parentSpanId"] = span.parent_id
         self._emit(span, f"{span.operation}_END", end_details)

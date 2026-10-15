@@ -3,12 +3,11 @@
 import json
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, Mock, call, patch
 
-import pytest
-
 import kindling.spark_trace as spark_trace_module
+import pytest
 from kindling.spark_trace import (
     AzureEventEmitter,
     CustomEventEmitter,
@@ -1456,3 +1455,41 @@ class TestSpanEmitterRobustness:
         end = datetime.now()
         trace.record_span("Op", "Comp", start, end)
         trace.record_span("Op", "Comp", start, end, error="boom")
+
+
+class _ClockSteppedBack:
+    """``datetime`` stand-in whose ``now()`` steps 3 s backwards after the
+    first call, as an NTP or WSL clock correction during a span would."""
+
+    def __init__(self):
+        self.calls = 0
+        self.base = datetime(2026, 10, 15, 12, 0, 0)
+
+    def now(self):
+        self.calls += 1
+        return self.base if self.calls == 1 else self.base - timedelta(seconds=3)
+
+
+class TestSpanDurationUsesMonotonicClock:
+    def _total_time(self, mock_emitter):
+        end = [c for c in mock_emitter.emit_custom_event.call_args_list if c[0][1].endswith("_END")]
+        return float(end[-1][0][2]["totalTime"])
+
+    def test_span_duration_survives_a_wall_clock_step(self, mock_emitter, monkeypatch):
+        monkeypatch.setattr(spark_trace_module, "datetime", _ClockSteppedBack())
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        with trace.span(operation="TestOp", component="TestComp"):
+            time.sleep(0.05)
+
+        assert 0.05 <= self._total_time(mock_emitter) < 1.0
+
+    def test_manual_span_duration_survives_a_wall_clock_step(self, mock_emitter, monkeypatch):
+        monkeypatch.setattr(spark_trace_module, "datetime", _ClockSteppedBack())
+        trace = EventBasedSparkTrace(mock_emitter)
+
+        span = trace.start_span("TestOp", "TestComp")
+        time.sleep(0.05)
+        trace.end_span(span)
+
+        assert 0.05 <= self._total_time(mock_emitter) < 1.0

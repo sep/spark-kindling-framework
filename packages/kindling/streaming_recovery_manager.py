@@ -106,6 +106,15 @@ class RecoveryState:
     recovery_status: RecoveryStatus = RecoveryStatus.PENDING
     failure_reason: Optional[str] = None
     restart_function: Optional[Callable] = None
+    # When the next attempt is due, on the monotonic clock. next_attempt_time
+    # (wall clock) is kept for reporting; deciding on it would let a clock
+    # correction (NTP, a VM/WSL resync) delay or hasten a recovery.
+    _next_attempt_deadline: Optional[float] = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _scheduled_attempt_time: Optional[datetime] = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def calculate_backoff(self) -> float:
         """
@@ -119,12 +128,12 @@ class RecoveryState:
 
     def schedule_next_attempt(self):
         """Schedule next recovery attempt with exponential backoff."""
-        backoff = self.calculate_backoff()
-        self.next_attempt_time = datetime.now()
-        # Add backoff seconds to next_attempt_time
         import datetime as dt
 
+        backoff = self.calculate_backoff()
+        self._next_attempt_deadline = time.monotonic() + backoff
         self.next_attempt_time = datetime.now() + dt.timedelta(seconds=backoff)
+        self._scheduled_attempt_time = self.next_attempt_time
         self.recovery_status = RecoveryStatus.PENDING
 
     def can_retry(self) -> bool:
@@ -145,6 +154,12 @@ class RecoveryState:
         """
         if not self.next_attempt_time:
             return False
+        if (
+            self._next_attempt_deadline is not None
+            and self.next_attempt_time is self._scheduled_attempt_time
+        ):
+            return time.monotonic() >= self._next_attempt_deadline
+        # next_attempt_time was set directly (not by schedule_next_attempt).
         return datetime.now() >= self.next_attempt_time
 
 
