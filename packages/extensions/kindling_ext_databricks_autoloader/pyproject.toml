@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "spark-kindling-ext-databricks-autoloader"
-version = "0.1.0"
+version = "0.14.0rc1"
 description = "Databricks Auto Loader (cloudFiles) discovery extension for Kindling file ingestion"
 authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
 license = "MIT"
@@ -15,7 +15,9 @@ requires-python = ">=3.10"
 # spark-kindling-ext-databricks (that package is the unrelated Lakeflow
 # SDP adapter; see docs/proposals/autoloader_file_ingestion.md
 # for the extension boundary decision).
-dependencies = ["spark-kindling>=0.10.0"]
+dependencies = [
+    "spark-kindling>=0.14.0rc1,<0.15",
+]
 
 [tool.uv.build-backend]
 module-root = ""

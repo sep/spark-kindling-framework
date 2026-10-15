@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "spark-kindling-ext-sdp"
-version = "0.3.4"
+version = "0.14.0rc1"
 description = "Spark Declarative Pipelines (SDP) declaration engine for Kindling"
 authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
 license = "MIT"
@@ -24,7 +24,9 @@ classifiers = [
 # validated DeclarationPlan. It deliberately has NO dependency on
 # pyspark.pipelines — the Spark 4.1+ `pyspark[pipelines]` extra becomes a
 # dependency only in Phase 2, when a concrete engine emits declarations.
-dependencies = ["spark-kindling>=0.12.39"]
+dependencies = [
+    "spark-kindling>=0.14.0rc1,<0.15",
+]
 
 [project.urls]
 Homepage = "https://github.com/sep/spark-kindling-framework"

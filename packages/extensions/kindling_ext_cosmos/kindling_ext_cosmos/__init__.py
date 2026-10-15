@@ -24,7 +24,7 @@ __all__ = [
     "spark_family",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.14.0rc1"
 
 
 register_provider()

@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "spark-kindling-ext-temporal"
-version = "0.2.8"
+version = "0.14.0rc1"
 description = "Temporal event, condition, and episode primitives for Kindling"
 authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
 license = "MIT"
@@ -20,7 +20,9 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 # kindling and Spark are provided by the target runtime.
-dependencies = []
+dependencies = [
+    "spark-kindling>=0.14.0rc1,<0.15",
+]
 
 [project.urls]
 Homepage = "https://github.com/sep/spark-kindling-framework"

@@ -10,7 +10,7 @@ __all__ = [
     "register_runner",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.14.0rc1"
 
 
 register_runner()
