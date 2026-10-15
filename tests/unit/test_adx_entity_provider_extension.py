@@ -3,7 +3,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from kindling.data_entities import EntityMetadata
 
 EXTENSION_PACKAGE_ROOT = (
@@ -14,6 +13,21 @@ EXTENSION_PACKAGE_ROOT = (
 @pytest.fixture(autouse=True)
 def _extension_package_on_path(monkeypatch):
     monkeypatch.syspath_prepend(str(EXTENSION_PACKAGE_ROOT))
+
+
+@pytest.fixture(autouse=True)
+def _extension_imported(_extension_package_on_path):
+    """Import the extension with its provider registration stubbed out.
+
+    Importing kindling_ext_adx registers its provider with the global injector,
+    which needs an initialized framework. Without this, whichever test first
+    imports it unpatched fails, and so does every later test in the process
+    (the failed import is retried), so the file only passed when
+    test_import_registers_* happened to run first.
+    """
+    if "kindling_ext_adx" not in sys.modules:
+        with patch("kindling.injection.GlobalInjector.get", return_value=MagicMock()):
+            import kindling_ext_adx  # noqa: F401
 
 
 def _entity(tags):
