@@ -419,13 +419,15 @@ jobs:
     # Resolves each extension's requirements with the key packages Databricks,
     # Fabric and Synapse ship pinned (scripts/check_extension_runtime_packages.py),
     # so a dependency change that would make a cluster install replace a runtime
-    # package fails here instead of on the cluster. Runs when a pyproject.toml
-    # or the check (with its runtime pin table) changes, and for release tags.
+    # package fails here instead of on the cluster. Runs when a pyproject.toml,
+    # the check (with its runtime pin table) or this workflow changes, and for
+    # release tags.
     if: >-
       needs.classify-changes.outputs.fast_track != 'true' && (
         startsWith(github.ref, 'refs/tags/v') ||
         contains(needs.classify-changes.outputs.changed_files, 'pyproject.toml') ||
-        contains(needs.classify-changes.outputs.changed_files, 'scripts/check_extension_runtime_packages.py')
+        contains(needs.classify-changes.outputs.changed_files, 'scripts/check_extension_runtime_packages.py') ||
+        contains(needs.classify-changes.outputs.changed_files, '.github/workflows/ci.yml')
       )
     container:
       image: ${{ needs.build-ci-image.outputs.image }}
