@@ -2,6 +2,17 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Fixed
+
+- **Span durations no longer go negative when the clock is corrected.**
+  `totalTime` on trace span END events (the Spark event trace provider and
+  the plain-python provider) was the difference of two wall-clock
+  timestamps, so an NTP or WSL clock correction during a span gave a
+  negative or inflated duration. It is now measured with a monotonic clock;
+  `startTime`/`endTime` stay wall-clock timestamps.
+
 ## [0.13.5] - 2026-10-14
 
 ### Changed
