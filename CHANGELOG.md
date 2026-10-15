@@ -2,7 +2,7 @@
 
 All notable changes to spark-kindling are documented here.
 
-## Unreleased
+## [0.13.5] - 2026-10-14
 
 ### Changed
 
@@ -92,6 +92,8 @@ All notable changes to spark-kindling are documented here.
   `SparkLoggerProvider`). The new `GlobalInjector.rebind_singleton` also
   evicts the cached instance; the extension uses it when the runtime has it.
   Loggers and services that already hold the earlier provider keep it.
+  Re-running `initialize_framework` on a runtime without a JVM bridge keeps
+  an extension's providers instead of swapping the plain ones back in.
 
 ## [0.13.4] - 2026-10-13
 
