@@ -370,16 +370,14 @@ def _only_kindling_installed(kindling_version):
     return version
 
 
-def test_extension_install_never_installs_kindling_from_an_index(tmp_path):
-    """The extension wheel is installed with --no-deps and only its other
-    requirements follow, so pip never reinstalls the Kindling runtime the
-    bootstrap installed."""
+def _install_demo_extension(tmp_path, requirements, kindling_version, results):
+    """Run install_bootstrap_dependencies for one extension wheel with the
+    given Requires-Dist; ``results`` are the returncodes of successive pip
+    calls. Returns (pip argument lists, logger)."""
     logger = MagicMock()
     storage_utils = MagicMock()
     storage_utils.fs = MagicMock()
-    wheel = _wheel_with_requirements(
-        tmp_path, ["spark-kindling<0.15,>=0.14.0", "typing-extensions>=4.6.0"]
-    )
+    wheel = _wheel_with_requirements(tmp_path, requirements)
     storage_utils.fs.ls.return_value = [
         SimpleNamespace(path=f"abfss://artifacts@acct/path/packages/{wheel.name}")
     ]
@@ -390,22 +388,98 @@ def test_extension_install_never_installs_kindling_from_an_index(tmp_path):
     with (
         patch("kindling.bootstrap._get_storage_utils", return_value=storage_utils),
         patch("kindling.bootstrap.importlib.util.find_spec", return_value=None),
-        patch("importlib.metadata.version", side_effect=_only_kindling_installed("0.14.1")),
+        patch("importlib.metadata.version", side_effect=_only_kindling_installed(kindling_version)),
         patch("kindling.bootstrap.subprocess.run") as subprocess_run,
         patch("kindling.bootstrap.importlib.import_module", return_value=object()),
     ):
-        subprocess_run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+        subprocess_run.side_effect = [
+            SimpleNamespace(returncode=code, stdout="", stderr="" if code == 0 else "boom")
+            for code in results
+        ]
         install_bootstrap_dependencies(
             logger,
             {"required_packages": [], "extensions": ["kindling-ext-demo"]},
             artifacts_storage_path="abfss://artifacts@acct/path",
         )
+    return [c.args[0] for c in subprocess_run.call_args_list], logger
 
-    calls = [c.args[0] for c in subprocess_run.call_args_list]
+
+def test_extension_install_never_installs_kindling_from_an_index(tmp_path):
+    """The extension's other requirements are installed first, then the
+    wheel with --no-deps, so pip never reinstalls the Kindling runtime the
+    bootstrap installed."""
+    calls, logger = _install_demo_extension(
+        tmp_path,
+        ["spark-kindling<0.15,>=0.14.0", "typing-extensions>=4.6.0"],
+        "0.14.1",
+        [0, 0],
+    )
+
     assert len(calls) == 2, logger.error.call_args_list
-    assert "--no-deps" in calls[0] and calls[0][-1].endswith(wheel.name)
-    assert calls[1][-1] == "typing-extensions>=4.6.0"
+    assert calls[0][-1] == "typing-extensions>=4.6.0"
+    assert "--no-deps" in calls[1] and calls[1][-1].endswith(
+        "kindling_ext_demo-0.14.0-py3-none-any.whl"
+    )
     assert not any("spark-kindling" in arg for call in calls for arg in call[1:])
+
+
+def test_extension_wheel_is_not_installed_when_its_dependencies_fail(tmp_path):
+    """Otherwise the next bootstrap finds the extension installed and never
+    retries its requirements."""
+    calls, logger = _install_demo_extension(
+        tmp_path,
+        ["spark-kindling<0.15,>=0.14.0", "typing-extensions>=4.6.0"],
+        "0.14.1",
+        [1],
+    )
+
+    assert len(calls) == 1
+    assert calls[0][-1] == "typing-extensions>=4.6.0"
+    assert not any("--no-deps" in call for call in calls)
+    assert logger.error.called
+
+
+def test_extension_for_another_kindling_minor_fails_the_bootstrap(tmp_path):
+    from kindling.bootstrap import ExtensionCompatibilityError
+
+    with pytest.raises(ExtensionCompatibilityError, match="0.13.5 is installed"):
+        _install_demo_extension(tmp_path, ["spark-kindling<0.15,>=0.14.0"], "0.13.5", [])
+
+
+def test_installed_extension_is_checked_against_the_runtime(monkeypatch):
+    """An extension installed earlier (it satisfies its spec, so it is not
+    reinstalled) must still match the active runtime after an upgrade."""
+    import importlib.metadata
+
+    from kindling.bootstrap import ExtensionCompatibilityError
+
+    def requires(name):
+        if name.replace("_", "-") == "kindling-ext-demo":
+            return ["spark-kindling<0.14,>=0.13.0", "typing-extensions>=4.6.0"]
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "requires", requires)
+    storage_utils = MagicMock()
+    with (
+        patch("kindling.bootstrap._get_storage_utils", return_value=storage_utils),
+        patch("kindling.bootstrap.importlib.util.find_spec", return_value=None),
+        patch(
+            "importlib.metadata.version",
+            side_effect=lambda name: (
+                "0.14.0"
+                if name.replace("_", "-").lower() == "spark-kindling"
+                else "0.13.2" if name.replace("_", "-") == "kindling-ext-demo" else None
+            ),
+        ),
+        patch("kindling.bootstrap.subprocess.run") as subprocess_run,
+    ):
+        with pytest.raises(ExtensionCompatibilityError, match="0.14.0 is installed"):
+            install_bootstrap_dependencies(
+                MagicMock(),
+                {"required_packages": [], "extensions": ["kindling-ext-demo"]},
+                artifacts_storage_path="abfss://artifacts@acct/path",
+            )
+    subprocess_run.assert_not_called()
 
 
 def test_evict_stale_modules_drops_submodules_and_namespace_parents(tmp_path, monkeypatch):
