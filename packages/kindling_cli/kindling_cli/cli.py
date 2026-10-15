@@ -3886,19 +3886,19 @@ def env_update(
     resolved_version, wheels = _resolve_kindling_release_wheels(version, repo=repo)
     wheels_by_distribution = {wheel["distribution"]: wheel for wheel in wheels}
 
-    # Updating more than one project means every `uv add` after the first
-    # would otherwise see a workspace still holding yesterday's URL in a
-    # not-yet-updated target and fail to lock -- skip each individual
-    # add's lock/resolve (`--frozen`) and let the trailing `uv sync`
-    # below resolve the whole workspace once, after every pyproject.toml
-    # is already rewritten.
-    frozen_add = len(targets) > 1
+    # Stage every pin with `--frozen` (no lock/resolve per add) and let the
+    # trailing `uv sync` below resolve once, after every pyproject.toml is
+    # rewritten. Resolving after each add fails mid-update: the new core
+    # pin meets an extension's old `<X.Y` requirement, an extension meets
+    # its sibling's old pin, or a workspace member still holds yesterday's
+    # URL.
+    frozen_add = True
 
     click.echo(f"Updating Kindling packages to {resolved_version} ({repo})")
     updated = False
     for target_dir, target_declared in sorted(targets.items()):
         # Extensions a declared extension requires come from this release
-        # too, pinned first (uv locks on every add).
+        # too.
         extension_groups: Dict[Optional[str], List[str]] = {}
         for distribution, (group, _extras) in target_declared.items():
             extension_groups.setdefault(group, []).append(distribution)

@@ -292,6 +292,7 @@ def test_env_update_updates_declared_kindling_dependencies(monkeypatch, tmp_path
             _wheel_url("spark_kindling-1.2.3-py3-none-any.whl"),
             "--extra",
             "standalone",
+            "--frozen",
         ],
         resolved,
     ) in commands
@@ -302,10 +303,68 @@ def test_env_update_updates_declared_kindling_dependencies(monkeypatch, tmp_path
             _wheel_url("spark_kindling_cli-1.2.3-py3-none-any.whl"),
             "--group",
             "dev",
+            "--frozen",
         ],
         resolved,
     ) in commands
-    assert (["uv", "sync", "--all-packages"], resolved) in commands
+    # Every pin is staged with --frozen; the sync resolves once, last.
+    assert commands[-1] == (["uv", "sync", "--all-packages"], resolved)
+
+
+@pytest.mark.parametrize("source", ["github", "pypi"])
+def test_env_update_single_project_stages_pins_frozen_and_resolves_once(
+    monkeypatch, tmp_path, source
+):
+    """Resolving after each pin fails mid-update: the new core pin meets
+    Temporal's old `<X.Y` requirement, and Databricks (sorted before SDP)
+    meets SDP's old pin. Every mutation is staged with --frozen, even for a
+    single project, and the trailing sync resolves once."""
+    project_dir = tmp_path / "project"
+    old = "https://github.com/example/repo/releases/download/v1.1.0"
+    _write_pyproject(
+        project_dir,
+        "[project]\nname = 'demo'\nversion = '0.1.0'\n"
+        "dependencies = ['spark-kindling', 'spark-kindling-ext-temporal', "
+        "'spark-kindling-ext-databricks', 'spark-kindling-ext-sdp']\n\n"
+        "[tool.uv.sources]\n"
+        f"spark-kindling = {{ url = '{old}/spark_kindling-1.1.0-py3-none-any.whl' }}\n"
+        "spark-kindling-ext-temporal = "
+        f"{{ url = '{old}/spark_kindling_ext_temporal-1.1.0-py3-none-any.whl' }}\n"
+        "spark-kindling-ext-databricks = "
+        f"{{ url = '{old}/spark_kindling_ext_databricks-1.1.0-py3-none-any.whl' }}\n"
+        f"spark-kindling-ext-sdp = {{ url = '{old}/spark_kindling_ext_sdp-1.1.0-py3-none-any.whl' }}\n",
+    )
+    commands = []
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets(
+            "spark_kindling-1.2.3-py3-none-any.whl",
+            "spark_kindling_ext_temporal-1.2.0-py3-none-any.whl",
+            "spark_kindling_ext_databricks-1.2.0-py3-none-any.whl",
+            "spark_kindling_ext_sdp-1.2.0-py3-none-any.whl",
+        ),
+    )
+    monkeypatch.setattr(
+        "kindling_cli.cli._release_wheel_extension_requirements",
+        lambda wheel: (
+            ["spark-kindling-ext-sdp"]
+            if wheel["distribution"] == "spark-kindling-ext-databricks"
+            else []
+        ),
+    )
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append(cmd))
+
+    result = CliRunner().invoke(
+        cli, ["env", "update", "--source", source, "--project", str(project_dir)]
+    )
+
+    assert result.exit_code == 0, result.output
+    mutations = [cmd for cmd in commands if cmd[:2] in (["uv", "add"], ["uv", "remove"])]
+    assert len([cmd for cmd in mutations if cmd[1] == "add"]) == 4
+    assert all("--frozen" in cmd for cmd in mutations), mutations
+    assert commands[-1] == ["uv", "sync", "--all-packages"]
+    assert len(commands) == len(mutations) + 1
 
 
 def test_env_update_skips_dependency_missing_from_release(monkeypatch, tmp_path):
@@ -606,9 +665,9 @@ def test_env_update_moves_url_pins_to_pypi_versions(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert ["uv", "remove", "spark-kindling", "--frozen"] in commands
-    assert ["uv", "add", "spark-kindling==1.2.3", "--extra", "standalone"] in commands
+    assert ["uv", "add", "spark-kindling==1.2.3", "--extra", "standalone", "--frozen"] in commands
     assert ["uv", "remove", "spark-kindling-cli", "--frozen", "--group", "dev"] in commands
-    assert ["uv", "add", "spark-kindling-cli==1.2.3", "--group", "dev"] in commands
+    assert ["uv", "add", "spark-kindling-cli==1.2.3", "--group", "dev", "--frozen"] in commands
     assert not any(cmd[:2] == ["uv", "add"] and cmd[2].startswith("https://") for cmd in commands)
 
 
@@ -633,7 +692,12 @@ def test_env_update_source_github_keeps_url_pins(monkeypatch, tmp_path):
     )
 
     assert result.exit_code == 0, result.output
-    assert ["uv", "add", _wheel_url("spark_kindling-1.2.3-py3-none-any.whl")] in commands
+    assert [
+        "uv",
+        "add",
+        _wheel_url("spark_kindling-1.2.3-py3-none-any.whl"),
+        "--frozen",
+    ] in commands
 
 
 def test_published_on_pypi_queries_json_api_and_degrades_to_false(monkeypatch):
@@ -6068,7 +6132,15 @@ def test_env_update_package_pins_pypi_version_in_dev_group(
     result = CliRunner().invoke(cli, ["env", "update", "--project", str(package)])
 
     assert result.exit_code == 0, result.output
-    assert ["uv", "add", "spark-kindling==1.2.3", "--group", "dev", *dev_extras] in commands
+    assert [
+        "uv",
+        "add",
+        "spark-kindling==1.2.3",
+        "--group",
+        "dev",
+        *dev_extras,
+        "--frozen",
+    ] in commands
     assert not any(cmd[:2] == ["uv", "remove"] for cmd in commands)
     data = _load_pyproject_toml(package / "pyproject.toml")
     assert data["project"]["dependencies"] == ["spark-kindling"]
@@ -6088,7 +6160,7 @@ def test_env_update_package_moves_existing_dev_pin(monkeypatch, tmp_path):
     result = CliRunner().invoke(cli, ["env", "update", "--project", str(package)])
 
     assert result.exit_code == 0, result.output
-    assert commands[0] == ["uv", "add", "spark-kindling==1.2.3", "--group", "dev"]
+    assert commands[0] == ["uv", "add", "spark-kindling==1.2.3", "--group", "dev", "--frozen"]
     assert _load_pyproject_toml(package / "pyproject.toml")["project"]["dependencies"] == [
         "spark-kindling"
     ]
@@ -6112,7 +6184,12 @@ def test_env_update_package_back_to_url_pin(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert commands[0] == ["uv", "remove", "spark-kindling", "--group", "dev", "--frozen"]
-    assert ["uv", "add", _wheel_url("spark_kindling-1.2.3-py3-none-any.whl")] in commands
+    assert [
+        "uv",
+        "add",
+        _wheel_url("spark_kindling-1.2.3-py3-none-any.whl"),
+        "--frozen",
+    ] in commands
 
 
 def test_root_adopts_package_dev_pin_as_standalone_runtime(tmp_path):
@@ -6233,7 +6310,9 @@ def test_env_update_package_back_to_url_keeps_standalone_out_of_runtime(monkeypa
     url_adds = [
         cmd for cmd in commands if cmd[:2] == ["uv", "add"] and cmd[2].startswith("https://")
     ]
-    assert url_adds == [["uv", "add", _wheel_url("spark_kindling-1.2.3-py3-none-any.whl")]]
+    assert url_adds == [
+        ["uv", "add", _wheel_url("spark_kindling-1.2.3-py3-none-any.whl"), "--frozen"]
+    ]
 
 
 @pytest.mark.parametrize(

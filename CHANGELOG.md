@@ -65,6 +65,12 @@ All notable changes to spark-kindling are documented here.
   SDP up on a package index. `env add` also moves a required extension the
   project already declares from another release to the selected one,
   keeping its group and extras, so the new extension's requirements resolve.
+- **`kindling env update` resolves once, after every pin is rewritten.** A
+  single-project update locked after each `uv add`, so moving Kindling and an
+  extension to a new minor failed when the new core pin met the extension's
+  old `<X.Y` requirement (or the Databricks extension met SDP's old pin).
+  Every pin is now staged with `--frozen`, as for workspaces, and the final
+  `uv sync` resolves the whole set.
 - **Span durations no longer go negative when the clock is corrected.**
   `totalTime` on trace span END events (the Spark event trace provider and
   the plain-python provider) was the difference of two wall-clock
