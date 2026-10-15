@@ -6305,6 +6305,96 @@ def test_env_add_pins_required_extensions_from_the_same_release(monkeypatch, tmp
     assert "required by spark-kindling-ext-databricks" in result.output
 
 
+def _databricks_requires_sdp_release(monkeypatch, commands):
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets(
+            "spark_kindling_ext_databricks-0.2.0-py3-none-any.whl",
+            "spark_kindling_ext_sdp-0.3.4-py3-none-any.whl",
+        ),
+    )
+    monkeypatch.setattr(
+        "kindling_cli.cli._release_wheel_extension_requirements",
+        lambda wheel: (
+            ["spark-kindling-ext-sdp"]
+            if wheel["distribution"] == "spark-kindling-ext-databricks"
+            else []
+        ),
+    )
+    monkeypatch.setattr("kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append(cmd))
+
+
+@pytest.mark.parametrize(
+    "sdp_requirement, sdp_source",
+    [
+        (
+            "'spark-kindling-ext-sdp[extra1]'",
+            "[tool.uv.sources]\nspark-kindling-ext-sdp = { url = "
+            "'https://github.com/example/repo/releases/download/v1.1.0/"
+            "spark_kindling_ext_sdp-0.3.0-py3-none-any.whl' }\n",
+        ),
+        ("'spark-kindling-ext-sdp[extra1]==0.3.0'", ""),
+    ],
+    ids=["url-pin", "version-pin"],
+)
+def test_env_add_moves_declared_required_extension_to_the_release(
+    monkeypatch, tmp_path, sdp_requirement, sdp_source
+):
+    """SDP declared from an older release would conflict with the new
+    Databricks' metadata (it requires SDP from the same release): it moves to
+    the selected release first, keeping its group and extras."""
+    project_dir = tmp_path / "project"
+    _write_pyproject(
+        project_dir,
+        "[project]\nname = 'demo'\nversion = '0.1.0'\ndependencies = []\n\n"
+        f"[dependency-groups]\ndev = [{sdp_requirement}]\n\n" + sdp_source,
+    )
+    commands = []
+    _databricks_requires_sdp_release(monkeypatch, commands)
+
+    result = CliRunner().invoke(
+        cli, ["env", "add", "spark-kindling-ext-databricks", "--project", str(project_dir)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert commands == [
+        [
+            "uv",
+            "add",
+            _wheel_url("spark_kindling_ext_sdp-0.3.4-py3-none-any.whl"),
+            "--group",
+            "dev",
+            "--extra",
+            "extra1",
+        ],
+        ["uv", "add", _wheel_url("spark_kindling_ext_databricks-0.2.0-py3-none-any.whl")],
+    ]
+    assert "spark-kindling-ext-sdp -> 0.3.4 [dev]" in result.output
+
+
+def test_env_add_keeps_required_extension_already_at_the_release(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    _write_pyproject(
+        project_dir,
+        "[project]\nname = 'demo'\nversion = '0.1.0'\n"
+        "dependencies = ['spark-kindling-ext-sdp']\n\n"
+        "[tool.uv.sources]\nspark-kindling-ext-sdp = { url = "
+        f"'{_wheel_url('spark_kindling_ext_sdp-0.3.4-py3-none-any.whl')}' }}\n",
+    )
+    commands = []
+    _databricks_requires_sdp_release(monkeypatch, commands)
+
+    result = CliRunner().invoke(
+        cli, ["env", "add", "spark-kindling-ext-databricks", "--project", str(project_dir)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert commands == [
+        ["uv", "add", _wheel_url("spark_kindling_ext_databricks-0.2.0-py3-none-any.whl")],
+    ]
+
+
 def test_env_add_warns_when_dependency_metadata_is_unreadable(monkeypatch, tmp_path):
     project_dir = tmp_path / "project"
     _write_pyproject(

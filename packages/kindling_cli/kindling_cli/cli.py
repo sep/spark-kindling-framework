@@ -3359,10 +3359,11 @@ def _missing_extension_dependencies(
     wheels_by_distribution: Dict[str, Dict[str, str]],
     declared: Iterable[str],
 ) -> List[Tuple[str, str]]:
-    """Kindling extensions the `roots` require (transitively) that the
-    project doesn't declare, as (distribution, required_by), ordered so each
-    comes after everything it requires: uv locks on every `uv add`, so a
-    dependency has to be pinned before the package that needs it."""
+    """Kindling extensions the `roots` require (transitively) that are not
+    in `declared` (the ones already pinned as wanted), as (distribution,
+    required_by), ordered so each comes after everything it requires: uv
+    locks on every `uv add`, so a dependency has to be pinned before the
+    package that needs it."""
     known = {_canonical_distribution_name(name) for name in declared}
     found: Dict[str, str] = {}
     order: List[str] = []
@@ -3396,28 +3397,77 @@ def _missing_extension_dependencies(
     return [(name, found[name]) for name in order]
 
 
+def _declared_at_release(entry: Any, wheel: Dict[str, str]) -> bool:
+    """Whether a declared Kindling entry already pins `wheel`: the same
+    release wheel URL, or an `==` pin of the wheel's version."""
+    if not isinstance(entry, dict):
+        return False
+    url = entry.get("url")
+    if url:
+        return url == wheel.get("url")
+    return bool(entry.get("version")) and entry.get("version") == wheel.get("version")
+
+
 def _pin_extension_dependencies(
     project_path: Path,
     roots: Iterable[str],
     wheels_by_distribution: Dict[str, Dict[str, str]],
-    declared: Iterable[str],
+    declared: Dict[str, Tuple[Optional[str], List[str]]],
     *,
     group: Optional[str],
     frozen: bool,
     source: str,
+    repin_declared: bool = False,
 ) -> List[str]:
     """Pin, from the same release, every Kindling extension the `roots`
     require that the project doesn't declare. Call before pinning the roots.
-    Returns the distributions added."""
+
+    With `repin_declared`, a required extension the project already declares
+    at another release is moved to this one too, keeping its group and
+    extras: its old pin would otherwise conflict with the roots' metadata
+    (an extension requires its siblings from the same major.minor). Without
+    it, declared extensions are left to the caller (`env update` re-pins
+    every declared package itself).
+
+    Returns the distributions pinned."""
+    declared_by_name = {
+        _canonical_distribution_name(name): value for name, value in declared.items()
+    }
+    known: Iterable[str] = declared_by_name
+    if repin_declared:
+        try:
+            entries = _pinned_kindling_entries(
+                _iter_kindling_dependency_entries(project_path / "pyproject.toml")
+            )
+        except Exception:
+            entries = {}
+        current = {
+            _canonical_distribution_name(name): entry for name, (_group, entry) in entries.items()
+        }
+        known = [
+            name
+            for name in declared_by_name
+            if name in wheels_by_distribution
+            and _declared_at_release(current.get(name), wheels_by_distribution[name])
+        ]
     added: List[str] = []
     for required, required_by in _missing_extension_dependencies(
-        roots, wheels_by_distribution, declared
+        roots, wheels_by_distribution, known
     ):
         dependency = wheels_by_distribution[required]
+        if required in declared_by_name:
+            pin_group, pin_extras = declared_by_name[required]
+        else:
+            pin_group, pin_extras = group, []
         pinned_from = _uv_pin_kindling(
-            project_path, dependency, group=group, frozen=frozen, source=source
+            project_path,
+            dependency,
+            group=pin_group,
+            extras=pin_extras,
+            frozen=frozen,
+            source=source,
         )
-        location = f" [{group}]" if group else ""
+        location = f" [{pin_group}]" if pin_group else ""
         click.echo(
             f"  [{project_path}] {required} -> {dependency['version']}{location} "
             f"({pinned_from}; required by {required_by})"
@@ -3991,6 +4041,7 @@ def env_add(
         group=group,
         frozen=False,
         source=source,
+        repin_declared=True,
     )
     pinned_from = _uv_pin_kindling(project_path, match, group=group, extras=extras, source=source)
 

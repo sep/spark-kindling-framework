@@ -62,7 +62,9 @@ All notable changes to spark-kindling are documented here.
   dependencies** from the same release (e.g. SDP for the Databricks
   extension), before the extension itself. `kindling env add
   spark-kindling-ext-databricks` failed with GitHub pins because uv looked
-  SDP up on a package index.
+  SDP up on a package index. `env add` also moves a required extension the
+  project already declares from another release to the selected one,
+  keeping its group and extras, so the new extension's requirements resolve.
 - **Span durations no longer go negative when the clock is corrected.**
   `totalTime` on trace span END events (the Spark event trace provider and
   the plain-python provider) was the difference of two wall-clock
