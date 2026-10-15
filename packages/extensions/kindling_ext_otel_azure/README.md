@@ -31,7 +31,7 @@ Add the extension to your `settings.yaml` or `BOOTSTRAP_CONFIG`:
 kindling:
   # Extensions are automatically loaded (installed + imported)
   extensions:
-    - spark-kindling-ext-otel-azure>=0.4.0
+    - spark-kindling-ext-otel-azure>=0.14.0
 
   telemetry:
     azure_monitor:
@@ -45,7 +45,7 @@ kindling:
 Or in bootstrap config:
 ```python
 BOOTSTRAP_CONFIG = {
-    'extensions': ['spark-kindling-ext-otel-azure>=0.4.0'],
+    'extensions': ['spark-kindling-ext-otel-azure>=0.14.0'],
     'kindling': {
         'telemetry': {
             'azure_monitor': {

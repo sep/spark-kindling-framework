@@ -9,11 +9,11 @@ target backed by the Azure Data Explorer Spark connector.
 
 This extension is not on PyPI. Install its wheel from a
 [GitHub Release](https://github.com/sep/spark-kindling-framework/releases): the
-extension keeps its own version, so take the `spark_kindling_ext_adx-*.whl` asset
-attached to the release that matches your Kindling version.
+extension's version follows Kindling's major.minor, so take the
+`spark_kindling_ext_adx-*.whl` asset attached to the Kindling release you use.
 
 ```bash
-pip install "https://github.com/sep/spark-kindling-framework/releases/download/v0.14.0/spark_kindling_ext_adx-0.1.0-py3-none-any.whl"
+pip install "https://github.com/sep/spark-kindling-framework/releases/download/v0.14.0/spark_kindling_ext_adx-0.14.0-py3-none-any.whl"
 ```
 
 In a uv project, `kindling env add spark-kindling-ext-adx` resolves it from
