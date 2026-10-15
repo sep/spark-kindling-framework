@@ -1310,9 +1310,10 @@ class ExtensionCompatibilityError(RuntimeError):
     missing or uninstallable wheel."""
 
 
-def _installed_kindling_requirements(package_name: str) -> List[Any]:
+def _installed_kindling_requirements(package_name: str) -> Optional[List[Any]]:
     """The Kindling requirements of an installed extension (by its
-    distribution name or a rename alias), or [] if none is installed."""
+    distribution name or a rename alias), or None when it has no installed
+    package metadata (e.g. importable files left behind without it)."""
     from importlib.metadata import PackageNotFoundError, requires
 
     from packaging.requirements import Requirement
@@ -1330,7 +1331,7 @@ def _installed_kindling_requirements(package_name: str) -> List[Any]:
             if _is_kindling_distribution(requirement.name):
                 kindling.append(requirement)
         return kindling
-    return []
+    return None
 
 
 def _require_installed_kindling(package_spec: str, requirements: Iterable[Any]) -> None:
@@ -1861,13 +1862,21 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
         if is_package_installed(package_spec, check_version=True):
             # Still check it against the runtime: after a runtime upgrade an
             # extension installed earlier may require a different Kindling.
-            _require_installed_kindling(
-                package_spec, _installed_kindling_requirements(get_package_name(package_spec))
+            installed_requirements = _installed_kindling_requirements(
+                get_package_name(package_spec)
             )
-            logger.info(f"Extension already installed: {get_package_name(package_spec)}")
-            return
-
-        if is_package_installed(package_spec, check_version=False):
+            if installed_requirements is not None:
+                _require_installed_kindling(package_spec, installed_requirements)
+                logger.info(f"Extension already installed: {get_package_name(package_spec)}")
+                return
+            # Importable but without package metadata, so its requirements
+            # can't be checked: reinstall it from the artifacts store, which
+            # checks the wheel's.
+            logger.info(
+                f"Extension {get_package_name(package_spec)} is importable but has no "
+                "package metadata; reinstalling it to check it against this runtime"
+            )
+        elif is_package_installed(package_spec, check_version=False):
             logger.info(f"Extension version mismatch, upgrading to satisfy: {package_spec}")
 
         import os

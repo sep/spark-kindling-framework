@@ -25,6 +25,8 @@ def test_extension_install_skips_when_installed_version_satisfies_requirement():
         patch("kindling.bootstrap._get_storage_utils", return_value=storage_utils),
         patch("kindling.bootstrap.importlib.util.find_spec", return_value=object()),
         patch("importlib.metadata.version", return_value="0.4.0"),
+        # Installed metadata: no Kindling requirement to check.
+        patch("importlib.metadata.requires", return_value=[]),
         patch("kindling.bootstrap.importlib.import_module", return_value=object()),
     ):
         install_bootstrap_dependencies(
@@ -370,7 +372,7 @@ def _only_kindling_installed(kindling_version):
     return version
 
 
-def _install_demo_extension(tmp_path, requirements, kindling_version, results):
+def _install_demo_extension(tmp_path, requirements, kindling_version, results, importable=False):
     """Run install_bootstrap_dependencies for one extension wheel with the
     given Requires-Dist; ``results`` are the returncodes of successive pip
     calls. Returns (pip argument lists, logger)."""
@@ -387,7 +389,10 @@ def _install_demo_extension(tmp_path, requirements, kindling_version, results):
 
     with (
         patch("kindling.bootstrap._get_storage_utils", return_value=storage_utils),
-        patch("kindling.bootstrap.importlib.util.find_spec", return_value=None),
+        patch(
+            "kindling.bootstrap.importlib.util.find_spec",
+            return_value=object() if importable else None,
+        ),
         patch("importlib.metadata.version", side_effect=_only_kindling_installed(kindling_version)),
         patch("kindling.bootstrap.subprocess.run") as subprocess_run,
         patch("kindling.bootstrap.importlib.import_module", return_value=object()),
@@ -444,6 +449,29 @@ def test_extension_for_another_kindling_minor_fails_the_bootstrap(tmp_path):
 
     with pytest.raises(ExtensionCompatibilityError, match="0.13.5 is installed"):
         _install_demo_extension(tmp_path, ["spark-kindling<0.15,>=0.14.0"], "0.13.5", [])
+
+
+def test_importable_extension_without_metadata_is_reinstalled_and_checked(tmp_path):
+    """A runtime cleanup once removed extensions' .dist-info but left their
+    packages: the extension imports, yet its requirements can't be read. It
+    is reinstalled from the artifacts store instead of trusted, so the
+    wheel's Kindling requirement is checked."""
+    calls, logger = _install_demo_extension(
+        tmp_path,
+        ["spark-kindling<0.15,>=0.14.0", "typing-extensions>=4.6.0"],
+        "0.14.1",
+        [0, 0],
+        importable=True,
+    )
+    assert len(calls) == 2, logger.error.call_args_list
+    assert "--no-deps" in calls[1]
+
+    from kindling.bootstrap import ExtensionCompatibilityError
+
+    with pytest.raises(ExtensionCompatibilityError, match="0.13.5 is installed"):
+        _install_demo_extension(
+            tmp_path, ["spark-kindling<0.15,>=0.14.0"], "0.13.5", [], importable=True
+        )
 
 
 def test_installed_extension_is_checked_against_the_runtime(monkeypatch):
