@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "spark-kindling-ext-visualization"
-version = "0.14.0rc1"
+version = "0.14.0rc2"
 description = "Matplotlib visualization extension for the Kindling framework"
 authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
 license = "MIT"
@@ -15,7 +15,7 @@ requires-python = ">=3.10"
 # provide pandas already; DataFrame.toPandas() will surface a clear runtime
 # error if a selected environment does not.
 dependencies = [
-    "spark-kindling>=0.14.0rc1,<0.15",
+    "spark-kindling>=0.14.0rc2,<0.15",
     "matplotlib>=3.7.0",
 ]
 

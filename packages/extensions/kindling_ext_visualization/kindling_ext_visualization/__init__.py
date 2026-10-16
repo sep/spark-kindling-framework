@@ -20,7 +20,7 @@ __all__ = [
     "Visualizations",
 ]
 
-__version__ = "0.14.0rc1"
+__version__ = "0.14.0rc2"
 
 
 def _register_services():
