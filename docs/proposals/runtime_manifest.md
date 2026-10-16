@@ -30,8 +30,12 @@ bootstrap and then discarded:
   actually ran is often not recorded.
 - App dependency installs run a plain `pip install` with no key-package pins
   or change report: a second, unrecorded source of drift.
-- There is no run-level id. `system.watermarks.last_execution_id` is a fresh
-  uuid per save, so it links to nothing.
+- There is no initialization-level id and nothing durable links ids
+  together. Executor runs do have ids (`generation_executor.py:321`,
+  `data_pipes.py:821`): a new uuid per `execute` / `run_datapipes` call. But
+  one initialization can make several such calls, nothing ties them to the
+  bootstrap or to a record, and `system.watermarks.last_execution_id` is
+  another fresh uuid per save, so it links to nothing.
 - The bootstrap trace is only flushed at the end of the run, so it is lost if
   the process is killed, and its root span carries no versions.
 
@@ -44,7 +48,7 @@ after app dependency installs:
 
 | Group | Fields |
 |---|---|
-| Identity | `run_id` (new, per initialization), Spark application id, platform job/run ids where available |
+| Identity | `run_id` (new, per initialization; the run record's key), the executor run ids made under it, Spark application id, platform job/run ids where available |
 | Platform | name, runtime version (DBR, Fabric, Synapse, standalone), serverless / Spark Connect flag |
 | Engine | Spark and PySpark versions, Python, Java/Scala (only when the JVM bridge is available), Delta |
 | Kindling | `spark-kindling` and every loaded extension: version requested and version resolved |
@@ -68,10 +72,11 @@ runs even with feature discovery off.
    entity, with run id, start/end, status, app and version, platform runtime,
    Kindling version, both fingerprints and the full manifest as JSON. It can be
    the parent record for migration runs (#247).
-4. **Rows:** output rows carry only `run_id` (and maybe the runtime
-   fingerprint) through provenance stamping and join to the run record; the
-   manifest is not embedded per row. Also pass `run_id` as the watermark
-   `last_execution_id`.
+4. **Rows:** output rows carry `run_id` and the executor's `execution_id`
+   (and maybe the runtime fingerprint) through provenance stamping and join
+   to the run record on `run_id`; the manifest is not embedded per row. The
+   run record lists the executor run ids made under it, so either id finds the
+   run. Also pass the executor run id as the watermark `last_execution_id`.
 
 ### Drift and untested runtimes
 

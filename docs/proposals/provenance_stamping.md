@@ -32,7 +32,7 @@ One nullable struct column per opted-in entity, default name `__provenance`
 
 ```
 struct<
-  pipe_id, pipe_name, run_id, persist_id,
+  pipe_id, pipe_name, run_id, execution_id, persist_id,
   processed_at timestamp,
   mode            -- 'batch' | 'streaming' | 'sdp'
   app_name, environment, platform, kindling_version,
@@ -84,9 +84,26 @@ that name. It is applied in three places:
    covers the OSS engine and the Databricks shapes except the Temporal chain
    lowering. Values are bound at declaration time; `run_id` is null.
 
-`run_id` does not reach the persist step today. Phase 1 captures it from the
-`orchestrator.pipe_started` / `datapipes.before_pipe` signals keyed by pipe id
-(the watermark aspect's capture pattern), with no interface change.
+**Identifiers.** Two ids, so rows join to the run record:
+
+- `run_id` is the per-initialization id defined in `runtime_manifest.md`, the
+  key of its run record.
+- `execution_id` is the executor's run id, which exists today
+  (`generation_executor.py:321`, `data_pipes.py:821`): a new uuid per
+  `execute` / `run_datapipes` call, so one initialization can have several.
+
+Neither reaches the persist step today. Phase 1 gets them two ways:
+
+- **Batch:** captured from the `orchestrator.pipe_started` /
+  `datapipes.before_pipe` signals, keyed by pipe id (the watermark aspect's
+  capture pattern), with no interface change. Those signals carry the
+  executor's run id; `run_id` comes from the runtime manifest.
+- **Streaming:** the signals don't cover it. `StreamingOrchestrator` calls
+  `start_pipe_stream` without emitting either one, and emits
+  `streaming.orchestrator_started` only after the queries have started
+  (`streaming_orchestrator.py:139-166,322-340`). The stream starter needs the
+  identity handed to it before the stream starts, e.g. passed in by the
+  orchestrator, separately from the batch capture.
 
 ### Schema
 
@@ -116,9 +133,14 @@ provenance naming the wrong pipe, and map columns break `distinct` and
 
 - **SCD:** under SCD2 the default tracked set is every non-key column, so
   without an exclusion every run would version every row. The provenance column
-  is implicitly untracked (see `scd_untracked_columns.md`); for AUTO CDC it is
-  added to `track_history_except_column_list`. Which pipe it records under each
-  strategy depends on that proposal's in-place vs frozen decision.
+  is implicitly untracked (see `scd_untracked_columns.md`). For AUTO CDC: when
+  the entity has an allow-list (`scd.tracked`, lowered to
+  `track_history_column_list`, `engine.py:391-394`), keep it as is, since the
+  provenance column is already outside it; only when there is no allow-list,
+  add the column to `track_history_except_column_list`. Passing both lists
+  would fail declaration, as AUTO CDC accepts only one. Which pipe the column
+  records under each strategy depends on that proposal's in-place vs frozen
+  decision.
 - **Several writers to one entity:** batch planning assumes one producer per
   entity and SDP rejects duplicates. Under fan-in (`fan_in_upsert_pipes.md`)
   the value would be last-writer-per-row.

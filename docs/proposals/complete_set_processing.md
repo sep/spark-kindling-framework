@@ -188,6 +188,14 @@ For a `set.read: released` pipe, the aspect:
 Release is exactly once; consumption is at least once, which the replace
 write makes harmless.
 
+Set-scoped inputs must bypass the generation executor's shared-input cache.
+`GenerationExecutor._read_batch_input_entity` caches a batch input by entity
+id and returns a cache hit without calling the next consumer's read
+(`generation_executor.py:1228-1245`), even with `auto_cache=False`. Two
+set-level pipes with different release cursors would otherwise both get the
+first one's selection, and the second would never record its own progress.
+The first slice skips the cache for `set.read` inputs (or caches per consumer).
+
 ### Set-keyed write
 
 Reuse the derived-entity keyed replace (`replaceWhere` on the key,
