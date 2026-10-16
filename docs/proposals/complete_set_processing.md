@@ -1,7 +1,8 @@
 # Complete-Set Processing
 
-**Status:** Preliminary. Captures the concept and the contract to settle;
-how it is built is deliberately left open. No framework code changes.
+**Status:** Preliminary. Captures the concept, the contract to settle, and a
+recommended first slice from design findings against the code; decisions are
+open. No framework code changes.
 **Created:** 2026-10-15
 **Related:** `episode_analytical_facts.md` and `temporal_event_segmentation.md`
 (sets whose boundaries are *derived*; this one's members are *known*),
@@ -103,24 +104,126 @@ completeness:
   late_members: reprocess               # | quarantine
 ```
 
-## How (TBD)
+## How: recommended first slice
 
-Two candidate shapes, to be chosen when this is designed in detail:
+Design findings against the current code (2026-10-16). Not final; the
+decisions below are open.
 
-- **Stream into the gate, batch out of it.** A streaming query over the
-  bronze entity uses `foreachBatch` to update the per-set state and, for
-  each set that just became complete, read that set's rows as an ordinary
-  DataFrame and run the set-level pipe. Lowest latency for continuous
-  sources such as Event Hubs. Spark's windows and watermarks close sets on
-  time, not completeness, so they are not the mechanism.
-- **Completeness check per arrival, batch run per set.** Each arrival (or
-  file drop) triggers a cheap check; a set that becomes complete launches
-  a normal batch run with the set id as a parameter, through the existing
-  execution path. Simpler; fits file-based arrival.
+### Driver: in-run gate evaluation, not a streaming gate
 
-Either way, the gate's state, set-scoped reads and set-keyed writes are
-the same contract; only what drives the gate differs. A `set.released`
-signal is a natural extension point for anything else that should react.
+The gate runs as a **read-time aspect inside an ordinary batch pipe run**,
+built like `WatermarkAspect`. The run is started by a schedule or a platform
+trigger (e.g. a Databricks file-arrival or table-update trigger on bronze).
+Each run evaluates the gate itself, so no set id has to be passed in, which
+matters because the SDK deliberately passes no runtime parameters to job runs
+(`kindling_sdk/platform_databricks.py:859-876`). A run in which no set is
+complete skips cheaply through the executor's existing skip-when-empty.
+
+A streaming gate (running the set-level pipe inside `foreachBatch`) is **not
+recommended**: under Spark Connect (Databricks standard/shared access mode and
+serverless) the callback runs without dependency injection
+(`entity_provider_delta.py:1878-1943`), so a full Kindling pipe can't run
+there. If very low latency is needed, a long-running app looping the set pipe
+every few seconds gets close with the same code, and also serves as the timer
+for deadlines.
+
+Bronze ingest runs separately (streaming ingest, or a batch ingest earlier in
+the same run): a plan with any streaming pipe switches entirely to streaming
+(`execution_strategy.py:508-552`).
+
+### Gate state: `system.set_gates`
+
+One system entity, defined like the watermarks entity and replaceable through
+DI, with one row per (gate, set): `gate_row_id`, `gate_id`, `source_entity_id`,
+`set_id`, `status` (`open`, `released`; later `overdue`, `released_partial`,
+`quarantined`, `reopened`), `expected_count`, `arrived_count`,
+`first_seen_at`, `last_member_at`, `released_at`, `release_seq` (increases per
+gate; the consumers' cursor), `release_reason`, `revision`,
+`last_execution_id`. Consumer progress reuses `system.watermarks`
+(`cursor` = the last `release_seq` consumed).
+
+### Declaration
+
+Completeness describes the data, so it goes on the bronze entity; the
+consuming pipe opts in:
+
+```yaml
+# bronze entity
+set.key: forecast_issued_at
+set.member_key: site_id
+set.expected_count: "200"        # or set.expected_from: ref.forecast_sites
+
+# set-level pipe
+set.read: released
+set.max_per_run: "1"             # optional; default: all released sets
+```
+
+Registration checks that the driving input carries `set.*` tags and doesn't
+also use `use_watermark` (two read handlers would clash: the last one wins
+silently, `simple_read_persist_strategy.py:159-168`), that the columns exist,
+and that the output entity is derived with `derived.replace_keys` equal to
+`set.key`.
+
+### Set-scoped read
+
+For a `set.read: released` pipe, the aspect:
+1. finds the sets touched since its last check (`read_changes` on bronze with a
+   gate-owned reader);
+2. recounts distinct members over all rows of those sets, so duplicates don't
+   count twice;
+3. compares with the expected count, or anti-joins with the reference entity
+   (which also yields the missing members);
+4. releases complete sets with a conditional MERGE into `system.set_gates`
+   (`WHEN MATCHED AND status = 'open' AND <complete>`), which guarantees each
+   set is released once;
+5. hands the pipe the rows of released sets past its cursor (or no data, so the
+   pipe skips), saving the cursor only after a successful persist and dropping
+   it on failure or skip, as the watermark aspect does.
+
+Release is exactly once; consumption is at least once, which the replace
+write makes harmless.
+
+### Set-keyed write
+
+Reuse the derived-entity keyed replace (`replaceWhere` on the key,
+`entity_provider_delta.py:2213-2294`), with one change: the replace scope must
+come from the **released set ids**, not from the output rows. Today the scope
+is taken from the output, and an empty output is a no-op, so a reprocessed set
+that now yields no rows would keep its old rows. Add an optional replace
+scope to `replace_entity`, supplied by the aspect for that persist. Only Delta
+implements `replace_entity` today.
+
+### Lakeflow / SDP
+
+The aspect is never registered under SDP, so in the first slice the
+declaration engine **rejects** `set.read` pipes rather than letting them read
+all of bronze. A later lowering could be a materialized view filtered to
+complete sets, without the release log, deadlines or signals.
+
+### Observability
+
+Signals `setgate.evaluated`, `setgate.set_released` (set id, reason, counts,
+latency from first and last member) and later `setgate.set_overdue` /
+`setgate.set_reopened`; spans gated like the watermark spans. The state table
+itself answers "open sets", "past deadline" and "release latency".
+
+### Later slices
+
+- **Deadlines and late members:** `set.deadline`, `set.on_deadline`,
+  `set.late_members`, with the transitions above. Arrival triggers never fire
+  when nothing arrives, so deadlines need a scheduled run (cron, or the
+  polling loop). A set where nothing arrived at all is only detectable with a
+  declared cadence (`set.cadence: 15m`) or an expected-sets reference. Partial
+  releases add a flag column to the delivered data.
+- **Then:** membership that changes over time, composite set keys, strict
+  ordering, a CLI view of gate state, and an SDP lowering.
+
+### Sizes
+
+First slice **M** (tags and validation, state entity, the aspect, the
+replace-scope change, the SDP rejection, signals, docs, memory-provider unit
+tests and one Databricks system test on both classic and Spark Connect
+compute). Deadlines and late members **M**. Later items **S–M** each.
 
 ## Relationship to existing features
 
@@ -131,17 +234,25 @@ signal is a natural extension point for anything else that should react.
 - **Streaming pipes:** bronze ingest can stay a streaming pipe; the gate
   is what turns a stream into bounded units.
 
-## Open questions
+## Decisions needed
 
-1. Where the gate's state lives (a system entity alongside watermarks, or
-   per-entity state).
-2. Whether the gate is an entity property (declared on bronze) or a pipe
-   property (declared on the set-level consumer).
-3. How expected membership is declared when it changes over time (a site
+1. Completeness on the entity (recommended), with an optional pipe-level
+   `set.gate_id` when one bronze entity has several gates.
+2. Whether the aspect also runs on standalone (unlike watermarks), so local
+   tests exercise it.
+3. Whether set-scoped reads require a derived output entity, or also allow
+   merge mode (which can't remove rows that disappeared from a set).
+4. Default catch-up: every released set in one run, or `set.max_per_run: 1`.
+5. Whether triggers stay outside Kindling (set up per platform by hand) or job
+   deployment learns schedule and file-arrival trigger blocks.
+6. Whether SDP rejects `set.read` pipes for now (recommended).
+7. How expected membership is declared when it changes over time (a site
    added mid-day).
-4. Behaviour on Lakeflow / SDP-executed apps, if any.
-5. What observability is needed: open sets, sets past deadline, release
-   latency.
+
+Unverified: platform trigger behaviour (Databricks file-arrival and
+table-update triggers, Fabric and Synapse event triggers) is from general
+knowledge, not this repository; check current platform docs. Delta write
+conflicts are not retried anywhere in the provider today.
 
 ## Non-goals (for now)
 
