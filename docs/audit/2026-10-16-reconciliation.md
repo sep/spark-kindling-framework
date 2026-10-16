@@ -93,7 +93,11 @@ idea in a design sketch shipped.
 
 ## GitHub issue dispositions
 
-State is the retrieved state; suggested scope corrections do not imply closure.
+State is the retrieved state. Issue bodies #260, #206, #168, #202, #203 and
+#155 were updated during this reconciliation: acceptance gaps, shipped temporal
+behavior, the superseded inversion dependency and stale proposal/README paths.
+Each update was read back and verified; all issue states were preserved.
+Documentation changes are proposed in [PR #358](https://github.com/sep/spark-kindling-framework/pull/358).
 
 | Issue | State | Disposition and source evidence |
 |---|---|---|
