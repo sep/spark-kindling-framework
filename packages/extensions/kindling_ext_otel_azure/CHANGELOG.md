@@ -5,6 +5,14 @@ All notable changes to the kindling-ext-otel-azure extension will be documented 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - Unreleased
+
+### Changed
+- **Version follows Kindling's major.minor.** 0.14.0 is the Kindling 0.14
+  line's release of this extension (after 0.4.1); it requires
+  `spark-kindling>=0.14.0,<0.15`. Later fixes bump only the patch.
+- Published to PyPI as `spark-kindling-ext-otel-azure`.
+
 ## [0.4.1] - 2026-10-14
 
 ### Changed

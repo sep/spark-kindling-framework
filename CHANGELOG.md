@@ -139,9 +139,17 @@ All notable changes to spark-kindling are documented here.
   declaring `spark-kindling` could make pip fetch Kindling from the package
   index over the runtime the bootstrap installed from the artifacts store
   (or fail where no index has it). Extensions are now installed with
-  `--no-deps`; their other requirements are installed separately, keeping
-  the runtime's packages as in 0.13.5, and their Kindling requirements are
-  checked against the installed runtime, failing with both versions named.
+  `--no-deps` after their other requirements, which install first (keeping
+  the runtime's packages as in 0.13.5), so a failed dependency install
+  leaves the extension uninstalled and the next bootstrap retries both.
+- **An extension built for another Kindling minor fails the bootstrap.**
+  Its Kindling requirement is checked against the installed runtime, and a
+  mismatch raises `ExtensionCompatibilityError` naming both versions.
+  Extensions already installed on a reused
+  cluster are checked too; one that imports but has no package metadata is
+  reinstalled from the artifacts store so it can be checked. The bootstrap
+  shim's cleanup now removes metadata only for the Kindling distributions it
+  uninstalls, so extensions keep theirs.
 - `kindling package init --source auto|pypi|github`: with no Kindling pin at
   the repo root, `auto` writes PyPI version pins only when the release is on
   PyPI, and release wheel URLs otherwise.
