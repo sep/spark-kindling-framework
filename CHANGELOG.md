@@ -58,6 +58,10 @@ All notable changes to spark-kindling are documented here.
 
 ### Fixed
 
+- Reconcile documentation with current provider tags, CLI diagnostics, temporal
+  execution and configuration behavior; archive seven implemented proposal
+  records and record the remaining issue/proposal gaps in the October audit.
+
 - **`kindling env add` / `env update` pin an extension's Kindling extension
   dependencies** from the same release (e.g. SDP for the Databricks
   extension), before the extension itself. `kindling env add
@@ -502,7 +506,7 @@ All notable changes to spark-kindling are documented here.
   be omitted to build every app under the app roots. The manifest records the
   template files' hashes, and per-app settings sources move under `apps`.
 - **Declaration derivations: clone and extend for entities and pipes**
-  (proposal `docs/proposals/declaration_derivations.md`).
+  (proposal `docs/proposals/obsolete/declaration_derivations.md`).
   `DataEntities.clone(id, from_entity=..., ...)` / `DataPipes.clone(id,
   from_pipe=..., ...)` declare a new id from another declaration used as a
   template; `DataEntities.extend(id, ...)` / `DataPipes.extend(id, ...)`
@@ -523,7 +527,7 @@ All notable changes to spark-kindling are documented here.
 ### Added
 
 - **Settings discovery by convention: `config_dir` / `app_dir`** (proposal
-  `docs/proposals/settings_discovery_by_convention.md`). Callers name the
+  `docs/proposals/obsolete/settings_discovery_by_convention.md`). Callers name the
   directories that hold settings and bootstrap resolves the ordered file
   list itself from one hierarchy table shared with the artifacts-storage
   download (`settings.yaml`, `settings.<platform>.yaml`, `workspace_<id>.yaml`,
@@ -616,7 +620,7 @@ All notable changes to spark-kindling are documented here.
 
 - **Cosmos DB extension 0.2.0: change-feed streaming reads, config-first
   throughput controls, formal merge, Spark 3/4 connector matrix** (#201,
-  proposal `docs/proposals/cosmos_streaming_and_throughput_controls.md`).
+  proposal `docs/proposals/obsolete/cosmos_streaming_and_throughput_controls.md`).
   `CosmosEntityProvider` now implements `StreamableEntityProvider` and
   `DeclarableStreamingSource`: `read_entity_as_stream()` reads the
   container's change feed (`cosmos.oltp.changeFeed`) with
@@ -773,7 +777,7 @@ All notable changes to spark-kindling are documented here.
   the first head it sees and must be asked to re-review fix-up commits before a
   fast-track merge (#297).
 - Proposal: Cosmos DB change-feed streaming reads and config-first throughput
-  controls, `docs/proposals/cosmos_streaming_and_throughput_controls.md` (#293).
+  controls, `docs/proposals/obsolete/cosmos_streaming_and_throughput_controls.md` (#293).
 
 ## [0.12.45] - 2026-09-12
 
@@ -1391,7 +1395,7 @@ to stable; no code changes since 0.12.32a9.
   `kindling_cli` command, meant to run once per project and then be
   deleted. New-project scaffolding (`kindling repo init`/`package init`,
   the generated devcontainer/CI templates) is unchanged and still
-  Poetry-based — see `docs/proposals/poetry_to_uv_migration.md` for the
+  Poetry-based — see `docs/proposals/obsolete/poetry_to_uv_migration.md` for the
   scope and rationale.
 
 ### Fixed

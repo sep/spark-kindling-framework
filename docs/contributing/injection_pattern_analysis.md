@@ -1,5 +1,9 @@
 # Injection Pattern Analysis: GlobalInjector.get() vs get_kindling_service()
 
+> Historical analysis, not a current implementation or support matrix. Consult
+> [the October reconciliation](../audit/2026-10-16-reconciliation.md) and the current source/tests
+> before using the proposed APIs or commands below.
+
 **Date:** December 10, 2025
 **Analysis Type:** Code Pattern Evaluation (No Changes)
 
@@ -227,12 +231,12 @@ def pipe(cls, **decorator_params):
 1. ✅ Already using `get_kindling_service()`:
    - `bootstrap.py` ✓
    - `test_framework.py` ✓
-   - `tests/data-apps/universal-test-app/main.py` ✓
+   - `tests/data-apps/universal-test-app/app.py` ✓
 
 2. ❌ Should migrate to `get_kindling_service()`:
    - `README.md` line 65
-   - `docs/entity_providers.md` line 143, 162
-   - `docs/file_ingestion.md` line 104
+   - `docs/contributing/entity_providers.md` line 143, 162
+   - `docs/guide/file_ingestion.md` line 104
 
 **MEDIUM PRIORITY (Integration Tests):**
 3. ⚠️ Consider migrating (tests acting as user):

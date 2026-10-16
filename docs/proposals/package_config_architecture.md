@@ -3,8 +3,9 @@
 > **Created:** 2026-02-02
 > **Status:** Partially implemented — Phases 1–2 shipped in #205/#209
 > (`ConfigPatternMatcher` plus post-registration entity/pipe overlays). Phase 3
-> (`_enabled`, `_remove_tags`, introspection, and validation) remains open under
-> issue #32; Phase 4 documentation remains incomplete.
+> (`_enabled`, `_remove_tags`, `_remove_all_tags`) remains open under issue #32.
+> CLI config/tag introspection now exists; exact runtime parity remains a separate
+> gap under #260. Do not interpret underscore keys as active execution controls.
 > **Context:** Extending configuration system to support package-level config and decorator overrides
 > **Revised:** 2026-07-06 — dropped the two-phase pending-registration model in favor of a simpler post-registration config overlay. See "Key Insight" under Implementation Design for why.
 

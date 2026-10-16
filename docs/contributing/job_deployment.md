@@ -194,12 +194,10 @@ job_config = {
 ## Testing
 
 Unit tests: `tests/unit/test_job_deployment.py`
-- 8 tests, all passing
-- 86% code coverage for job_deployment.py
 - Tests validate config, file preparation, bootstrap shim generation, delegation to platform services
 
-System tests: `tests/system/runners/fabric_runner.py`
-- Example FabricTestRunner using framework deployment
+System tests: `tests/system/core/test_platform_job_deployment.py`
+- Parameterized platform deployment tests using the shared system-test harness
 - Demonstrates production usage pattern
 - Validates that deployment works end-to-end
 
@@ -211,7 +209,7 @@ System tests: `tests/system/runners/fabric_runner.py`
 4. `packages/kindling/platform_databricks.py` - Databricks implementation
 5. `packages/kindling/platform_synapse.py` - Synapse implementation
 6. `tests/unit/test_job_deployment.py` - Unit tests
-7. `tests/system/runners/fabric_runner.py` - System test runner example
+7. `tests/system/core/test_platform_job_deployment.py` - Cross-platform deployment system tests
 
 ## Benefits
 

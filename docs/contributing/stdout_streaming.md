@@ -60,7 +60,7 @@ GET {workspace_url}/api/2.1/jobs/runs/get-output?run_id={run_id}
 
 ```python
 # Works with FabricAPI, SynapseAPI, or DatabricksAPI
-from kindling.platform_fabric import FabricAPI  # or SynapseAPI, DatabricksAPI
+from kindling_sdk.platform_fabric import FabricAPI  # or SynapseAPI, DatabricksAPI
 
 # Initialize API client
 api = FabricAPI(

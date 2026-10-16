@@ -45,6 +45,7 @@ Spark Kindling Framework is a comprehensive solution for building robust data pi
 - [Dynamic Registration](https://github.com/sep/spark-kindling-framework/blob/main/docs/guide/dynamic_registration.md) - Register entities and pipes at runtime
 
 ### Platform & Development
+- [Documentation and issue reconciliation](docs/audit/2026-10-16-reconciliation.md) - Dated source audit, proposal dispositions, and remaining gaps
 - [Platform API Architecture](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/platform_api_architecture.md) - Multi-platform abstraction
 - [Platform Storage Utils](https://github.com/sep/spark-kindling-framework/blob/main/docs/contributing/platform_storage_utils.md) - Storage operations
 - [Utilities](https://github.com/sep/spark-kindling-framework/blob/main/docs/guide/utilities.md) - Common utilities and helper functions
@@ -182,7 +183,7 @@ executer.run_datapipes(["customers.transform"])
 - **Declarative definitions** for data entities and transformations (tags-first conventions)
 - **Dependency injection** for loose coupling and testability
 - **Delta Lake integration** for reliable storage and time travel
-- **Built-in entity providers** - `delta`, `parquet`, `csv`, `memory`, `sql` (views), `current_view` (SCD2), `eventhub`, `adx-api`; ADX (connector) and Cosmos DB via extensions
+- **Built-in entity providers** - `delta`, `parquet`, `csv`, `memory`, `view` (SQL entities declared with `DataEntities.sql_entity`), `current_view` (SCD2), `eventhub`, `adx-api`; ADX (connector) and Cosmos DB via extensions
 - **Watermarking** for change tracking and incremental loads
 - **Streaming pipes** with per-micro-batch SCD1/SCD2 merge sinks (`write.mode` tag)
 - **Config-first execution options** - parallelism, error strategies (incl. `skip_dependents`), per-pipe retry via `kindling.execution.*`
@@ -198,7 +199,7 @@ executer.run_datapipes(["customers.transform"])
 
 ### Data Apps & Deployment
 - **Package apps** as .kda archives (Kindling Data Apps)
-- **Run through the durable runner** - apps submit to one managed platform runner
+- **Run apps or register jobs** - `app run` submits one-time runs; `runner register` creates per-app job definitions for external orchestration
 - **Cross-platform deployment** - same app runs on all platforms
 - **Artifact management** - wheels, configs, and dependencies
 

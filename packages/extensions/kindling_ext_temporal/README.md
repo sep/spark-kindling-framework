@@ -164,7 +164,6 @@ do not create a different episode identity.
   earlier than the accepted one never re-pairs a closed episode);
 - late-event grace windows, watermarks, replay/backfill semantics, and
   stateful streaming execution;
-- multi-generation orchestration beyond one condition-engine pass;
 - interval hierarchy and temporal-relation reasoning;
 - aggregation, correlation, and inference-derived event paths;
 - a `kindling conditions set/remove` CLI on top of `ingest_conditions`;

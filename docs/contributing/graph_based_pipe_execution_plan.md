@@ -1,5 +1,10 @@
 # Graph-Based Pipe Execution Plan
 
+> Historical implementation plan. DAG execution is implemented in `pipe_graph.py`,
+> `execution_strategy.py`, and `generation_executor.py`. Use the
+> [execution reference](execution_strategy_quick_reference.md) for current usage;
+> unchecked planning tasks below are not the current backlog.
+
 ## Executive Summary
 
 This document describes the graph-based pipe execution system implemented in kindling.
@@ -399,7 +404,7 @@ def test_circular_dependency_detected(builder, mock_registry):
 
 ### Integration Tests
 
-**Location:** `tests/integration/test_graph_execution.py`
+**Location:** `tests/integration/test_pipe_graph_integration.py`
 
 - Test graph execution with real Spark DataFrames
 - Verify parallel execution completes successfully
@@ -409,9 +414,9 @@ def test_circular_dependency_detected(builder, mock_registry):
 ### System Tests
 
 Add graph execution tests to existing system test suites:
-- Fabric: `tests/system/test_fabric_job_deployment.py`
-- Synapse: `tests/system/test_synapse_job_deployment.py`
-- Databricks: `tests/system/test_databricks_job_deployment.py`
+- Fabric: `tests/system/core/test_platform_job_deployment.py`
+- Synapse: `tests/system/core/test_platform_job_deployment.py`
+- Databricks: `tests/system/core/test_platform_job_deployment.py`
 
 ## Configuration and Environment Variables
 

@@ -1,5 +1,15 @@
 # Future Enhancements
 
+> Historical design notes, reconciled 2026-10-16. Workspace configuration and
+> `DataPipes.view()` have shipped; the sketches below are not current API contracts.
+> Use [configuration](reference/config_reference.md), [data pipes](guide/data_pipes.md),
+> and the [reconciliation](audit/2026-10-16-reconciliation.md) for current behavior.
+> Telemetry-delivery assertions remain open in [#155](https://github.com/sep/spark-kindling-framework/issues/155);
+> tag removal/disable semantics remain open in [#32](https://github.com/sep/spark-kindling-framework/issues/32).
+> In particular, the proposed no-SQL passthrough form of `DataPipes.view()` did not ship:
+> `sql` or `sql_file` is required. Memory entities are process/session scoped, not
+> automatically cleared at the end of each pipeline run.
+
 This document captures planned enhancements and architectural considerations for future development.
 
 > **Note:** Items with a GitHub issue are tracked there; this doc provides the original design context.

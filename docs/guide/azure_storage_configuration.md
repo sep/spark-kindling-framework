@@ -266,7 +266,7 @@ Configure DeltaEntityProvider to use ABFSS paths via entity tags:
 from pyspark.sql.types import StructField, StructType, IntegerType, StringType
 
 from kindling.data_entities import DataEntities, DataEntityRegistry
-from kindling.entity_provider import EntityProvider
+from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.injection import get_kindling_service
 
 DataEntities.entity(
@@ -286,8 +286,9 @@ DataEntities.entity(
 )
 
 entity_registry   = get_kindling_service(DataEntityRegistry)
-entity_provider   = get_kindling_service(EntityProvider)
+provider_registry = get_kindling_service(EntityProviderRegistry)
 entity            = entity_registry.get_entity_definition("bronze.sales")
+entity_provider   = provider_registry.get_provider_for_entity(entity)
 
 df = entity_provider.read_entity(entity)
 entity_provider.write_to_entity(df, entity)

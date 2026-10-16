@@ -1,5 +1,9 @@
 # Signal Opportunities Evaluation - Kindling Framework
 
+> Historical analysis, not a current implementation or support matrix. Consult
+> [the October reconciliation](../audit/2026-10-16-reconciliation.md) and the current source/tests
+> before using the proposed APIs or commands below.
+
 **Purpose**: Comprehensive evaluation of where signals would add value across all providers and services in the Kindling framework.
 
 **Evaluation Date**: January 2025
@@ -9,7 +13,7 @@
 > [!IMPORTANT]
 > This document captures pre-implementation analysis from January 2025.
 > Many items discussed here are now implemented in code.
-> For current signal names and usage, use `docs/signal_quick_reference.md`.
+> For current signal names and usage, use `docs/contributing/signal_quick_reference.md`.
 
 ---
 

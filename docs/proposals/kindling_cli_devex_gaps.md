@@ -1,7 +1,22 @@
 # Kindling CLI Devex Gaps Proposal
 
+> **Reconciliation (2026-10-16): partially implemented; retain active.** All seven
+> commands and the trace flags exist in `kindling_cli/cli.py`, with tests in
+> `test_cli_config_introspection.py`, `test_cli_entity_pipe_introspection.py`,
+> `test_cli_health_checks.py`, and `test_cli_trace_flags.py`. Acceptance criterion 1
+> is not satisfied as written: `config show`/`diff` inspect raw YAML, without
+> runtime `KINDLING_`/SparkConf overrides or secret resolution, and the tests check
+> YAML layering rather than equality to a real bootstrap. Criterion 2 is also
+> incomplete: `entity_tags` documents that resolved secrets originating in code
+> tags can lose provenance and escape redaction. Criteria 3–5 have
+> command-specific coverage; config show/diff suppress their reveal warning in
+> JSON mode. The original Poetry build sketch is superseded by `uv build` and
+> PEP 621 metadata (legacy Poetry metadata is still readable).
+> [#260](https://github.com/sep/spark-kindling-framework/issues/260) should retain
+> the parity decision/test gap rather than treating command presence as full acceptance.
+
 **Date:** 2026-08-16
-**Status:** Proposal
+**Status:** Partially implemented — see reconciliation above
 **Scope:** New CLI commands closing verified gaps in config introspection, entity/pipe listing, and environment diagnosis
 
 ---

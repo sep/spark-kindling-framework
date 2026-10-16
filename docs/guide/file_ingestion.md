@@ -96,7 +96,7 @@ processor.process_path(path, transform=lambda df: df.withColumn("amount", df.amo
 
 ### Where the data lands
 
-Each group is appended through the destination entity's own provider, resolved from its `provider_type` tag the same way pipes resolve their output provider. No `provider_type` tag means the default Delta provider. The write is always an append: ingestion never merges, even when the entity declares `merge_columns`. Declare the destination entity before running ingestion. A provider that cannot append (for example `sql`) raises a `ValueError` naming the entity and provider.
+Each group is appended through the destination entity's own provider, resolved from its `provider_type` tag the same way pipes resolve their output provider. No `provider_type` tag means the default Delta provider. The write is always an append: ingestion never merges, even when the entity declares `merge_columns`. Declare the destination entity before running ingestion. A provider that cannot append (for example a SQL entity using the `view` provider) raises a `ValueError` naming the entity and provider.
 
 This same `process_path()` call also drives any `discovery="autoloader"` entries registered for the same path — each runs its own Auto Loader stream to completion before `process_path()` returns. See [Auto Loader discovery](#auto-loader-discovery-databricks).
 
