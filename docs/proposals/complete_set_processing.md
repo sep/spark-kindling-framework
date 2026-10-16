@@ -64,8 +64,13 @@ Stream as far as possible; gate only where set semantics start to matter.
   - an expected count (simplest; fragile if membership changes or
     duplicates slip through).
 - **Release.** The transition from complete to available downstream.
-  Happens exactly once per set, including across restarts and concurrent
-  checks, so the gate's per-set state must be persisted.
+  Happens exactly once per set revision, including across restarts and
+  concurrent checks, so the gate's per-set state must be persisted. How a
+  *revised* set reaches consumers that already processed an earlier release
+  (after a partial release or late members) is open until the reprocessing
+  mechanism is chosen; one option, sketched under later slices, is that a
+  reopened set gets a new revision and release number, so set-scoped reads
+  return it again.
 - **Set-scoped read.** What a downstream pipe consumes: "the set(s)
   released since my last run", analogous to the incremental read that
   watermarks provide today ("changes since version N").
