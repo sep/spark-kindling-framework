@@ -1,5 +1,8 @@
 # Documentation Currency Audit — 2026-08
 
+> Superseded for current status by [the 2026-10-16 reconciliation](2026-10-16-reconciliation.md).
+> The findings below are preserved as a dated snapshot.
+
 **Date run:** 2026-08-16
 **Scope:** `docs/reference/`, `docs/contributing/`, `docs/proposals/`, and CLI-command docs, cross-checked against the actual code.
 **Method:** one background research pass reading the proposal docs then present,

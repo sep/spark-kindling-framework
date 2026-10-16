@@ -745,5 +745,5 @@ is an error, because that is a migration (`kindling migrate`), not an
 extension. The same shape exists in settings YAML (`clone_of`,
 `add_columns` on an exact id under `dataentities:`), so environment overlays
 can declare variants without code. See
-`docs/proposals/declaration_derivations.md` and, for pipes,
+`docs/proposals/obsolete/declaration_derivations.md` and, for pipes,
 `docs/guide/data_pipes.md`.

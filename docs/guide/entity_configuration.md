@@ -33,7 +33,7 @@ entity_tags:
        partition_columns=["date"],
        merge_columns=["order_id"],
        tags={
-           "provider.type": "delta",
+           "provider_type": "delta",
            "layer": "bronze"
        },
        schema=None
@@ -59,7 +59,7 @@ entity_tags:
    entity = registry.get_entity_definition("bronze.orders")
    # entity.tags will contain:
    # {
-   #   "provider.type": "delta",       # From code (base)
+   #   "provider_type": "delta",       # From code (base)
    #   "layer": "bronze",               # From code (base)
    #   "provider.path": "abfss://...",  # From config (override)
    #   "environment": "production"      # From config (override)

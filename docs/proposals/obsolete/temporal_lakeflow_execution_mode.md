@@ -1,6 +1,10 @@
 # Configurable Temporal-Chain Execution Mode for Lakeflow
 
-**Status:** Proposed — not implemented.
+**Status:** Implemented — reconciled 2026-10-16. `temporal_lowering.py` selects
+streaming (default) or batch from `kindling.lakeflow.temporal_mode`; batch strata
+use materialized views (or configured private views), while episode snapshot
+CDC retains its streaming target. Covered by `test_temporal_lakeflow_mode.py`
+and `test_temporal_lakeflow_batch_integration.py`. The design below is historical.
 **Created:** 2026-09-10
 **Reviewed against:** release v0.12.40 (`6111d74`)
 **Related:** `temporal_event_segmentation.md`,
@@ -78,9 +82,9 @@ across two packages would leave no rule for where the next key goes.
 ## Existing implementation and constraints
 
 The Databricks adapter's
-[`_temporal_chain_settings` and `_declare_temporal_chain`](../../packages/extensions/kindling_ext_databricks/kindling_ext_databricks/engine.py)
+[`_temporal_chain_settings` and `_declare_temporal_chain`](../../../packages/extensions/kindling_ext_databricks/kindling_ext_databricks/engine.py)
 resolve sibling pipes and the generation ceiling, then delegate to
-[`declare_stratified_temporal`](../../packages/extensions/kindling_ext_databricks/kindling_ext_databricks/temporal_lowering.py).
+[`declare_stratified_temporal`](../../../packages/extensions/kindling_ext_databricks/kindling_ext_databricks/temporal_lowering.py).
 The temporal extension remains engine-independent and a soft dependency, and
 the SDP extension contains no temporal lowering of its own.
 

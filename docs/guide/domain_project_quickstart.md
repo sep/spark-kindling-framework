@@ -2,7 +2,7 @@
 
 This guide walks a **domain project developer** through standing up a local dev environment, initialising a platform workspace, and building a domain project end-to-end — entities, pipes, and a data app — ready for local testing and remote deployment.
 
-> **Looking to contribute to the kindling framework itself?** See [developer_workflow.md](developer_workflow.md) instead.
+> **Looking to contribute to the kindling framework itself?** See [developer_workflow.md](../contributing/developer_workflow.md) instead.
 
 > **Assumptions**
 > - You have a dev repo already cloned (or are starting a new one).

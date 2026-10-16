@@ -5,7 +5,7 @@ This page enumerates the configuration keys Kindling reads and what they do.
 Kindling has three main configuration surfaces:
 
 - **Bootstrap config**: a flat `dict` passed to `kindling.initialize(...)` / `initialize_framework(...)` or injected as `config:<key>=<value>` arguments in system test jobs.
-- **YAML config**: layered YAML files (see `docs/platform_workspace_config.md`) loaded into `kindling.*` keys.
+- **YAML config**: layered YAML files (see [configuration hierarchy](../contributing/platform_workspace_config.md)) loaded into `kindling.*` keys.
 - **Entity tag overrides**: per-entity tag overrides provided via the YAML `entity_tags` map, merged when entities are retrieved from `DataEntityRegistry`.
 
 Kindling also supports SparkConf injection via `spark.kindling.*` keys; Kindling reads these and merges them into bootstrap/YAML config at startup.
@@ -81,7 +81,7 @@ Job-deployment (system-test / deployment API) keys:
 - `kindling.platform.name`: Platform name used by platform config files.
 - `kindling.platform.environment`: Environment label (used by platform code and diagnostics).
 - `kindling.apps.directory`: Subdirectory under artifacts used to discover data apps (default `data-apps`).
-- `kindling.temp_path`: Temp path root (preferred over `temp_path` when using YAML).
+- `kindling.temp_path`: Temp path root for staging after settings are loaded. On Databricks, set the early bootstrap path through job parameters or `CONFIG__platform_databricks__kindling__temp_path`; a value only in a downloaded settings file cannot govern the download of that file or the initial framework wheel. Diagnostic improvements are tracked in [#334](https://github.com/sep/spark-kindling-framework/issues/334).
 
 ### Bootstrap Behavior
 
@@ -111,8 +111,29 @@ Legacy/compat keys (still accepted by config translation, logged as deprecated):
 - `kindling.EXTENSIONS` or `kindling.extensions`
 - `kindling.IGNORED_FOLDERS`
 
+### Execution
+
+`GenerationExecutor` resolves explicit call arguments first, then the following
+`kindling.execution.*` settings, then built-in defaults:
+
+| Key suffix | Default | Behavior |
+|---|---|---|
+| `parallel` | `false` | Execute independent pipes in a generation concurrently |
+| `max_workers` | `4` | Maximum parallel workers |
+| `error_strategy` | `fail_fast` | `fail_fast`, `continue`, or `skip_dependents` (independent branches continue) |
+| `pipe_timeout` | unset | Per-pipe timeout in seconds |
+| `auto_cache` | `false` | Enable automatic caching recommendations |
+| `retry.attempts` | `0` | Retries after the initial attempt |
+| `retry.interval_seconds` | `30.0` | Delay between attempts |
+
+Per-pipe `kindling.execution.pipes.<pipeid>.retry.attempts` and
+`.retry.interval_seconds` override the global retry policy. Retrying an append
+can duplicate a partially committed write; retry does not supply transactionality.
+`ExecutionOrchestrator.resume()` is not implemented (issue #203).
+
 ### Delta
 
+- `kindling.delta.ensure_on_write`: Defaults to enabled. Set `false` to skip the explicit destination-ensure step before Delta writes; the write itself still needs a valid destination.
 - `kindling.delta.access_mode`: Default Delta access mode.
   - `catalog`: Use Spark table names (`saveAsTable`, `spark.read.table`, metastore/catalog lookup). This supports Unity Catalog and workspace-local Hive metastore databases.
   - `storage`: Use direct Delta storage paths (`DeltaTable.forPath`, `spark.read.format("delta").load(...)`). This is the safest default for Databricks workspaces without Unity Catalog.
@@ -283,7 +304,7 @@ These keys are only meaningful when `platform` is `standalone` (local/OSS Spark 
 
 An exact-id entry under `dataentities:` or `datapipes:` may declare a
 derivation alongside its ordinary overrides (see
-`docs/proposals/declaration_derivations.md`):
+`docs/proposals/obsolete/declaration_derivations.md`):
 
 ```yaml
 dataentities:
@@ -448,6 +469,36 @@ Lakeflow streaming table plus one append flow. Later pipe inputs remain
 static reads. Lakeflow owns checkpoints, query startup, retries, and
 persistence; application code and Kindling providers do not set
 `checkpointLocation`, call `writeStream`, or start the query.
+
+### Parquet Provider (`provider_type: parquet`)
+
+- `provider.path`: Required dataset directory.
+- `provider.merge_schema`: Read-time `mergeSchema` (default false).
+- `provider.save_mode`: Batch overwrite mode (default `overwrite`); append uses append mode.
+- `provider.option.<name>`: Spark reader/writer options.
+
+### Azure Data Explorer API Provider (`provider_type: adx-api`)
+
+This core provider uses the Python Kusto SDK, distinct from the `adx` Spark
+connector extension. It supports batch reads and ingestion, not Spark streaming.
+
+- `provider.cluster`, `provider.database`: Required query endpoint and database.
+- `provider.table`: Table for default reads and required for writes; `provider.query` supplies custom KQL.
+- `provider.time_column`: Enables bounded reads using `provider.lookback` (for example `30d`) or `provider.start` / `provider.end` (UTC timestamps). `provider.slice` splits the range into bounded queries.
+- `provider.ingest_uri`: Optional ingestion endpoint; defaults to the cluster host with an `ingest-` prefix.
+- `provider.auth`: `managed_identity` (default), `service_principal`, `azure_cli`, `device_code`, or `access_token`.
+- `provider.client_id` / `provider.app_id`, `provider.client_secret` / `provider.app_secret`, `provider.tenant_id` / `provider.authority_id`: Service principal credentials (with Azure environment fallbacks).
+- `provider.managed_identity_client_id`: Optional user-assigned identity.
+- `provider.access_token`: Token for access-token authentication.
+- `provider.flush_immediately`: Bypass ingestion batching (default false).
+- `provider.assume_exists`: Existence fallback if metadata lookup fails (default true).
+
+### SQL Entities (`view` provider)
+
+Declare SQL entities through `DataEntities.sql_entity(...)`. Registration sets
+`provider_type: view`; `provider_type: sql` is not a registered selector.
+The SQL declaration supplies the query and inputs; this provider is read-only.
+See [SQL entities](../guide/data_entities.md) for the declaration contract.
 
 ### Cosmos DB Provider (`provider_type: cosmos`, extension)
 

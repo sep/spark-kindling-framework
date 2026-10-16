@@ -1,5 +1,9 @@
 # Test Infrastructure Design Document
 
+> Historical analysis, not a current implementation or support matrix. Consult
+> [the October reconciliation](../docs/audit/2026-10-16-reconciliation.md) and the current source/tests
+> before using the proposed APIs or commands below.
+
 ## Overview
 
 Based on analysis of the Kindling framework, this document proposes a comprehensive set of test services and utilities to support both unit and integration testing.

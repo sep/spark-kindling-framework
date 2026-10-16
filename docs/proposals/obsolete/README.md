@@ -36,3 +36,15 @@ Proposals in this folder are archived because the work they specified has since 
 | [temporal_condition_sources.md](./temporal_condition_sources.md) | Implemented | PR #224; `DataConditions.register(...)` and table/registry `condition_source` execution are implemented in `kindling_ext_temporal` |
 
 Still-relevant proposals live one level up in [docs/proposals/](..).
+
+## Archived in the 2026-10-16 reconciliation
+
+| Proposal | Implemented scope / evidence |
+|---|---|
+| [autoloader_file_ingestion.md](autoloader_file_ingestion.md) | Per-entry Auto Loader extension; `test_databricks_autoloader_file_ingestion.py`; #228 closed |
+| [cosmos_streaming_and_throughput_controls.md](cosmos_streaming_and_throughput_controls.md) | Cosmos change feed, merge and throughput controls; `test_cosmos_entity_provider_extension.py`; #201 closed |
+| [declarable_streaming_sources.md](declarable_streaming_sources.md) | Databricks provider streaming sources; `test_sdp_streaming_source_lowering.py`; #259 closed. OSS remains capability-gated |
+| [declaration_derivations.md](declaration_derivations.md) | Entity/pipe derivation APIs; `test_declaration_derivations.py` |
+| [poetry_to_uv_migration.md](poetry_to_uv_migration.md) | uv workspace scaffolds and framework build; `test_migrate_domain_project_to_uv.py`, `pyproject.toml`, `uv.lock` |
+| [settings_discovery_by_convention.md](settings_discovery_by_convention.md) | Directory-based bootstrap discovery; `test_bootstrap_settings_discovery.py`. Explicit config_files remains deprecated compatibility |
+| [temporal_lakeflow_execution_mode.md](temporal_lakeflow_execution_mode.md) | Streaming/batch temporal topology; `test_temporal_lakeflow_mode.py`, integration batch coverage |

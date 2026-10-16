@@ -354,4 +354,4 @@ kindling env check --local --platform fabric
 
 - [Domain Project Quickstart](./domain_project_quickstart.md) — full end-to-end guide: entities, pipes, testing, deployment
 - [Local Python-First Development](./local_python_first.md) — developing without cloud credentials
-- [Hierarchical Configuration Guide](./platform_workspace_config.md) — platform and environment config overlays
+- [Hierarchical Configuration Guide](../contributing/platform_workspace_config.md) — platform and environment config overlays

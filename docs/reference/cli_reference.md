@@ -41,6 +41,17 @@ kindling pipeline run bronze.ingest_myproject --app apps/my_pipeline --env dev
 kindling pipeline run silver.stage_myproject --env dev
 ```
 
+### `pipeline show <PIPE_ID>`
+
+Show registered pipe metadata. Options: `--app PATH`, `--env TEXT`,
+`--platform`, `--tags` (include tag provenance), `--reveal-secrets`, and `--json`.
+Environment defaults through `KINDLING_ENV`, then `local`.
+
+`pipeline run` and `app run` also accept `--trace` and
+`--trace-level minimal|standard|verbose`. For app runs these supply default
+`print_trace` / `kindling.telemetry.tracing.level` parameters; explicit `--param`
+values take precedence. Local pipeline runs set the corresponding environment overrides.
+
 ### `pipeline list`
 
 List all registered pipe IDs for an app.
@@ -94,6 +105,26 @@ confirmed successful migration.
 ## config
 
 Manage Kindling configuration files.
+
+### `config show` and `config diff`
+
+Inspect app-local YAML without starting Spark. `show` merges base, platform,
+and environment files beside the app; it does **not** reproduce the complete
+runtime configuration (shared/workspace overlays, environment/SparkConf
+injection, dynamic values, or resolved secrets).
+
+```bash
+kindling config show --app ./app.py --env dev --platform databricks --json
+kindling config show --app ./app.py --key kindling.storage.table_root
+kindling config diff --app ./app.py --env dev --diff-env prod
+```
+
+Both accept `--app`, `--env` (falls back to `KINDLING_ENV`, then `local`),
+`--platform`, `--json`, and `--reveal-secrets`. `show` adds `--key`; `diff`
+adds `--diff-env` and `--diff-platform` (at least one required). Secret
+references are redacted by default; revealing prints the raw reference, not
+an independently fetched secret. Text output warns when revealing; JSON output
+does not include that warning.
 
 ### `config init`
 
@@ -527,6 +558,15 @@ The directory name is the snake-case form of `APP_NAME`.
 | `--pattern batch\|streaming\|file-ingestion` | — | Execution pattern to scaffold; omit for a minimal hello-world app |
 | `--template-dir PATH` | — | Directory of custom Jinja2 templates overlaying the built-ins |
 
+### `app check`
+
+Report app import, declaration/graph checks and entity/pipe counts. With
+`--platform`, also check deployed-runtime version skew when artifact storage
+can be resolved; unavailable version information is a non-blocking note.
+Accepts `--app PATH`, `--env`, `--platform`, `--artifacts-path`,
+`--storage-account`, `--container`, `--base-path`, and `--json`.
+Exits 1 if a constituent check fails, otherwise 0.
+
 ### `app validate`
 
 Validate entity and pipe definitions without starting Spark. Checks entity and
@@ -700,6 +740,16 @@ a `tests/entities/` fixture override is active.
 ## entity
 
 Inspect and validate entity data during local development.
+
+### `entity list` and `entity tags <ENTITY_ID>`
+
+List registered entities, or inspect one entity's resolved tags and provenance.
+Both accept `--app PATH`, `--env TEXT`, and `--json`;
+`entity list --tags` includes tags in the listing. `entity tags` additionally
+accepts `--platform` (provenance lookup) and `--reveal-secrets`; values identified
+as secret-derived are redacted by default. A secret resolved from code-declared
+tags can lose its provenance and is not reliably redacted; this remains an
+acceptance gap under #260. Environment falls back to `KINDLING_ENV`, then `local`.
 
 ### `entity show <ENTITY_ID>`
 
@@ -953,6 +1003,13 @@ directory would remove the other packages from the shared `.venv/`).
 | `--repo-root PATH` | `.` | Repo root to receive the new package |
 | `--template-dir PATH` | — | Custom Jinja2 templates |
 
+### `package check <PACKAGE_NAME>`
+
+Check package metadata, an importable `src/` layout, and wheel construction
+using `uv build`. PEP 621 metadata is canonical; legacy Poetry metadata is
+also readable. Options: `--local-folder PATH`, `--dist-dir PATH`, `--skip-build`,
+and `--json`. Exits 1 if any check fails. The build check writes build artifacts.
+
 ### `package deploy <PACKAGE_NAME>`
 
 Build a package wheel with `uv build` and upload it to artifact storage at
@@ -1076,3 +1133,12 @@ after `kindling env update` to move the skill to the new release.
 | `SYNAPSE_WORKSPACE_NAME` | synapse platform | Synapse workspace name |
 | `SYNAPSE_SPARK_POOL_NAME` | synapse platform | Spark pool name |
 | `KINDLING_ENV` | app/pipeline/config | Default environment overlay |
+
+## bundle
+
+`kindling bundle build` renders a Databricks Asset Bundle for Lakeflow apps,
+including staged wheels and a manifest. It does not deploy the bundle or build
+missing wheels. See [bundle promotion](../guide/dab_config_promotion.md) and
+`kindling bundle build --help` for the deployment-input options. Bundle
+serverless support does not imply serverless support for `app run` or
+`runner register` (issue #333).

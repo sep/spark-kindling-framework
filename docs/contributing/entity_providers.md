@@ -12,16 +12,20 @@ The framework uses **interface composition** rather than a single monolithic abs
 |---|---|---|
 | `BaseEntityProvider` | Yes (all providers) | Batch read + existence check |
 | `WritableEntityProvider` | Optional | Batch write and append |
+| `ReplaceWritableEntityProvider` | Optional | Replacement writes |
+| `IncrementalReadableEntityProvider` | Optional | Watermark-aware incremental reads |
 | `StreamableEntityProvider` | Optional | Streaming read |
 | `StreamWritableEntityProvider` | Optional | Streaming write (append) |
 | `StreamMergeableEntityProvider` | Optional | Streaming merge (per micro-batch upsert) |
 | `DestinationEnsuringProvider` | Optional | Pre-create the write destination |
 | `DeclarableStreamingSource` | Optional | Secret-safe declaration metadata for provider-owned streaming sources |
 
-This means a read-only CSV provider only implements `BaseEntityProvider`, while a full-featured Delta provider implements all of them.
+A read-only provider can implement only `BaseEntityProvider`. Delta adds batch,
+streaming, merge, replace, incremental-read and destination-ensure capabilities;
+it does not implement `DeclarableStreamingSource`.
 
-Built-in providers: `delta` (all five + merge), `parquet` (all five, no
-merge — plain-parquet interchange at solution boundaries; see
+Built-in providers: `delta`, `parquet` (batch/stream read and write plus
+destination ensure, without merge — plain-parquet interchange; see
 `entity_provider_parquet.py` for the no-transaction-log caveats), `csv`,
 `memory`, `eventhub`, `view` (SQL entities: read-only, evaluates the
 declared SQL), `current_view`, and `adx-api`
@@ -54,7 +58,7 @@ Each interface is an ABC. Consumers accept `BaseEntityProvider` and narrow to op
 
 ### Delta Lake Integration
 
-The primary implementation, `DeltaEntityProvider`, implements all five interfaces, providing seamless integration with Delta Lake features:
+The primary implementation, `DeltaEntityProvider`, provides the following Delta Lake features:
 
 - ACID transactions
 - Schema evolution
@@ -491,7 +495,9 @@ To implement a custom entity provider, extend `BaseEntityProvider` plus whicheve
 
 ```python
 from kindling.entity_provider import BaseEntityProvider, WritableEntityProvider
-from kindling.injection import GlobalInjector, inject
+from injector import inject
+from kindling.injection import GlobalInjector
+from kindling.spark_config import ConfigService
 
 @GlobalInjector.singleton_autobind()
 class CustomEntityProvider(BaseEntityProvider, WritableEntityProvider):
@@ -516,7 +522,7 @@ class CustomEntityProvider(BaseEntityProvider, WritableEntityProvider):
         ...
 ```
 
-A read-only batch provider such as CSV only needs to implement
+A custom read-only batch provider only needs to implement
 `BaseEntityProvider`. A read-only streaming source such as Event Hub also
 implements `StreamableEntityProvider`, and can implement
 `DeclarableStreamingSource` when a declarative engine may own that stream.

@@ -3,9 +3,11 @@
 **Status:** Partially implemented. Phases 1–3 and 5 have shipped: the shared
 declaration plan, OSS SDP emitter, write-inert bootstrap, local dry-run harness,
 metadata emission, Databricks expectations adapter, and SCD-to-AUTO-CDC mapping
-are present in `kindling_ext_sdp` and `kindling_ext_databricks`. Generic
-streaming-table/append-flow support, dual-engine parity coverage, and the open
-questions below remain.
+are present in `kindling_ext_sdp` and `kindling_ext_databricks`. Databricks
+provider-declared streaming inputs (Event Hub and Cosmos), append-flow lowering,
+and temporal streaming/batch strata have also shipped. Generic non-source
+streaming-table support, dual-engine parity coverage, and the open questions
+below remain; OSS SDP still gates off declarable streaming sources.
 **Created:** 2026-07-13
 **Related:** `package_config_architecture.md` (post-registration config
 overlay this engine's bootstrap ordering depends on),
