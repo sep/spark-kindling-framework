@@ -367,6 +367,133 @@ def test_env_update_single_project_stages_pins_frozen_and_resolves_once(
     assert len(commands) == len(mutations) + 1
 
 
+_OLD_RELEASE = "https://github.com/example/repo/releases/download/v1.1.0"
+
+
+def _write_nested_layout(root):
+    """A data-ignite-shaped tree: a root, a nested project with its own
+    pyproject.toml, and a package under that one pinned by a direct
+    reference (`name @ url`)."""
+    _write_pyproject(
+        root,
+        "[project]\nname = 'workspace'\nversion = '0.0.0'\n"
+        "dependencies = ['spark-kindling[standalone]']\n\n"
+        "[tool.uv.sources]\n"
+        f"spark-kindling = {{ url = '{_OLD_RELEASE}/spark_kindling-1.1.0-py3-none-any.whl' }}\n",
+    )
+    _write_pyproject(
+        root / "products" / "ascent",
+        "[project]\nname = 'ascent'\nversion = '0.0.0'\n"
+        "dependencies = ['spark-kindling[standalone]']\n\n"
+        "[tool.uv.sources]\n"
+        f"spark-kindling = {{ url = '{_OLD_RELEASE}/spark_kindling-1.1.0-py3-none-any.whl' }}\n",
+    )
+    package = root / "products" / "ascent" / "packages" / "ascent_framework"
+    _write_pyproject(
+        package,
+        "[build-system]\nrequires = ['uv_build']\nbuild-backend = 'uv_build'\n\n"
+        "[project]\nname = 'ascent-framework'\nversion = '0.1.0'\n"
+        "dependencies = [\n"
+        f'  "spark-kindling[standalone] @ {_OLD_RELEASE}/spark_kindling-1.1.0-py3-none-any.whl",\n'
+        "]\n",
+    )
+    return package
+
+
+def _stub_release(monkeypatch):
+    monkeypatch.setattr("kindling_cli.cli._resolve_github_version", lambda version, repo: "1.2.3")
+    monkeypatch.setattr(
+        "kindling_cli.cli._github_release_for_tag",
+        lambda tag, repo: _release_assets("spark_kindling-1.2.3-py3-none-any.whl"),
+    )
+
+
+def test_discovery_finds_projects_nested_under_nested_projects(tmp_path):
+    from kindling_cli.cli import _discover_descendant_pyprojects
+
+    package = _write_nested_layout(tmp_path)
+
+    found = _discover_descendant_pyprojects(tmp_path)
+
+    assert found == [
+        tmp_path / "products" / "ascent" / "packages" / "ascent_framework" / "pyproject.toml",
+        tmp_path / "products" / "ascent" / "pyproject.toml",
+    ]
+    assert package / "pyproject.toml" in found
+
+
+def test_direct_reference_pin_is_a_declared_kindling_dependency(tmp_path):
+    from kindling_cli.cli import (
+        _declared_kindling_version,
+        _find_kindling_dependencies,
+        _iter_kindling_dependency_entries,
+    )
+
+    package = _write_nested_layout(tmp_path)
+
+    declared = _find_kindling_dependencies(package / "pyproject.toml")
+    entries = list(_iter_kindling_dependency_entries(package / "pyproject.toml"))
+
+    assert declared == {"spark-kindling": (None, ["standalone"])}
+    assert _declared_kindling_version(entries[0][2]) == "1.1.0"
+
+
+def test_env_update_reaches_every_nested_project(monkeypatch, tmp_path):
+    """Before, discovery stopped at products/ascent/pyproject.toml and a
+    direct reference didn't count as a pin, so the package under it kept the
+    old release and the workspace held two URLs for spark-kindling."""
+    package = _write_nested_layout(tmp_path)
+    commands = []
+    _stub_release(monkeypatch)
+    monkeypatch.setattr(
+        "kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append((cmd, cwd))
+    )
+
+    result = CliRunner().invoke(
+        cli, ["env", "update", "--source", "github", "--project", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    new_url = _wheel_url("spark_kindling-1.2.3-py3-none-any.whl")
+    pinned_in = {cwd for cmd, cwd in commands if cmd[:2] == ["uv", "add"] and new_url in cmd}
+    assert pinned_in == {
+        tmp_path.resolve(),
+        (tmp_path / "products" / "ascent").resolve(),
+        package.resolve(),
+    }, commands
+
+
+def test_env_update_moves_a_nested_packages_direct_reference_to_pypi(monkeypatch, tmp_path):
+    package = _write_nested_layout(tmp_path)
+    commands = []
+    _stub_release(monkeypatch)
+    monkeypatch.setattr(
+        "kindling_cli.cli._run_checked", lambda cmd, cwd=None: commands.append((cmd, cwd))
+    )
+
+    result = CliRunner().invoke(
+        cli, ["env", "update", "--source", "pypi", "--project", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    text = (package / "pyproject.toml").read_text(encoding="utf-8")
+    # The package's runtime dependency is plain; the version pin is in dev.
+    assert '"spark-kindling",' in text and " @ " not in text
+    assert (
+        [
+            "uv",
+            "add",
+            "spark-kindling==1.2.3",
+            "--group",
+            "dev",
+            "--extra",
+            "standalone",
+            "--frozen",
+        ],
+        package.resolve(),
+    ) in commands
+
+
 def test_env_update_skips_dependency_missing_from_release(monkeypatch, tmp_path):
     project_dir = tmp_path / "project"
     _write_pyproject(

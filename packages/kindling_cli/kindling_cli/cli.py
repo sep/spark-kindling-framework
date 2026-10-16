@@ -2711,18 +2711,33 @@ def _exact_pin_version(requirement: str) -> Optional[str]:
     return match.group(1)
 
 
+def _direct_reference_url(requirement: str) -> Optional[str]:
+    """The URL of a PEP 508 direct reference (`name[extras] @ <url>`), or
+    None. Projects pinned before Kindling wrote [tool.uv.sources] entries
+    carry their release wheel URL this way."""
+    head = requirement.split(";", 1)[0]
+    if "@" not in head:
+        return None
+    url = head.split("@", 1)[1].strip()
+    return url or None
+
+
 def _uv_synthetic_entry(
     sources: Dict[str, Any], name: str, extras: List[str], requirement: str = ""
 ) -> Dict[str, Any]:
     """Build an entry dict ({"url": ...} or {"version": ...}, plus "extras")
     for a uv dependency: the release wheel URL when [tool.uv.sources] pins
-    one, otherwise the exact `==` version from the requirement string (a
-    PyPI version pin). _dependency_extras and _declared_kindling_version
+    one or the requirement is a direct reference (`name @ <url>`), otherwise
+    the exact `==` version from the requirement string (a PyPI version
+    pin). _dependency_extras and _declared_kindling_version
     read this shape."""
     entry: Dict[str, Any] = {}
     source = _uv_source_for(sources, name)
+    direct_url = _direct_reference_url(requirement)
     if isinstance(source, dict) and isinstance(source.get("url"), str):
         entry["url"] = source["url"]
+    elif direct_url:
+        entry["url"] = direct_url
     else:
         version = _exact_pin_version(requirement)
         if version:
@@ -2849,9 +2864,12 @@ _DESCENDANT_SCAN_EXCLUDES = {
 
 def _discover_descendant_pyprojects(root_path: Path) -> List[Path]:
     """Find pyproject.toml files in project/app directories nested under
-    root_path (e.g. apps/*/pyproject.toml in a monorepo). Does not descend
-    past a found pyproject.toml -- nested projects aren't expected to nest
-    further -- nor into common non-project directories.
+    root_path, at any depth (e.g. apps/*/pyproject.toml in a monorepo, and
+    products/x/packages/*/pyproject.toml under a products/x/pyproject.toml
+    of its own), skipping common non-project directories. A nested project
+    found under another nested project is still found: stopping at the first
+    one left the inner projects' Kindling pins out of `env update`, and the
+    workspace then held two releases.
     """
     found: List[Path] = []
     for dirpath, dirnames, filenames in os.walk(root_path):
@@ -2863,7 +2881,6 @@ def _discover_descendant_pyprojects(root_path: Path) -> List[Path]:
             continue
         if "pyproject.toml" in filenames:
             found.append(current / "pyproject.toml")
-            dirnames[:] = []
     return sorted(found)
 
 

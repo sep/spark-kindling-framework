@@ -76,6 +76,14 @@ All notable changes to spark-kindling are documented here.
   reverse) failed at the final `uv sync` with conflicting sources; it now
   fails first with the error that points to `kindling env update`, whether or
   not the root already declares Kindling.
+- **`kindling env update` reaches every nested project.** Project discovery
+  stopped at the first nested `pyproject.toml`, so in a tree like
+  `products/x/pyproject.toml` with packages under `products/x/packages/*`
+  the packages kept their old Kindling pins and the workspace failed to
+  resolve with two URLs for `spark-kindling`. Discovery now finds projects at
+  any depth, and a direct-reference pin (`spark-kindling[standalone] @
+  <release wheel URL>`) counts as a declared Kindling dependency and is
+  rewritten like any other.
 - **Span durations no longer go negative when the clock is corrected.**
   `totalTime` on trace span END events (the Spark event trace provider and
   the plain-python provider) was the difference of two wall-clock
