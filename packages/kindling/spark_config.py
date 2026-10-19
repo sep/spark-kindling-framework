@@ -758,6 +758,8 @@ class DynaconfConfig(ConfigService):
                         platform=self._reload_context.get("platform"),
                         workspace_id=self._reload_context.get("workspace_id"),
                         app_name=self._reload_context.get("app_name"),
+                        # Stage where the initial download staged.
+                        temp_path=self._reload_context.get("temp_path"),
                     )
 
                     # Reload Dynaconf with fresh files
@@ -905,6 +907,7 @@ def configure_injector_with_config(
     platform: Optional[str] = None,
     workspace_id: Optional[str] = None,
     app_name: Optional[str] = None,
+    temp_path: Optional[str] = None,
 ) -> None:
     """
     Configure the GlobalInjector's ConfigService singleton.
@@ -917,6 +920,8 @@ def configure_injector_with_config(
         platform: Platform name (fabric, synapse, databricks)
         workspace_id: Workspace ID for workspace-specific config
         app_name: Application name for app-specific config
+        temp_path: Staging path the initial config download used; hot-reload
+            downloads stage there too
     """
     # Ensure Dynaconf runs Kindling's custom secret loader.
     from kindling.config_loaders import register_kindling_loaders
@@ -932,6 +937,7 @@ def configure_injector_with_config(
             "platform": platform,
             "workspace_id": workspace_id,
             "app_name": app_name,
+            "temp_path": temp_path,
         }
 
     # Get the singleton instance from GlobalInjector (auto-created if needed)

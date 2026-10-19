@@ -50,7 +50,7 @@ These are read from the bootstrap config dict and/or job parameters passed to th
 - `declaration_only`: Boolean; initialize enough framework state to resolve configuration and declarations without runtime side effects. Suppresses bootstrap dependency installation, watermark aspect registration, workspace package loading, and `app_name` auto-run. If real platform-service construction fails during declaration-only initialization, Kindling warns and falls back to the standalone service for declaration-time operations. Used by Databricks Lakeflow declaration.
 - `load_workspace_packages`: If true, load workspace packages (notebooks) after platform init.
   (`load_local_packages` still accepted as a deprecated alias.)
-- `temp_path`: Temporary file path root used during wheel/extension install; `kindling.temp_path` is the YAML equivalent.
+- `temp_path`: Temporary file path root used during wheel/extension install; `kindling.temp_path` is the YAML equivalent. On Databricks, staging of the Kindling wheel and the settings files happens before any settings file is read, so the path for that staging must come from the job parameters: `--param kindling.temp_path=/Volumes/<catalog>/<schema>/<volume>/...`, or the `CONFIG__platform_databricks__kindling__temp_path` (or `CONFIG__kindling__temp_path`) variable that `kindling app run` sends as one. With neither, that staging uses `dbfs:/tmp` (DBFS root) and the bootstrap warns, because workspaces that restrict DBFS root access fail at that step. See [Databricks staging path](#databricks-staging-path).
 - `config_dir`: Directory holding the shared settings overlays (`settings.yaml`, `settings.<platform>.yaml`, `workspace_<id>.yaml`, `settings.<environment>.yaml`; the documented legacy names `platform_<p>.yaml` / `env_<e>.yaml` are honoured when the canonical file is absent). Bootstrap resolves the ordered file list itself, in the same order it uses for artifacts storage.
 - `app_dir`: Directory holding the app's own overlays (`settings.yaml`, `settings.<platform>.yaml`, `settings.<environment>.yaml`), applied after the shared overlays so the app wins. Local directories layer on top of anything discovered in artifacts storage.
 - `config_files`: **Deprecated.** Explicit list of local YAML config file paths (or a single path string). Still loaded, after downloaded and directory-resolved files, but bootstrap warns; name the directories with `config_dir` / `app_dir` instead and let the settings convention find the files.
@@ -81,7 +81,7 @@ Job-deployment (system-test / deployment API) keys:
 - `kindling.platform.name`: Platform name used by platform config files.
 - `kindling.platform.environment`: Environment label (used by platform code and diagnostics).
 - `kindling.apps.directory`: Subdirectory under artifacts used to discover data apps (default `data-apps`).
-- `kindling.temp_path`: Temp path root (preferred over `temp_path` when using YAML).
+- `kindling.temp_path`: Temp path root (preferred over `temp_path` when using YAML). In a settings file it affects only staging after the bootstrap has read settings, such as extension wheels; see [Databricks staging path](#databricks-staging-path).
 
 ### Bootstrap Behavior
 
@@ -184,6 +184,24 @@ dataentities-bytag:
 Every entity tagged `tier: bronze` picks up `provider.table_catalog: dev_bronze` (merged into its existing tags, same deep-merge semantics as `dataentities:`); every entity whose `tier` tag matches the glob `gold*` (`gold-us`, `gold-eu`, ...) additionally gets a stricter drift policy. Tag values support the same `*`/`?`/`**` glob syntax and exact-beats-wildcard specificity tiering as `dataentities:` id patterns (`TagRuleMatcher` compiles each tag key's value map as its own `ConfigPatternMatcher`). Tag rules apply before `dataentities:`/`datapipes:` glob-pattern overrides, so a specific id-pattern entry can still override a broader tag-based default for one item. `datapipes-bytag:` works identically for `PipeMetadata` fields. Reach for the `-bytag` sections when placement/config follows a semantic tag; reach for `dataentities:`/`datapipes:` when it follows an id naming convention.
 
 A tag value inside `dataentities:`/`dataentities-bytag:`/`datapipes:`/`datapipes-bytag:` may itself be a `@secret:<key>` / `@secret:<scope>:<key>` reference (e.g. a provider connection string). Bootstrap overlays these sections once before platform services exist (secrets still literal at that point), resolves `@secret:` references once platform services are up, then re-overlays so the resolved value — not the literal — lands in the registered entity/pipe metadata. A secret that still can't be resolved after platform init fails bootstrap loudly rather than handing a literal reference to a provider.
+
+### Databricks Staging Path
+
+The Databricks bootstrap stages files in two phases:
+
+1. **Before settings are read.** The bootstrap script stages the Kindling wheel, and the bootstrap stages the settings files it downloads from artifacts storage. These steps see only the bootstrap (job) parameters.
+2. **After settings are read.** Later staging, such as extension wheels, uses the resolved `kindling.temp_path`.
+
+So `kindling.temp_path` for bootstrap staging must be a job parameter: `--param kindling.temp_path=/Volumes/<catalog>/<schema>/<volume>/...` on `kindling app run`, `--config kindling.temp_path=...` on `kindling runner register`, or a `CONFIG__platform_databricks__kindling__temp_path` / `CONFIG__kindling__temp_path` variable, which `kindling app run` sends as a job parameter. A `kindling.temp_path` in a settings file affects only post-bootstrap staging.
+
+The staging path resolves in this order: the job parameter (a `--param` wins over a `CONFIG__` variable), then a derived volume root (`kindling.databricks.volume_staging_root`, or the volume parent of `kindling.storage.checkpoint_root` / `kindling.storage.table_root`, used once Volumes are known to be enabled), then `dbfs:/tmp` (DBFS root). The wheel staging in the bootstrap script uses only an explicit `/Volumes/...` or `dbfs:/...` parameter.
+
+The bootstrap warns when this matters:
+
+- When phase 1 has no staging path and falls back to `dbfs:/tmp`, the bootstrap script prints `⚠️  WARNING: No kindling.temp_path in the job parameters; staging the Kindling wheel under dbfs:/tmp (DBFS root)...`, and `kindling.bootstrap` logs the same warning for configuration files. Workspaces that restrict DBFS root access fail at that step; pass the path as a job parameter.
+- When phase 1 used the fallback and a settings file names `kindling.temp_path`, `kindling.bootstrap` warns that the settings value applies only to later staging and that the framework wheel and configuration files were staged under `dbfs:/tmp`.
+
+Runs that pass the path as a parameter get neither warning. Fabric, Synapse and standalone stage to local temp directories and are unaffected.
 
 ### Databricks Without Unity Catalog
 
