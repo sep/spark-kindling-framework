@@ -989,6 +989,10 @@ non-reproducible.
 Generator names resolve at `ensure_destination`, after bootstrap has
 imported every module, so entity and generator modules can be imported in
 any order. An unknown name fails there and lists the registered generators.
+Streaming pipes and parallel batch generations call `ensure_destination`
+before any data moves. A sequential batch run doesn't, so there a mistyped
+name fails at the pipe's first persist, after its reads (the persist fails,
+so watermarks don't advance).
 A streaming merge resolves the generator on the driver and carries the
 function itself into the micro-batch callback. Under Spark Connect that
 callback runs in a process that never ran bootstrap and may not be able to
@@ -1008,6 +1012,14 @@ from kindling.surrogate_keys import assert_generator_deterministic
 assert_generator_deterministic("acme_customer_key", sample_df, key_columns=["customer_id"],
                                options={"prefix": "CUST"})
 ```
+
+### Lakeflow (SDP)
+
+Surrogate keys are not lowered to SDP/Lakeflow yet. Declaring a pipe whose
+output entity carries `surrogate.*` tags fails validation with
+`surrogate_keys_not_lowered`, so a Lakeflow app can't silently write the
+dataset without its keys. Run such pipes with the Kindling runner, or compute
+the key in the pipe and drop the tags.
 
 ### Project-wide overrides
 

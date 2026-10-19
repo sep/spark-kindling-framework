@@ -43,6 +43,9 @@ All notable changes to spark-kindling are documented here.
   also works under Spark Connect, where the callback's process never ran
   bootstrap. Only deterministic generators are accepted for now.
   `assert_generator_deterministic(generator, sample_df)` checks one in tests.
+  Surrogate keys are not lowered to SDP/Lakeflow yet: declaring a pipe whose
+  output carries `surrogate.*` tags fails validation
+  (`surrogate_keys_not_lowered`).
 - **Kindling is published to PyPI.** `pip install 'spark-kindling[standalone]'
   spark-kindling-cli` now works without release URLs. Published:
   `spark-kindling`, `spark-kindling-cli`, `spark-kindling-sdk` and the

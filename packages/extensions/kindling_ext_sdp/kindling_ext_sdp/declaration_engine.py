@@ -460,6 +460,27 @@ class DeclarationEngine(ABC):
                     ),
                 )
             )
+
+        # Surrogate keys are minted by the runner (before persist, or inside
+        # the SCD2 merge); nothing lowers them to SDP/Lakeflow yet. Declaring
+        # such an entity would silently write it without its keys.
+        surrogate_tags = sorted(
+            key for key in (entity.tags or {}) if str(key).startswith("surrogate.")
+        )
+        if surrogate_tags:
+            issues.append(
+                DeclarationIssue(
+                    pipe_id=pipe.pipeid,
+                    code="surrogate_keys_not_lowered",
+                    reason=(
+                        f"output entity '{pipe.output_entity_id}' declares surrogate keys "
+                        f"({', '.join(surrogate_tags)}); surrogate keys are not lowered to "
+                        "SDP/Lakeflow yet, so the declared dataset would be written without "
+                        "them. Run this pipe with the Kindling runner, or compute the key "
+                        "in the pipe and drop the surrogate.* tags"
+                    ),
+                )
+            )
         return issues
 
     def _validate_inputs(self, pipe, producers: Dict[str, str]) -> List[DeclarationIssue]:

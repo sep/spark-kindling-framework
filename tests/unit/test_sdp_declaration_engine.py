@@ -751,6 +751,25 @@ class TestValidation:
         assert issue_codes(issues) == ["output_entity_not_table_backed"]
         assert "memory" in issues[0].reason
 
+    @pytest.mark.parametrize("capabilities", [OSS_SDP, DATABRICKS_SDP], ids=["oss", "databricks"])
+    def test_surrogate_keys_are_rejected_until_lowered(self, entities, capabilities):
+        entities = entities + [
+            make_entity(
+                "silver.dim_product",
+                tags={"surrogate.column": "product_sk", "surrogate.encoding": "v1"},
+            )
+        ]
+        pipes = FakePipeRegistry(
+            [make_pipe("dim.product", ["landing.orders"], "silver.dim_product")]
+        )
+        engine = make_engine(FakeEntityRegistry(entities), pipes, capabilities=capabilities)
+
+        issues = engine.validate()
+
+        assert issue_codes(issues) == ["surrogate_keys_not_lowered"]
+        assert "not lowered to SDP/Lakeflow" in issues[0].reason
+        assert "surrogate.column" in issues[0].reason
+
     def test_sql_view_pipe_fails_fast(self, entity_registry):
         pipes = FakePipeRegistry(
             [
