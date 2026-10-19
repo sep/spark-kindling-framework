@@ -36,12 +36,38 @@ _SOURCE_DELETE = "__scd2_source_delete"
 
 
 def _memory_scd1_merge(
-    current_df: DataFrame, incoming_df: DataFrame, entity_metadata: EntityMetadata
+    current_df: DataFrame,
+    incoming_df: DataFrame,
+    entity_metadata: EntityMetadata,
+    cfg: Optional[SCDConfig] = None,
 ) -> DataFrame:
-    """Full-row upsert: incoming rows replace matching business keys, others pass through."""
+    """Full-row upsert: incoming rows replace matching business keys, others pass through.
+
+    With ``scd.untracked``, mirrors the Delta SCD1 change condition: a
+    matched row is replaced only when a tracked column (present in both the
+    batch and the table) differs, null-safely; an untracked-only difference
+    keeps the existing row. A tracked column new to the table replaces every
+    matched row, as the Delta merge does when it drops the condition.
+    """
     business_keys = entity_metadata.merge_columns
-    untouched = current_df.join(incoming_df, on=business_keys, how="left_anti")
-    return untouched.unionByName(incoming_df, allowMissingColumns=True)
+    replacing_df = incoming_df
+    if cfg is not None and cfg.untracked_columns:
+        tracked_columns, _ = scd_change_columns(cfg, incoming_df.columns, business_keys)
+        if all(column in current_df.columns for column in tracked_columns):
+            current_df = current_df.toDF(*current_df.columns)
+            incoming_df = incoming_df.toDF(*incoming_df.columns)
+            change_condition = build_null_safe_change_condition(
+                "new", "old", tracked_columns, schema=incoming_df.schema
+            )
+            unchanged_keys = (
+                incoming_df.alias("new")
+                .join(current_df.alias("old"), on=business_keys, how="inner")
+                .where(f"NOT ({change_condition})")
+                .select(*business_keys)
+            )
+            replacing_df = incoming_df.join(unchanged_keys, on=business_keys, how="left_anti")
+    untouched = current_df.join(replacing_df, on=business_keys, how="left_anti")
+    return untouched.unionByName(replacing_df, allowMissingColumns=True)
 
 
 def _memory_insert_only_merge(
@@ -587,7 +613,7 @@ class MemoryEntityProvider(
         else:
             self.logger.info(f"Merging memory entity '{entity_metadata.entityid}' (mode: scd1)")
             result = (
-                _memory_scd1_merge(self.read_entity(entity_metadata), df, entity_metadata)
+                _memory_scd1_merge(self.read_entity(entity_metadata), df, entity_metadata, cfg)
                 if exists
                 else df
             )

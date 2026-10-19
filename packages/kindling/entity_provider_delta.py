@@ -108,6 +108,10 @@ class SCD1MergeStrategy(DeltaMergeStrategy):
     ) -> None:
         """Run the legacy update-all / insert-all Delta merge.
 
+        An entity declaring ``scd.untracked`` updates a matched row only when
+        a tracked column changed (see ``_scd1_change_condition``); without
+        the tag every matched row is updated, as always.
+
         Schema evolution is enabled explicitly: Kindling assumes additive
         schema evolution everywhere (the write path already sets
         mergeSchema), and without it MERGE silently drops source columns
@@ -121,14 +125,12 @@ class SCD1MergeStrategy(DeltaMergeStrategy):
         to this merge and restored afterward.
         """
         builder = delta_table.alias("old").merge(source=df.alias("new"), condition=merge_condition)
+        update_condition = _scd1_change_condition(delta_table, df, entity)
 
         if hasattr(builder, "withSchemaEvolution"):
-            (
-                builder.withSchemaEvolution()
-                .whenMatchedUpdateAll()
-                .whenNotMatchedInsertAll()
-                .execute()
-            )
+            _when_matched_update_all(
+                builder.withSchemaEvolution(), update_condition
+            ).whenNotMatchedInsertAll().execute()
             return
 
         # Delta < 3.2 compatibility path.
@@ -137,12 +139,43 @@ class SCD1MergeStrategy(DeltaMergeStrategy):
         previous = spark.conf.get(conf_key, None)
         spark.conf.set(conf_key, "true")
         try:
-            (builder.whenMatchedUpdateAll().whenNotMatchedInsertAll().execute())
+            (
+                _when_matched_update_all(builder, update_condition)
+                .whenNotMatchedInsertAll()
+                .execute()
+            )
         finally:
             if previous is None:
                 spark.conf.unset(conf_key)
             else:
                 spark.conf.set(conf_key, previous)
+
+
+def _scd1_change_condition(delta_table, df: DataFrame, entity) -> Optional[str]:
+    """Matched-row update condition for the SCD1 merge, or None (update all).
+
+    Only entities declaring ``scd.untracked`` get change detection: a
+    matched row is rewritten when a tracked (non-key, non-untracked) column
+    differs, null-safely; an untracked-only difference is skipped. Tracked
+    columns are those the batch and the table share. A tracked column the
+    table does not have yet drops the condition for this batch, so schema
+    evolution materializes it on every matched row.
+    """
+    cfg = scd_config_from_tags(entity)
+    if not cfg.untracked_columns:
+        return None
+    tracked_columns, _ = scd_change_columns(cfg, df.columns, entity.merge_columns)
+    target_columns = set(delta_table.toDF().columns)
+    if any(column not in target_columns for column in tracked_columns):
+        return None
+    return build_null_safe_change_condition("new", "old", tracked_columns, schema=df.schema)
+
+
+def _when_matched_update_all(builder, condition: Optional[str]):
+    """``whenMatchedUpdateAll``, conditional only when a condition applies."""
+    if condition is None:
+        return builder.whenMatchedUpdateAll()
+    return builder.whenMatchedUpdateAll(condition=condition)
 
 
 @DeltaMergeStrategies.register(name="insert_only")
