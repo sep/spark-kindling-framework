@@ -31,7 +31,7 @@ The convention for adding higher-level options to Kindling declarations:
 
 | Layer | Role | Examples |
 | --- | --- | --- |
-| Entity/pipe **tags** | Canonical semantics — what the thing *is* | Entities: `write.mode`, `scd.type`, `scd.tracked`, `dataset.kind`, `derived.replace_keys`, `sdp.dataset_type`. Pipes: `pipe_type`, `temporal.kind` |
+| Entity/pipe **tags** | Canonical semantics — what the thing *is* | Entities: `write.mode`, `scd.type`, `scd.tracked`, `scd.untracked`, `dataset.kind`, `derived.replace_keys`, `sdp.dataset_type`. Pipes: `pipe_type`, `temporal.kind` |
 | **Config keys** (`kindling.*`, `datapipes.<id>.engine.<engine>.*`) | Execution options and just-in-time overrides — how/where it runs | `kindling.temporal.max_generations`, engine `table_properties` blocks |
 | **Annotations / declaration helpers** | Named semantics as sugar — set the tags above as defaults | `DataEntities.derived_entity` setting `dataset.kind: derived`; `DataEntities.insert_only_entity` setting `write.mode: insert` |
 
