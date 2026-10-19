@@ -593,6 +593,37 @@ def test_scd2_exact_duplicate_rows_without_sequence_by_collapse(spark, provider,
     assert len([r for r in provider.read_entity(entity).collect() if r["customer_id"] == "c2"]) == 1
 
 
+def test_scd2_nested_map_payload_without_sequence_by(spark, provider, request):
+    """Without scd.sequence_by the batch is de-duplicated by whole-row
+    identity; a struct or array containing a map can't be a Spark partition
+    key, so it is compared through its JSON form. optimize_unchanged entities
+    (whose hash comparison supports such payloads) keep working: a single
+    row merges, exact duplicates collapse, and an unchanged row is a no-op."""
+    from pyspark.sql.types import ArrayType, MapType
+
+    payload = StructField(
+        "payload",
+        StructType(
+            [
+                StructField("attrs", MapType(StringType(), StringType()), True),
+                StructField("tags", ArrayType(MapType(StringType(), StringType())), True),
+            ]
+        ),
+        True,
+    )
+    source_schema = StructType(BUSINESS_SCHEMA + [payload])
+    entity = _scd2_entity(request, "nested_map_noseq", {"scd.optimize_unchanged": "true"})
+    entity.schema = StructType(BUSINESS_SCHEMA + [payload] + TEMPORAL_SCHEMA)
+    row = ("c1", "bronze", "L1", TS(1), ({"a": "1"}, [{"k": "v"}]))
+
+    _merge(spark, provider, entity, [row], schema=source_schema)
+    _merge(spark, provider, entity, [row, row], schema=source_schema)
+
+    current, closed = _versions(provider, entity)
+    assert len(current) == 1 and closed == []
+    assert current[0]["payload"]["attrs"] == {"a": "1"}
+
+
 def test_scd2_differing_duplicate_keys_without_sequence_by_are_rejected(spark, provider, request):
     """Without scd.sequence_by nothing orders two different rows for one key,
     so the batch is rejected on both providers and the table is unchanged."""

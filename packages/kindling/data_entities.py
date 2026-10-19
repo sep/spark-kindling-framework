@@ -23,6 +23,7 @@ from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from pyspark.sql import DataFrame
 from pyspark.sql.types import (
+    ArrayType,
     BooleanType,
     MapType,
     StringType,
@@ -498,9 +499,20 @@ def normalize_scd2_batch(df: DataFrame, entity: EntityMetadata, cfg: SCDConfig) 
         return (
             df.withColumn(rank, row_number().over(latest_first)).filter(_col(rank) == 1).drop(rank)
         )
-    # Exact duplicates are harmless: keep one. Spark can't group, sort or
-    # distinct MAP columns, so they're compared through their JSON form.
-    map_columns = {f.name for f in df.schema.fields if isinstance(f.dataType, MapType)}
+
+    # Exact duplicates are harmless: keep one. Spark can't partition by a MAP,
+    # or by a struct or array containing one, so such columns are compared
+    # through their JSON form.
+    def _contains_map(data_type) -> bool:
+        if isinstance(data_type, MapType):
+            return True
+        if isinstance(data_type, StructType):
+            return any(_contains_map(field.dataType) for field in data_type.fields)
+        if isinstance(data_type, ArrayType):
+            return _contains_map(data_type.elementType)
+        return False
+
+    map_columns = {f.name for f in df.schema.fields if _contains_map(f.dataType)}
     row_identity = [
         (
             to_json(_col(quote_sql_identifier(name)))
