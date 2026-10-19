@@ -2493,6 +2493,18 @@ def _initialized_config_matches(config: Dict[str, Any]) -> bool:
     return _config_service_matches_request(existing_config_service, config)
 
 
+def _register_surrogate_key_aspect() -> None:
+    """Attach SurrogateKeyAspect to persist.before_persist (non-SCD2 keys).
+
+    Fails loudly, like the watermark aspect: a run that silently skipped
+    surrogate keys would write rows without them.
+    """
+    from kindling.injection import GlobalInjector
+    from kindling.surrogate_keys import SurrogateKeyAspect
+
+    GlobalInjector.get(SurrogateKeyAspect).register()
+
+
 def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None):
     """Linear framework initialization with Dynaconf config loading"""
 
@@ -2894,19 +2906,8 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             # column expression on every platform, standalone included (SCD2
             # keys are minted inside the merge instead).
             if not declaration_only:
-                try:
-                    from kindling.injection import GlobalInjector
-                    from kindling.surrogate_keys import SurrogateKeyAspect
-
-                    GlobalInjector.get(SurrogateKeyAspect).register()
-                    logger.info("Surrogate key aspect registered")
-                except Exception as aspect_error:
-                    # Only reachable with a partially wired injector (the
-                    # signal provider and logger are core bindings).
-                    logger.warning(
-                        "Surrogate key aspect could not be registered; non-SCD2 "
-                        f"surrogate keys will not be added in batch runs: {aspect_error}"
-                    )
+                _register_surrogate_key_aspect()
+                logger.info("Surrogate key aspect registered")
 
             # Registration-gated tracing wiring (WatermarkAspect pattern):
             # read kindling.telemetry.tracing.* once and enable provider-op

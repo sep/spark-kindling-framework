@@ -309,3 +309,12 @@ def test_explicit_config_file_platform_environment_is_peeked_before_discovery(tm
 
     assert detect_platform.call_args_list[0].args[0]["platform_service"] == "databricks"
     assert mock_configure.call_args.kwargs["platform"] == "databricks"
+
+
+@pytest.fixture(autouse=True)
+def _skip_surrogate_key_aspect_registration():
+    """These tests bootstrap against a bare injector (no signal provider or
+    logger bindings). Registering the surrogate key aspect fails loudly by
+    design, so it is stubbed here; it is covered in test_surrogate_key_config."""
+    with patch("kindling.bootstrap._register_surrogate_key_aspect"):
+        yield
