@@ -277,7 +277,7 @@ Key parameters:
 
 ### SCD Type 2 entity
 
-Add `scd.type: "2"` and `scd.tracked` tags; the framework automatically manages `__effective_from`, `__effective_to`, and `__is_current` columns:
+Add `scd.type: "2"` and, optionally, `scd.tracked` (columns that open a new version when they change) or `scd.untracked` (columns that don't); the framework automatically manages `__effective_from`, `__effective_to`, and `__is_current` columns. A change confined to untracked columns updates the current version in place. See [SCD Type 2 Entities](data_entities.md#tracked-and-untracked-columns):
 
 ```python
 DataEntities.entity(

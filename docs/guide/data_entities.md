@@ -649,6 +649,7 @@ DataEntities.entity(
         "scd.type": "2",
         "scd.tracked": "name,email,region", # columns that trigger a new version when changed
                                              # omit to track all non-key, non-temporal columns
+                                             # (or use scd.untracked to list the exceptions)
     },
     schema=customer_schema,
 )
@@ -661,6 +662,59 @@ The schema you declare should contain only business columns. The framework auto-
 | Version start timestamp | `__effective_from` | `scd.effective_from_col` |
 | Version end timestamp (null = current) | `__effective_to` | `scd.effective_to_col` |
 | Current-row boolean flag | `__is_current` | `scd.current_col` |
+
+### Tracked and untracked columns
+
+A change to a tracked column closes the current version and opens a new one.
+By default every column is tracked except the keys (`merge_columns`), the
+temporal columns and `scd.sequence_by`. Narrow the tracked set with one of two
+tags:
+
+- `scd.tracked: "name,email,region"` lists the columns to track (an
+  allow-list). Every other column is untracked.
+- `scd.untracked: "ingested_at,load_id"` lists the columns not to track (an
+  exclude-list). Every other column stays tracked. Use it for bookkeeping
+  columns such as ingest timestamps and load ids.
+
+Both tags take a comma-separated list of literal column names. An incoming row
+for an existing key is handled like this:
+
+| Incoming change | Result |
+|---|---|
+| A tracked column changed | Close the current version and insert a new one with every incoming value |
+| Only untracked columns changed | Update the current version in place; `__effective_from` and `__is_current` don't change |
+| Only `scd.sequence_by` changed | Update the current version in place |
+| Nothing changed | No-op |
+
+Closed versions keep the untracked values they had when they were closed.
+
+> **Behaviour change for `scd.tracked`.** Columns outside the `scd.tracked`
+> allow-list used to be ignored when only they changed: the current version
+> kept the values it had when it was opened. They are now updated in place on
+> the current version, the same as `scd.untracked` and the same as Lakeflow
+> AUTO CDC.
+
+Registration rejects:
+
+- `scd.tracked` and `scd.untracked` on the same entity;
+- an untracked key column, temporal column or `__merge_key`;
+- an `scd.untracked` list that leaves no tracked column.
+
+### Lakeflow (AUTO CDC)
+
+When the pipeline runs on Databricks Lakeflow (`kindling_ext_databricks`), the
+tags map to AUTO CDC's history-tracking lists. Only one list is ever passed,
+and the same list goes to the change-feed flow (`create_auto_cdc_flow`) and the
+snapshot flow (`create_auto_cdc_from_snapshot_flow`):
+
+| Kindling tags | AUTO CDC argument |
+|---|---|
+| `scd.tracked` | `track_history_column_list` = the tracked columns |
+| `scd.untracked` | `track_history_except_column_list` = the untracked columns, plus `scd.sequence_by` when it is set |
+| neither | `track_history_except_column_list` = `[scd.sequence_by]` when it is set, otherwise no list |
+
+AUTO CDC updates columns outside the tracked set in place on the current
+version, so the runner and Lakeflow give the same result.
 
 ### Companion entity
 
@@ -684,7 +738,8 @@ Writing to a companion entity raises `NotImplementedError`.
 | Tag | Default | Description |
 |-----|---------|-------------|
 | `scd.type` | — | Set to `"2"` to enable SCD2 |
-| `scd.tracked` | all non-key, non-temporal columns | Comma-separated tracked columns |
+| `scd.tracked` | all non-key, non-temporal columns | Comma-separated tracked columns. A change confined to other columns updates the current version in place. Can't be combined with `scd.untracked` |
+| `scd.untracked` | none | Comma-separated columns that don't open a new version. A change confined to them updates the current version in place. Also applies to keyed merges without `scd.type` (see [Untracked columns on keyed merges](#untracked-columns-on-keyed-merges-scd1)). Can't be combined with `scd.tracked` |
 | `scd.effective_from_col` | `__effective_from` | Temporal column name override |
 | `scd.effective_to_col` | `__effective_to` | Temporal column name override |
 | `scd.current_col` | `__is_current` | Temporal column name override |
@@ -692,6 +747,34 @@ Writing to a companion entity raises `NotImplementedError`.
 | `scd.routing_key` | `hash` | `hash` (safe for all types) or `concat` (cheaper, readable) |
 | `scd.close_on_missing` | `false` | Set to `"true"` to close (expire) rows whose business key is absent from the incoming batch — acts as a soft-delete for keys that disappear from the source |
 | `scd.optimize_unchanged` | `false` | Set to `"true"` to skip re-inserting rows whose tracked columns are unchanged; uses a hash comparison to detect changes and avoids writing no-op history records |
+
+## Untracked Columns on Keyed Merges (SCD1)
+
+An entity with `merge_columns` and no `scd.type` is written with a keyed
+merge: matched rows are updated, new keys are inserted. The same
+`scd.untracked` tag applies here:
+
+```python
+DataEntities.entity(
+    entityid="silver.customers",
+    name="Customers",
+    merge_columns=["customer_id"],
+    tags={"scd.untracked": "ingested_at,load_id"},
+    schema=customer_schema,
+)
+```
+
+A matched row is updated only when a column other than the keys and the
+untracked columns differs. A change confined to untracked columns doesn't
+rewrite the row, so `ingested_at` and `load_id` keep the values from the last
+load that made a real change. New keys are inserted as usual. The same
+registration rules apply: keys can't be untracked, and at least one column must
+stay tracked. `scd.tracked` has no meaning without `scd.type: "2"`.
+
+This is runner-only behaviour. Keyed SCD1 merges are not lowered to Lakeflow
+AUTO CDC today, so there is no Lakeflow mapping. AUTO CDC type 1 has no
+untracked-column setting and rewrites the row on any change, so if keyed SCD1
+is ever lowered to it, this becomes a documented divergence.
 
 ## Best Practices
 
