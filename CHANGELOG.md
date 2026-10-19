@@ -6,6 +6,43 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- **Surrogate keys.** An entity declares key columns with tags and the
+  framework computes them: `surrogate.column` (on an SCD2 entity, the version
+  key) and `surrogate.durable_column` (SCD2 only; the same for every version),
+  with `surrogate.strategy` `hash` (default: lowercase sha256 hex), `uuid5`
+  (RFC 4122, identical to Python's `uuid.uuid5`, needs
+  `surrogate.uuid.namespace`) or `custom`. Inputs are `surrogate.from`
+  (default `merge_columns`, in declared order), plus effective_from for an SCD2
+  version key, with an optional `surrogate.namespace`. Every strategy hashes
+  one canonical string, the `v1` encoding: column names are not part of it,
+  NULL and empty string differ, separators can't collide, decimals are plain
+  at their declared scale, and timestamps are UTC microseconds, so keys don't
+  depend on the session timezone. The encoding is recorded in the
+  `surrogate.encoding` tag and the Delta table property
+  `kindling.surrogate.encoding`. Key columns are added to the table schema
+  when not declared (`nullable=False`, field metadata `kindling.surrogate`).
+  Keys are insert-only: SCD2 keys are minted inside the Delta and memory
+  merges on inserted rows, from the stored effective_from, and are never
+  tracked, never updated in place (also under `scd.tracked`) and never touched
+  by a close; a keyed (SCD1) merge's update leaves them alone. Other entities
+  get keys before persist (a new `SurrogateKeyAspect`) and when a streaming
+  pipe starts. An SCD2 version key without `scd.sequence_by` logs a warning
+  (keys are not reproducible on a rebuild);
+  `surrogate.require_reproducible: "true"` makes it an error. Registration
+  validates the tags, input types and key placement; `uuid4`, `identity`,
+  `md5`, `xxhash64`, the binary format and normalization are rejected as not
+  yet supported. `DataEntities.entity(surrogate_key=..., durable_key=...)` is
+  sugar for the column tags.
+- **Custom surrogate key generators.** `@SurrogateKeyGenerators.register(name,
+  deterministic=True, output_type=...)` registers a function that builds the
+  key Column from a `KeyContext` (bound columns, `effective_from`, `kind`,
+  `options` from `surrogate.generator.<option>` tags, and the `v1`
+  `canonical()` / `hash()` helpers). Names resolve at `ensure_destination`
+  (an unknown name lists the registered ones); a streaming merge carries the
+  resolved function into its micro-batch callback (pickled by value), so it
+  also works under Spark Connect, where the callback's process never ran
+  bootstrap. Only deterministic generators are accepted for now.
+  `assert_generator_deterministic(generator, sample_df)` checks one in tests.
 - **Kindling is published to PyPI.** `pip install 'spark-kindling[standalone]'
   spark-kindling-cli` now works without release URLs. Published:
   `spark-kindling`, `spark-kindling-cli`, `spark-kindling-sdk` and the
@@ -36,6 +73,13 @@ All notable changes to spark-kindling are documented here.
 
 ### Changed
 
+- **SCD2 effective_from is staged once per merge.** Without
+  `scd.sequence_by`, the Delta SCD2 merge now captures one processing-time
+  instant on the driver (as the memory provider already did) and stages it as
+  a column that the insert, the close and surrogate version keys all read,
+  instead of evaluating `current_timestamp()` in the MERGE clauses. Stored
+  values don't change meaning; missing-key closes on snapshot sources still
+  use the MERGE's own time.
 - **SCD2 updates untracked columns in place.** Columns outside an
   `scd.tracked` list used to be ignored when they were the only change, so
   the current version kept the values it opened with; they are now updated

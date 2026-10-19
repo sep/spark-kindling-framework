@@ -793,6 +793,241 @@ AUTO CDC today, so there is no Lakeflow mapping. AUTO CDC type 1 has no
 untracked-column setting and rewrites the row on any change, so if keyed SCD1
 is ever lowered to it, this becomes a documented divergence.
 
+## Surrogate Keys
+
+An entity can declare surrogate key columns and have the framework compute
+them. Keys are declared with tags, built from one canonical encoding (`v1`)
+that is safe to store, and set once when a row is inserted.
+
+```python
+# Hash key on a keyed (SCD1) entity: hashes merge_columns.
+DataEntities.entity(
+    entityid="silver.dim_product",
+    name="Products",
+    merge_columns=["product_id"],
+    tags={"surrogate.column": "product_sk"},
+    schema=product_schema,
+)
+
+# SCD2 dimension: a version key and a durable key.
+DataEntities.entity(
+    entityid="silver.dim_customer",
+    name="Customers",
+    merge_columns=["customer_id", "source_system"],
+    tags={
+        "scd.type": "2",
+        "scd.sequence_by": "updated_at",
+        "surrogate.column": "customer_version_sk",  # H(customer_id, source_system, effective_from)
+        "surrogate.durable_column": "customer_dk",   # H(customer_id, source_system)
+    },
+    schema=customer_schema,
+)
+```
+
+`DataEntities.entity(..., surrogate_key="customer_version_sk", durable_key="customer_dk")`
+is sugar for the two column tags. Like `insert_only_entity`, it only fills in
+the tags; explicit tags win.
+
+### Tags
+
+| Tag | Values | Default |
+|-----|--------|---------|
+| `surrogate.column` | column name (the version key on an SCD2 entity) | none |
+| `surrogate.durable_column` | column name; SCD2 only | none |
+| `surrogate.strategy` | `hash`, `uuid5`, `custom` | `hash` |
+| `surrogate.from` | comma-separated input columns, in order | `merge_columns` |
+| `surrogate.include_effective_from` | `true` / `false`; SCD2 version key only | `true` |
+| `surrogate.namespace` | literal string encoded as the first input | none |
+| `surrogate.hash.algo` | `sha256` | `sha256` |
+| `surrogate.hash.format` | `hex` | `hex` |
+| `surrogate.uuid.namespace` | UUID; required for `uuid5` | none |
+| `surrogate.generator` | registered generator name; required for `custom` | none |
+| `surrogate.generator.<option>` | string, passed to the generator as `ctx.options["<option>"]` | none |
+| `surrogate.require_reproducible` | `true` / `false` | `false` |
+| `surrogate.encoding` | `v1`; written by the framework | `v1` |
+
+`uuid4` and `identity` strategies, `md5` / `xxhash64`, the `binary` format,
+`surrogate.normalize` and `surrogate.unknown_member` are planned and rejected
+for now with a "not yet supported" error. The durable key uses the version
+key's strategy, namespace and inputs, without the effective date.
+
+### The `v1` encoding
+
+All strategies hash one canonical string, built with Spark's built-in
+functions (no UDFs), so keys agree across Spark 3, Spark 4 and Spark Connect:
+
+1. The inputs are the `surrogate.from` columns **in declared order**, then
+   effective_from for an SCD2 version key. Column names are not part of the
+   input: renaming a column keeps its keys.
+2. `surrogate.namespace`, when set, is encoded as the first value.
+3. Each value is `N` when NULL, otherwise `S<length>:<canonical value>`, and
+   the values are concatenated with no separator. `("a|b", "c")` and
+   `("a", "b|c")` can't collide, and NULL (`N`) differs from `""` (`S0:`).
+4. Canonical values: integers as decimal strings (an int `42` and a long `42`
+   agree); decimals in plain notation at the declared scale (a scale change is
+   a key change; scale above 36 is rejected); strings as is; booleans `T` / `F`;
+   dates `yyyy-MM-dd`; timestamps as UTC microseconds (`unix_micros`, the same in
+   every session timezone); binary as lowercase hex. Float, double,
+   `timestamp_ntz` and complex types are rejected.
+5. `hash` is the lowercase sha256 hex of the string (64 characters).
+   `uuid5` is the RFC 4122 name-based UUID of the string in
+   `surrogate.uuid.namespace`, identical to Python's
+   `uuid.uuid5(namespace, canonical)`.
+
+The encoding is recorded in the `surrogate.encoding` tag and, on Delta tables,
+in the table property `kindling.surrogate.encoding` (written at
+`ensure_destination`). A table that records a different encoding fails, so one
+table never mixes key encodings.
+
+A key column missing from the declared schema is added to the table, like
+the SCD2 temporal columns: `nullable=False`, with field metadata
+`kindling.surrogate=<strategy>`. It is a STRING for `hash` and `uuid5`, or
+the generator's `output_type` for `custom`. A declared key column with
+another type fails validation.
+
+### Where keys are computed
+
+- **SCD2** version and durable keys are minted inside the merge (Delta and
+  memory), on the inserted rows only, from the effective_from value that is
+  stored with the row. Streaming merges use the same merge per micro-batch.
+- **Other entities** get the key as a column before the write: in batch runs
+  through `persist.before_persist` (the `SurrogateKeyAspect`, registered at
+  bootstrap on every platform), in streaming pipes just before the sink
+  starts.
+
+`before_persist` and `read.after_read` receivers chain: each receiver gets the
+DataFrame the previous one returned, so the key aspect and your own
+transforms all apply, in whatever order they run.
+
+### Keys are insert-only
+
+A key is set once, when its row is inserted, and no merge clause writes it
+again. Merges never match on keys.
+
+- Key columns are never tracked, so they never open an SCD2 version.
+- Key columns are never untracked either. Under `scd.tracked` every column
+  outside the list is updated in place, but key columns are left out of that
+  update.
+- Closing a version (effective_to, is_current) never touches its keys.
+- On a keyed (SCD1) merge, the matched-row update is an explicit set without
+  the key columns, so a tracked change doesn't rewrite the key.
+- A key column in the incoming data is ignored: the framework always computes
+  the key.
+
+Registration rejects a key column in `merge_columns`, `surrogate.from`,
+`scd.tracked` or `scd.untracked`, an SCD2 temporal or reserved column as a key,
+effective_from, effective_to or is_current in `surrogate.from`, and
+`surrogate.durable_column` on an entity without `scd.type: "2"`. Column names
+are compared without regard to case, as Spark resolves them by default.
+
+### SCD2 version and durable keys
+
+The version key identifies one version, so facts can pin the version that
+was current when they happened. The durable key is the same for every version
+of a business key, for joins on current state. The `.current` companion
+carries both, since they are ordinary columns.
+
+With `scd.sequence_by`, effective_from is the sequence value, so a replay or
+rebuild recreates the same version rows with the same keys. Stale rows
+rejected by the strictly-later check are never inserted and never get a key.
+
+Without `scd.sequence_by`, effective_from is processing time (one instant per
+merge, captured once). Version keys are unique and fixed once stored, but a
+rebuild produces different ones, so registration logs a warning.
+`surrogate.require_reproducible: "true"` turns the warning into an error.
+Durable keys are unaffected.
+
+### Custom generators
+
+A generator is a function that builds a Spark Column from a `KeyContext`. It
+is not a row-level UDF, so the same generator runs before a write and inside
+an SCD2 merge.
+
+```python
+from pyspark.sql import Column, functions as F
+from kindling.surrogate_keys import KeyContext, SurrogateKeyGenerators
+
+@SurrogateKeyGenerators.register("acme_customer_key", deterministic=True, output_type="string")
+def acme_customer_key(ctx: KeyContext) -> Column:
+    if ctx.kind == "durable":
+        return F.concat_ws("-", F.lit(ctx.options["prefix"]), ctx.hash(*ctx.key_columns))
+    return F.concat_ws(
+        "-",
+        F.lit(ctx.options["prefix"]),
+        ctx.col("source_system"),
+        F.lpad(ctx.col("customer_id").cast("string"), 10, "0"),
+        F.date_format(ctx.effective_from, "yyyyMMddHHmmss"),
+    )
+```
+
+```python
+tags={
+    "surrogate.column": "acme_key",
+    "surrogate.strategy": "custom",
+    "surrogate.generator": "acme_customer_key",
+    "surrogate.generator.prefix": "CUST",
+}
+```
+
+`KeyContext` gives the generator:
+
+| Member | What it is |
+|--------|------------|
+| `col(name)` | a column of the rows being keyed, bound by the framework |
+| `columns` | every data column after transforms (no staging, temporal or key columns) |
+| `key_columns` | the resolved `surrogate.from` |
+| `effective_from` | the stored effective_from of the version being inserted; `None` for non-SCD2 entities and for durable keys |
+| `effective_to`, `is_current` | their insert-time values (NULL, true) on SCD2 entities; `None` otherwise |
+| `entity` | read-only view: `entityid`, `name`, `merge_columns`, `tags` |
+| `kind` | `"version"` (SCD2 version key), `"durable"` (SCD2 durable key) or `"key"` (non-SCD2) |
+| `options` | the entity's `surrogate.generator.<option>` tags, read-only |
+| `canonical(*cols)`, `hash(*cols, algo=)` | the `v1` helpers; pass column names or columns from `col()` / `effective_from` for their typed forms |
+
+There are no batch or run ids on purpose: they would make every key
+non-reproducible.
+
+Generator names resolve at `ensure_destination`, after bootstrap has
+imported every module, so entity and generator modules can be imported in
+any order. An unknown name fails there and lists the registered generators.
+A streaming merge resolves the generator on the driver and carries the
+function itself into the micro-batch callback. Under Spark Connect that
+callback runs in a process that never ran bootstrap and may not be able to
+import your module, so the generator's module is pickled by value while the
+callback is serialized. Generators must therefore be picklable: functions
+with no SparkSession, DI service or other live object in their closure,
+calling only helpers that are themselves importable or in the same module.
+
+Determinism is declared, not inspected. Only `deterministic=True` generators
+are accepted for now; non-deterministic ones arrive with `uuid4`. Check a
+generator in your tests with `assert_generator_deterministic`, which
+evaluates it twice with a repartition in between and compares:
+
+```python
+from kindling.surrogate_keys import assert_generator_deterministic
+
+assert_generator_deterministic("acme_customer_key", sample_df, key_columns=["customer_id"],
+                               options={"prefix": "CUST"})
+```
+
+### Project-wide overrides
+
+There is no global default generator. To use one generator across a group of
+entities, set the tags with a `dataentities-bytag:` overlay, so each entity
+still shows its own key declaration:
+
+```yaml
+dataentities-bytag:
+  key_family:
+    acme:
+      tags:
+        surrogate.strategy: custom
+        surrogate.generator: acme_customer_key
+        surrogate.generator.prefix: CUST
+```
+
+Every entity tagged `key_family: acme` (and declaring `surrogate.column`)
+then uses the generator.
+
 ## Best Practices
 
 1. **Entity Naming**: Use hierarchical naming with layer prefixes (bronze.*, silver.*, gold.*)
