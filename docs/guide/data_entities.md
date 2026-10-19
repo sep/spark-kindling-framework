@@ -697,8 +697,13 @@ Closed versions keep the untracked values they had when they were closed.
 Registration rejects:
 
 - `scd.tracked` and `scd.untracked` on the same entity;
+- `scd.untracked` on an entity without `merge_columns`, on a derived dataset,
+  or with `write.mode: insert`;
 - an untracked key column, temporal column or `__merge_key`;
-- an `scd.untracked` list that leaves no tracked column.
+- an untracked column missing from the entity's declared schema (when it
+  declares one);
+- an `scd.untracked` list that leaves no tracked column (`scd.sequence_by`
+  counts as untracked).
 
 ### Lakeflow (AUTO CDC)
 
@@ -767,9 +772,10 @@ DataEntities.entity(
 A matched row is updated only when a column other than the keys and the
 untracked columns differs. A change confined to untracked columns doesn't
 rewrite the row, so `ingested_at` and `load_id` keep the values from the last
-load that made a real change. New keys are inserted as usual. The same
-registration rules apply: keys can't be untracked, and at least one column must
-stay tracked. `scd.tracked` has no meaning without `scd.type: "2"`.
+load that made a real change. New keys are inserted as usual. Entities
+without `scd.untracked` keep the unconditional update. The same registration
+rules apply as for SCD2 (above), except the temporal-column rule. `scd.tracked`
+has no meaning without `scd.type: "2"`.
 
 This is runner-only behaviour. Keyed SCD1 merges are not lowered to Lakeflow
 AUTO CDC today, so there is no Lakeflow mapping. AUTO CDC type 1 has no
