@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import MISSING, dataclass, field, fields, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
@@ -92,6 +92,13 @@ class SCDConfig:
     # delete_when — change-feed only: a SQL predicate marking rows that
     # CLOSE the current version without inserting a new one.
     delete_when: Optional[str] = None
+    # untracked_columns (scd.untracked) — the exclude-list counterpart of
+    # tracked_columns; the two are mutually exclusive. Columns outside the
+    # tracked set never count as a change: under SCD2 a change only to them
+    # (and the sequence_by column) updates the current version in place;
+    # under the default SCD1 merge a matched row whose only differences are
+    # untracked is not rewritten. Parsed for non-SCD2 entities too.
+    untracked_columns: Optional[List[str]] = None
 
 
 @dataclass
@@ -251,10 +258,24 @@ class EntityMetadata:
         return self.sql is not None
 
 
+def _parse_column_list_tag(tags: Dict[str, Any], key: str) -> Optional[List[str]]:
+    """Parse a comma-separated column-list tag; None when absent or empty."""
+    raw = str(tags.get(key) or "").strip()
+    if not raw:
+        return None
+    columns = [column.strip() for column in raw.split(",") if column.strip()]
+    return columns or None
+
+
 def scd_config_from_tags(entity: EntityMetadata) -> SCDConfig:
-    """Extract and validate SCD configuration from an entity's tags."""
+    """Extract and validate SCD configuration from an entity's tags.
+
+    ``scd.untracked`` is also parsed for entities without ``scd.type``: it
+    configures change detection for the default SCD1 keyed merge.
+    """
     tags = entity.tags or {}
     scd_type = tags.get("scd.type", "").strip()
+    untracked_columns = _parse_column_list_tag(tags, "scd.untracked")
     default_config = SCDConfig(
         enabled=False,
         tracked_columns=None,
@@ -263,6 +284,7 @@ def scd_config_from_tags(entity: EntityMetadata) -> SCDConfig:
         is_current_column="__is_current",
         current_entity_id=f"{entity.entityid}.current",
         routing_key_method="hash",
+        untracked_columns=untracked_columns,
     )
 
     if not scd_type:
@@ -274,12 +296,7 @@ def scd_config_from_tags(entity: EntityMetadata) -> SCDConfig:
             f"(only SCD Type 2 is supported), got '{scd_type}'"
         )
 
-    tracked_raw = tags.get("scd.tracked", "").strip()
-    tracked_columns = (
-        [column.strip() for column in tracked_raw.split(",") if column.strip()]
-        if tracked_raw
-        else None
-    )
+    tracked_columns = _parse_column_list_tag(tags, "scd.tracked")
 
     routing_key_method = tags.get("scd.routing_key", "hash").strip().lower()
     if routing_key_method not in ROUTING_KEY_METHODS:
@@ -329,6 +346,7 @@ def scd_config_from_tags(entity: EntityMetadata) -> SCDConfig:
         sequence_by=sequence_by,
         source_kind=source_kind,
         delete_when=delete_when,
+        untracked_columns=untracked_columns,
     )
 
 
@@ -362,15 +380,59 @@ def build_null_safe_change_condition(
             return f"to_json({ident})"
         return ident
 
+    # NOT (a <=> b) is never NULL (both-null compares equal), so the
+    # condition can be negated safely: the earlier `a != b OR (a IS NULL) !=
+    # (b IS NULL)` form evaluated to NULL when both sides were null, and its
+    # negation then classified the row as neither changed nor unchanged.
     return " OR ".join(
         [
-            f"({_comparable(column, source_alias)} != "
-            f"{_comparable(column, target_alias)} OR "
-            f"({quote_sql_identifier(column, source_alias)} IS NULL) != "
-            f"({quote_sql_identifier(column, target_alias)} IS NULL))"
+            f"(NOT ({_comparable(column, source_alias)} <=> "
+            f"{_comparable(column, target_alias)}))"
             for column in tracked_columns
         ]
     )
+
+
+def scd_change_columns(
+    cfg: SCDConfig, columns: List[str], business_keys: List[str]
+) -> Tuple[List[str], List[str]]:
+    """Split a batch's columns into ``(tracked, untracked)`` for change detection.
+
+    A difference in a tracked column is a change: under SCD2 it closes the
+    current version and opens a new one; under the SCD1 merge it rewrites
+    the matched row. Untracked columns never count as a change: SCD2
+    updates them on the current version in place, SCD1 leaves them alone.
+
+    - ``scd.tracked`` (allow-list): tracked is the list as declared;
+      every other non-key, non-temporal column of the batch is untracked.
+    - otherwise: every non-key, non-temporal column of the batch is
+      tracked except ``scd.untracked`` and the ``scd.sequence_by`` column
+      (ordering authority, not content).
+
+    Untracked columns absent from the batch are skipped. Temporal columns
+    are only excluded for SCD2 entities (``cfg.enabled``).
+    """
+    temporal_columns = (
+        {cfg.effective_from_column, cfg.effective_to_column, cfg.is_current_column}
+        if cfg.enabled
+        else set()
+    )
+    candidates = [
+        column
+        for column in columns
+        if column not in business_keys and column not in temporal_columns
+    ]
+    if cfg.tracked_columns:
+        tracked = list(cfg.tracked_columns)
+        untracked = [column for column in candidates if column not in tracked]
+        return tracked, untracked
+
+    excluded = set(cfg.untracked_columns or ())
+    if cfg.sequence_by:
+        excluded.add(cfg.sequence_by)
+    tracked = [column for column in candidates if column not in excluded]
+    untracked = [column for column in candidates if column in excluded]
+    return tracked, untracked
 
 
 def augment_schema_for_scd2(schema: StructType, cfg: SCDConfig) -> StructType:
@@ -469,6 +531,11 @@ def _validate_derived_config(entity: EntityMetadata) -> None:
             f"Entity '{entity.entityid}': scd.type does not apply to a "
             "derived dataset — history semantics require a state dataset"
         )
+    if str(tags.get("scd.untracked") or "").strip():
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.untracked does not apply to a "
+            "derived dataset — its contents are replaced, not merged"
+        )
 
     if cfg.replace_keys and entity.schema is not None:
         schema_names = {field.name for field in entity.schema.fields}
@@ -521,11 +588,83 @@ def _validate_write_mode_tag(entity: EntityMetadata) -> None:
                 f"Entity '{entity.entityid}': write.mode 'insert' contradicts "
                 "scd.type — SCD entities update history on change"
             )
+        if str(tags.get("scd.untracked") or "").strip():
+            raise ValueError(
+                f"Entity '{entity.entityid}': write.mode 'insert' never updates "
+                "existing rows, so scd.untracked has no effect"
+            )
+
+
+def _validate_scd_untracked(entity: EntityMetadata, cfg: SCDConfig) -> None:
+    """Validate ``scd.untracked`` (SCD2 and the default SCD1 merge alike)."""
+    tags = entity.tags or {}
+    untracked_raw = str(tags.get("scd.untracked") or "").strip()
+    if not untracked_raw:
+        return
+    if not cfg.untracked_columns:
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.untracked is set but contains no "
+            f"usable column names: '{untracked_raw}'"
+        )
+    if _parse_column_list_tag(tags, "scd.tracked"):
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.tracked and scd.untracked are "
+            "mutually exclusive — declare the tracked columns or the untracked "
+            "ones, not both"
+        )
+    if not entity.merge_columns:
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.untracked requires merge_columns "
+            "(business keys) — it configures change detection for keyed merges"
+        )
+
+    untracked = set(cfg.untracked_columns)
+    key_overlap = untracked & set(entity.merge_columns)
+    if key_overlap:
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.untracked must not include "
+            f"merge_columns (business keys): {sorted(key_overlap)}"
+        )
+
+    reserved = set()
+    if cfg.enabled:
+        reserved = {
+            cfg.effective_from_column,
+            cfg.effective_to_column,
+            cfg.is_current_column,
+            "__merge_key",
+        }
+    reserved_overlap = untracked & reserved
+    if reserved_overlap:
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.untracked must not include SCD2 "
+            f"temporal or reserved columns: {sorted(reserved_overlap)}"
+        )
+
+    if entity.schema is None:
+        return
+    schema_names = [field.name for field in entity.schema.fields]
+    missing = sorted(untracked - set(schema_names))
+    if missing:
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.untracked columns not in the "
+            f"entity schema: {missing}"
+        )
+    excluded = untracked | set(entity.merge_columns) | reserved
+    if cfg.sequence_by:
+        excluded.add(cfg.sequence_by)
+    if not [name for name in schema_names if name not in excluded]:
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.untracked leaves no tracked column — "
+            "at least one non-key column must be tracked"
+            + (" (scd.sequence_by is never tracked)" if cfg.sequence_by else "")
+        )
 
 
 def _validate_scd_config(entity: EntityMetadata) -> None:
     """Validate SCD tag configuration at registration time."""
     cfg = scd_config_from_tags(entity)
+    _validate_scd_untracked(entity, cfg)
     if not cfg.enabled:
         return
 

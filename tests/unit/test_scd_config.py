@@ -4,6 +4,7 @@ import pytest
 from kindling.data_entities import (
     EntityMetadata,
     _validate_scd_config,
+    scd_change_columns,
     scd_config_from_tags,
 )
 
@@ -311,3 +312,219 @@ def test_validate_sequence_by_in_schema_passes():
         schema=make_schema("id", "status", "updated_at"),
     )
     _validate_scd_config(entity)
+
+
+# -- scd.untracked -----------------------------------------------------------
+
+
+def test_scd_untracked_parsed_for_scd2():
+    cfg = scd_config_from_tags(
+        make_entity(tags={"scd.type": "2", "scd.untracked": "ingested_at, load_id"})
+    )
+
+    assert cfg.untracked_columns == ["ingested_at", "load_id"]
+    assert cfg.tracked_columns is None
+
+
+def test_scd_untracked_parsed_for_scd1_entity_without_scd_type():
+    cfg = scd_config_from_tags(make_entity(tags={"scd.untracked": "ingested_at"}))
+
+    assert cfg.enabled is False
+    assert cfg.untracked_columns == ["ingested_at"]
+
+
+def test_scd_untracked_absent_is_none():
+    assert scd_config_from_tags(make_entity()).untracked_columns is None
+    assert scd_config_from_tags(make_entity(tags={"scd.type": "2"})).untracked_columns is None
+
+
+def _untracked_entity(tags, *, merge_columns=("id",), schema=None):
+    return make_entity(merge_columns=list(merge_columns), tags=tags, schema=schema)
+
+
+def test_validate_untracked_and_tracked_together_raises():
+    entity = _untracked_entity(
+        {"scd.type": "2", "scd.tracked": "status", "scd.untracked": "ingested_at"}
+    )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        _validate_scd_config(entity)
+
+
+def test_validate_untracked_and_tracked_together_raises_for_scd1_too():
+    entity = _untracked_entity({"scd.tracked": "status", "scd.untracked": "ingested_at"})
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        _validate_scd_config(entity)
+
+
+@pytest.mark.parametrize("tags", [{"scd.type": "2"}, {}], ids=["scd2", "scd1"])
+def test_validate_untracked_business_key_raises(tags):
+    entity = _untracked_entity({**tags, "scd.untracked": "id"})
+    with pytest.raises(ValueError, match="scd.untracked must not include merge_columns"):
+        _validate_scd_config(entity)
+
+
+@pytest.mark.parametrize("column", ["__effective_from", "__is_current", "__merge_key"])
+def test_validate_untracked_scd2_temporal_or_reserved_column_raises(column):
+    entity = _untracked_entity({"scd.type": "2", "scd.untracked": column})
+    with pytest.raises(ValueError, match="temporal or reserved"):
+        _validate_scd_config(entity)
+
+
+@pytest.mark.parametrize("tags", [{"scd.type": "2"}, {}], ids=["scd2", "scd1"])
+def test_validate_untracked_unknown_column_raises(tags):
+    entity = _untracked_entity(
+        {**tags, "scd.untracked": "nope"}, schema=make_schema("id", "status")
+    )
+    with pytest.raises(ValueError, match=r"not in the entity schema: \['nope'\]"):
+        _validate_scd_config(entity)
+
+
+@pytest.mark.parametrize("tags", [{"scd.type": "2"}, {}], ids=["scd2", "scd1"])
+def test_validate_untracked_all_columns_raises(tags):
+    entity = _untracked_entity(
+        {**tags, "scd.untracked": "status,ingested_at"},
+        schema=make_schema("id", "status", "ingested_at"),
+    )
+    with pytest.raises(ValueError, match="leaves no tracked column"):
+        _validate_scd_config(entity)
+
+
+def test_validate_untracked_sequence_by_counts_as_untracked():
+    entity = _untracked_entity(
+        {"scd.type": "2", "scd.sequence_by": "updated_at", "scd.untracked": "status"},
+        schema=make_schema("id", "status", "updated_at"),
+    )
+    with pytest.raises(ValueError, match="leaves no tracked column"):
+        _validate_scd_config(entity)
+
+
+def test_validate_untracked_requires_merge_columns():
+    entity = _untracked_entity({"scd.untracked": "ingested_at"}, merge_columns=())
+    with pytest.raises(ValueError, match="requires merge_columns"):
+        _validate_scd_config(entity)
+
+
+def test_validate_untracked_without_usable_names_raises():
+    entity = _untracked_entity({"scd.untracked": " , "})
+    with pytest.raises(ValueError, match="no usable column names"):
+        _validate_scd_config(entity)
+
+
+@pytest.mark.parametrize("tags", [{"scd.type": "2"}, {}], ids=["scd2", "scd1"])
+def test_validate_untracked_valid_passes(tags):
+    _validate_scd_config(
+        _untracked_entity(
+            {**tags, "scd.untracked": "ingested_at"},
+            schema=make_schema("id", "status", "ingested_at"),
+        )
+    )
+
+
+def test_validate_untracked_without_schema_skips_schema_checks():
+    _validate_scd_config(_untracked_entity({"scd.untracked": "ingested_at"}))
+
+
+def test_validate_untracked_with_write_mode_insert_raises():
+    from kindling.data_entities import _validate_write_mode_tag
+
+    entity = _untracked_entity({"write.mode": "insert", "scd.untracked": "ingested_at"})
+    with pytest.raises(ValueError, match="scd.untracked has no effect"):
+        _validate_write_mode_tag(entity)
+
+
+def test_validate_untracked_on_derived_dataset_raises():
+    from kindling.data_entities import _validate_derived_config
+
+    entity = _untracked_entity({"dataset.kind": "derived", "scd.untracked": "ingested_at"})
+    with pytest.raises(ValueError, match="does not apply to a derived dataset"):
+        _validate_derived_config(entity)
+
+
+@pytest.mark.parametrize(
+    "tags, match",
+    [
+        ({"scd.tracked": "status", "scd.untracked": "load_id"}, "mutually exclusive"),
+        ({"scd.untracked": "customer_id"}, "must not include merge_columns"),
+        ({"scd.untracked": "status,load_id"}, "leaves no tracked column"),
+        ({"scd.untracked": "nope"}, "not in the entity schema"),
+    ],
+    ids=["both_tags", "key_untracked", "all_untracked", "unknown_column"],
+)
+@pytest.mark.parametrize("scd_tags", [{"scd.type": "2"}, {}], ids=["scd2", "scd1"])
+def test_register_entity_rejects_invalid_untracked(scd_tags, tags, match):
+    from kindling.data_entities import DataEntityManager
+    from pyspark.sql.types import StringType, StructField, StructType
+
+    manager = DataEntityManager()
+    with pytest.raises(ValueError, match=match):
+        manager.register_entity(
+            "silver.customer",
+            name="Customer",
+            merge_columns=["customer_id"],
+            tags={**scd_tags, **tags},
+            schema=StructType(
+                [StructField(name, StringType()) for name in ("customer_id", "status", "load_id")]
+            ),
+        )
+    assert manager.registry == {}
+
+
+# -- scd_change_columns ------------------------------------------------------
+
+
+def _cfg(tags):
+    return scd_config_from_tags(make_entity(tags=tags))
+
+
+COLS = ["id", "status", "ingested_at", "updated_at", "__effective_from", "__is_current"]
+
+
+def test_change_columns_default_tracks_every_non_key_non_temporal_column():
+    tracked, untracked = scd_change_columns(_cfg({"scd.type": "2"}), COLS, ["id"])
+
+    assert tracked == ["status", "ingested_at", "updated_at"]
+    assert untracked == []
+
+
+def test_change_columns_untracked_and_sequence_by_are_untracked():
+    cfg = _cfg({"scd.type": "2", "scd.untracked": "ingested_at", "scd.sequence_by": "updated_at"})
+    tracked, untracked = scd_change_columns(cfg, COLS, ["id"])
+
+    assert tracked == ["status"]
+    assert untracked == ["ingested_at", "updated_at"]
+
+
+def test_change_columns_tracked_allow_list_makes_the_rest_untracked():
+    cfg = _cfg({"scd.type": "2", "scd.tracked": "status"})
+    tracked, untracked = scd_change_columns(cfg, COLS, ["id"])
+
+    assert tracked == ["status"]
+    assert untracked == ["ingested_at", "updated_at"]
+
+
+def test_change_columns_skip_untracked_columns_missing_from_the_batch():
+    cfg = _cfg({"scd.type": "2", "scd.untracked": "ingested_at,load_id"})
+    tracked, untracked = scd_change_columns(cfg, ["id", "status", "ingested_at"], ["id"])
+
+    assert tracked == ["status"]
+    assert untracked == ["ingested_at"]
+
+
+def test_change_columns_scd1_does_not_treat_temporal_names_specially():
+    cfg = _cfg({"scd.untracked": "ingested_at"})
+    tracked, untracked = scd_change_columns(cfg, COLS, ["id"])
+
+    assert tracked == ["status", "updated_at", "__effective_from", "__is_current"]
+    assert untracked == ["ingested_at"]
+
+
+def test_null_safe_change_condition_is_never_null():
+    """NOT (a <=> b): both-null compares equal, so negating the condition
+    is safe (the snapshot sentinel and in-place classes rely on it)."""
+    from kindling.data_entities import build_null_safe_change_condition
+
+    assert (
+        build_null_safe_change_condition("s", "t", ["a", "b"])
+        == "(NOT (s.`a` <=> t.`a`)) OR (NOT (s.`b` <=> t.`b`))"
+    )
+    assert build_null_safe_change_condition("s", "t", []) == "false"
