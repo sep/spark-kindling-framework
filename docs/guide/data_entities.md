@@ -949,15 +949,16 @@ from kindling.surrogate_keys import KeyContext, SurrogateKeyGenerators
 
 @SurrogateKeyGenerators.register("acme_customer_key", deterministic=True, output_type="string")
 def acme_customer_key(ctx: KeyContext) -> Column:
-    if ctx.kind == "durable":
-        return F.concat_ws("-", F.lit(ctx.options["prefix"]), ctx.hash(*ctx.key_columns))
-    return F.concat_ws(
-        "-",
+    parts = [
         F.lit(ctx.options["prefix"]),
         ctx.col("source_system"),
         F.lpad(ctx.col("customer_id").cast("string"), 10, "0"),
-        F.date_format(ctx.effective_from, "yyyyMMddHHmmss"),
-    )
+    ]
+    # Only an SCD2 version key has an effective date ("version"); it is None
+    # for a durable key ("durable") and on non-SCD2 entities ("key").
+    if ctx.kind == "version":
+        parts.append(F.date_format(ctx.effective_from, "yyyyMMddHHmmss"))
+    return F.concat_ws("-", *parts)
 ```
 
 ```python

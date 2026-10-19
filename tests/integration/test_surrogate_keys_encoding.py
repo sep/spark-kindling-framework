@@ -402,3 +402,51 @@ def test_apply_works_on_a_streaming_dataframe(spark, tmp_path):
         "p1": sha256("S2:p1"),
         "p2": sha256("S2:p2"),
     }
+
+
+# ── the guide's custom generator example runs for every kind ─────────────────
+
+
+def _guide_python_blocks():
+    import re
+    from pathlib import Path
+
+    guide = Path(__file__).resolve().parents[2] / "docs" / "guide" / "data_entities.md"
+    text = guide.read_text(encoding="utf-8")
+    section = text[text.index("### Custom generators") :]
+    section = section[: section.index("\n### ", 1)]
+    return re.findall(r"```python\n(.*?)```", section, flags=re.S)
+
+
+@pytest.mark.parametrize("kind", ["key", "version", "durable"])
+def test_documented_generator_runs_for_every_kind(spark, kind):
+    """docs/guide/data_entities.md 'Custom generators': the example generator
+    and the determinism check must run for non-SCD2 keys ("key", where
+    effective_from is None), SCD2 version keys and durable keys."""
+    blocks = _guide_python_blocks()
+    generator_block = next(b for b in blocks if "SurrogateKeyGenerators.register" in b)
+    determinism_block = next(b for b in blocks if "assert_generator_deterministic(" in b)
+    namespace = {}
+    SurrogateKeyGenerators.unregister("acme_customer_key")
+    try:
+        exec(generator_block, namespace)  # noqa: S102 - the documented example
+        sample_df = spark.sql(
+            "SELECT 'c1' AS customer_id, 'crm' AS source_system, "
+            "timestamp_micros(1700000000000000) AS ef"
+        )
+        ctx = KeyContext(
+            schema=sample_df.schema,
+            entity=EntityView("silver.dim_customer", "dim", ("customer_id",), ()),
+            kind=kind,
+            key_columns=("customer_id",),
+            options={"prefix": "CUST"},
+            scd2=kind != "key",
+            effective_from_column="ef" if kind != "key" else None,
+        )
+        key = sample_df.select(namespace["acme_customer_key"](ctx)).first()[0]
+        assert key.startswith("CUST-crm-00000000c1")
+        assert (len(key.split("-")) == 4) == (kind == "version")
+        if kind == "key":
+            exec(determinism_block, {**namespace, "sample_df": sample_df})  # noqa: S102
+    finally:
+        SurrogateKeyGenerators.unregister("acme_customer_key")
