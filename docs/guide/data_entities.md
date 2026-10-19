@@ -694,6 +694,15 @@ Closed versions keep the untracked values they had when they were closed.
 > the current version, the same as `scd.untracked` and the same as Lakeflow
 > AUTO CDC.
 
+Column names starting with `__scd2_` are reserved for the merge's staging
+columns, like `__merge_key`: registration rejects them in an SCD2 schema, and the
+merge rejects them in an incoming batch.
+
+A batch that brings a column the table doesn't have yet adds it, with
+schema evolution, as keyed merges and appends already do. A new untracked
+column is filled in on the current version in place; a new tracked column opens
+a new version for each key that now has a value (the closed version keeps NULL).
+
 Registration rejects:
 
 - `scd.tracked` and `scd.untracked` on the same entity;
