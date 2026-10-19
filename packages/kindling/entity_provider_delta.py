@@ -43,7 +43,12 @@ from .entity_provider import (
 
 _SCD2_NULL_SENTINEL = "__null__"
 _SCD2_MERGE_KEY_COLUMN = "__merge_key"
-_SCD2_CHANGED_COLUMN = "__scd2_changed"
+# Staged-row action for the SCD2 MERGE: which clause a staged row takes.
+_SCD2_ACTION_COLUMN = "__scd2_action"
+_SCD2_ACTION_INSERT = "insert"
+_SCD2_ACTION_CLOSE = "close"
+_SCD2_ACTION_TOUCH = "touch"
+_SCD2_ACTION_KEEP = "keep"
 _SCD2_SRC_HASH_COLUMN = "__scd2_src_hash"
 
 
@@ -222,22 +227,39 @@ def _routing_key_target_sql(business_keys: list[str], method: str) -> str:
 def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
     """Execute an SCD Type 2 staged-updates merge for a Delta table.
 
+    Each incoming row that matches a key's current version is classified:
+
+    - a tracked column changed: CLOSE the current version and insert a new
+      one (the closed version keeps every value it had, untracked included);
+    - only untracked columns (``scd.untracked``, the columns outside
+      ``scd.tracked``, and the ``sequence_by`` column) changed: TOUCH — update
+      those columns on the current version in place, without versioning;
+    - nothing changed: no-op.
+
+    Rows for unknown keys insert a first version. Every class is staged
+    with an action column, and every matched clause is conditional on it.
+
     Declared-flow semantics (see SCDConfig):
 
     - ``sequence_by``: ordering authority comes from the named data column.
       A new version's effective_from and the closed version's effective_to
       carry the incoming row's sequence value (contiguous history in
-      sequence time); rows whose sequence is not strictly later than the
-      current version's effective_from are stale out-of-order arrivals and
-      are ignored. Without ``sequence_by``, effective columns are stamped
-      ``current_timestamp()`` at merge time (arrival order) as before.
+      sequence time). Rows whose sequence is not strictly later than the
+      current version's own ``sequence_by`` value are stale out-of-order
+      arrivals and are ignored. The guard compares against the current
+      row's sequence column, not its effective_from: an in-place update
+      advances the former past the latter, and an older event must never
+      overwrite a newer in-place value. Without ``sequence_by``, effective
+      columns are stamped ``current_timestamp()`` at merge time (arrival
+      order) as before.
     - ``delete_when`` (change-feed only): rows matching the predicate CLOSE
       the current version without inserting a new one. Deletes for unknown
       keys are no-ops; stale deletes are ignored under the same
       strictly-later rule.
     - Snapshot sources (``source_kind=snapshot`` / ``close_on_missing``)
       close missing keys at processing time — there is no incoming row to
-      take a sequence value from.
+      take a sequence value from. Present keys with nothing to apply are
+      staged as KEEP sentinels so the missing-key close skips them.
     """
     if _SCD2_MERGE_KEY_COLUMN in df.columns:
         raise ValueError(
@@ -266,14 +288,8 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
         cfg.is_current_column,
     }
     # The sequence column is ordering authority, not content: a row whose
-    # only difference is a newer sequence value is not a change.
-    tracked_columns = cfg.tracked_columns or [
-        column
-        for column in df.columns
-        if column not in business_keys
-        and column not in temporal_columns
-        and column != cfg.sequence_by
-    ]
+    # only difference is a newer sequence value is an in-place update.
+    tracked_columns, untracked_columns = scd_change_columns(cfg, df.columns, business_keys)
     current_target = (
         delta_table.toDF().filter(col(cfg.is_current_column) == lit(True)).alias("target")
     )
@@ -289,10 +305,16 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
 
     seq_guard = None
     if cfg.sequence_by:
+        # A current row without a sequence value (written before the tag
+        # existed) has no position in the ordering; any incoming row wins.
+        target_seq = quote_sql_identifier(cfg.sequence_by, "target")
         seq_guard = (
-            f"({quote_sql_identifier(cfg.sequence_by, 'source')} > "
-            f"{quote_sql_identifier(cfg.effective_from_column, 'target')})"
+            f"({target_seq} IS NULL OR "
+            f"{quote_sql_identifier(cfg.sequence_by, 'source')} > {target_seq})"
         )
+
+    def _guarded(condition: str) -> str:
+        return f"({condition}) AND {seq_guard}" if seq_guard else condition
 
     close_expr = (
         quote_sql_identifier(cfg.sequence_by, "staged")
@@ -309,60 +331,49 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
         quote_sql_identifier(cfg.effective_to_column): "current_timestamp()",
         quote_sql_identifier(cfg.is_current_column): "false",
     }
+    touch_set = {
+        quote_sql_identifier(column): quote_sql_identifier(column, "staged")
+        for column in untracked_columns
+    }
 
+    source_df = upserts_df
     if cfg.optimize_unchanged:
         hash_expr = sha2(to_json(struct(*[col(c) for c in tracked_columns])), 256)
-        source_hashed = upserts_df.withColumn(_SCD2_SRC_HASH_COLUMN, hash_expr)
+        source_df = upserts_df.withColumn(_SCD2_SRC_HASH_COLUMN, hash_expr)
         # SQL mirror of hash_expr: struct field names (the unqualified column
         # names) must match on both sides or the JSON — and thus the hash —
         # never compares equal.
         tgt_hash_sql = "sha2(to_json(struct({})), 256)".format(
             ", ".join(quote_sql_identifier(c, "target") for c in tracked_columns)
         )
-        changed_where = f"source.{_SCD2_SRC_HASH_COLUMN} != {tgt_hash_sql}"
-        if seq_guard:
-            changed_where = f"({changed_where}) AND {seq_guard}"
-        changed_rows = (
-            source_hashed.alias("source")
-            .join(current_target, on=business_keys, how="inner")
-            .where(changed_where)
-            .select("source.*")
-        )
-        if cfg.close_on_missing:
-            # NOT(changed) includes stale out-of-order rows: the key is
-            # present in the snapshot, so it must be sentinel-protected
-            # from the missing-key close even though it changes nothing.
-            unchanged_rows = (
-                source_hashed.alias("source")
-                .join(current_target, on=business_keys, how="inner")
-                .where(f"NOT ({changed_where})")
-                .select("source.*")
-            )
-        new_rows = upserts_df.join(current_target, on=business_keys, how="left_anti")
+        tracked_change = f"source.{_SCD2_SRC_HASH_COLUMN} != {tgt_hash_sql}"
     else:
-        change_condition = build_null_safe_change_condition(
+        tracked_change = build_null_safe_change_condition(
             "source", "target", tracked_columns, schema=upserts_df.schema
         )
-        changed_where = change_condition
-        if seq_guard:
-            changed_where = f"({change_condition}) AND {seq_guard}"
-        changed_rows = (
-            upserts_df.alias("source")
-            .join(current_target, on=business_keys, how="inner")
-            .where(changed_where)
-            .select("source.*")
+
+    close_where = _guarded(tracked_change)
+    touch_where = None
+    if untracked_columns:
+        untracked_change = build_null_safe_change_condition(
+            "source", "target", untracked_columns, schema=upserts_df.schema
         )
-        if cfg.close_on_missing:
-            unchanged_rows = (
-                upserts_df.alias("source")
-                .join(current_target, on=business_keys, how="inner")
-                .where(f"NOT ({changed_where})")
-                .select("source.*")
-            )
-        new_rows = upserts_df.join(current_target, on=business_keys, how="left_anti")
+        touch_where = _guarded(f"NOT ({tracked_change}) AND ({untracked_change})")
+
+    matched = source_df.alias("source").join(current_target, on=business_keys, how="inner")
+    changed_rows = matched.where(close_where).select("source.*")
+    touch_rows = matched.where(touch_where).select("source.*") if touch_where else None
+    unchanged_rows = None
+    if cfg.close_on_missing:
+        # NOT(acted) includes stale out-of-order rows: the key is present in
+        # the snapshot, so it must be sentinel-protected from the missing-key
+        # close even though it changes nothing.
+        acted_where = f"({close_where}) OR ({touch_where})" if touch_where else close_where
+        unchanged_rows = matched.where(f"NOT ({acted_where})").select("source.*")
+    new_rows = upserts_df.join(current_target, on=business_keys, how="left_anti")
 
     delete_close_rows = None
-    if deletes_df is not None:
+    if deletes_df is not None and not cfg.close_on_missing:
         # Inner join: a delete for an unknown key is a no-op. The seq guard
         # drops stale deletes the same way it drops stale changes.
         joined_deletes = deletes_df.alias("source").join(
@@ -372,34 +383,32 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
             joined_deletes = joined_deletes.where(seq_guard)
         delete_close_rows = joined_deletes.select("source.*")
 
-    rows_to_close_or_insert = changed_rows.unionByName(new_rows, allowMissingColumns=True)
     routing_key_expr = _routing_key_column_expr(business_keys, cfg.routing_key_method)
 
-    if cfg.close_on_missing:
-        insert_rows = changed_rows.withColumn(
-            _SCD2_MERGE_KEY_COLUMN, lit(None).cast("string")
-        ).withColumn(_SCD2_CHANGED_COLUMN, lit(True))
-        keyed_rows = rows_to_close_or_insert.withColumn(
-            _SCD2_MERGE_KEY_COLUMN, routing_key_expr
-        ).withColumn(_SCD2_CHANGED_COLUMN, lit(True))
-        sentinels = unchanged_rows.withColumn(_SCD2_MERGE_KEY_COLUMN, routing_key_expr).withColumn(
-            _SCD2_CHANGED_COLUMN, lit(False)
+    def _stage(frame, action: str, keyed: bool = True):
+        merge_key = routing_key_expr if keyed else lit(None).cast("string")
+        return frame.withColumn(_SCD2_MERGE_KEY_COLUMN, merge_key).withColumn(
+            _SCD2_ACTION_COLUMN, lit(action)
         )
-        staged = insert_rows.unionByName(
-            keyed_rows.unionByName(sentinels, allowMissingColumns=True),
-            allowMissingColumns=True,
-        )
-    else:
-        insert_rows = changed_rows.withColumn(_SCD2_MERGE_KEY_COLUMN, lit(None).cast("string"))
-        keyed_rows = rows_to_close_or_insert.withColumn(_SCD2_MERGE_KEY_COLUMN, routing_key_expr)
-        staged = insert_rows.unionByName(keyed_rows, allowMissingColumns=True)
-        if delete_close_rows is not None:
-            # Keyed close-only rows: they match the current version (close
-            # it) and have no merge_key-NULL insert companion.
-            staged = staged.unionByName(
-                delete_close_rows.withColumn(_SCD2_MERGE_KEY_COLUMN, routing_key_expr),
-                allowMissingColumns=True,
-            )
+
+    staged_parts = [
+        # A NULL merge key never matches: the changed key's new version.
+        _stage(changed_rows, _SCD2_ACTION_INSERT, keyed=False),
+        # Keyed: matches and closes the changed key's current version.
+        _stage(changed_rows, _SCD2_ACTION_CLOSE),
+        # Keyed, matches nothing: the first version of a new key.
+        _stage(new_rows, _SCD2_ACTION_INSERT),
+    ]
+    if touch_rows is not None:
+        staged_parts.append(_stage(touch_rows, _SCD2_ACTION_TOUCH))
+    if unchanged_rows is not None:
+        staged_parts.append(_stage(unchanged_rows, _SCD2_ACTION_KEEP))
+    if delete_close_rows is not None:
+        # Close-only rows: no merge_key-NULL insert companion.
+        staged_parts.append(_stage(delete_close_rows, _SCD2_ACTION_CLOSE))
+    staged = reduce(
+        lambda left, right: left.unionByName(right, allowMissingColumns=True), staged_parts
+    )
 
     source_columns = [column for column in df.columns if column not in temporal_columns]
     insert_values = {
@@ -419,21 +428,24 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
         f"AND {quote_sql_identifier(cfg.is_current_column, 'target')} = true"
     )
 
+    def _action_is(action: str) -> str:
+        return f"staged.{_SCD2_ACTION_COLUMN} = '{action}'"
+
+    # Every clause is conditional on the staged action (all conditioned
+    # clauses, so the delta-spark 2.4 floor's clause-ordering rules hold).
     builder = delta_table.alias("target").merge(
         source=staged.alias("staged"), condition=merge_condition
     )
+    builder = builder.whenMatchedUpdate(condition=_action_is(_SCD2_ACTION_CLOSE), set=close_set)
+    if touch_rows is not None:
+        builder = builder.whenMatchedUpdate(condition=_action_is(_SCD2_ACTION_TOUCH), set=touch_set)
+    builder = builder.whenNotMatchedInsert(
+        condition=_action_is(_SCD2_ACTION_INSERT), values=insert_values
+    )
     if cfg.close_on_missing:
-        builder = (
-            builder.whenMatchedUpdate(condition=f"staged.{_SCD2_CHANGED_COLUMN}", set=close_set)
-            .whenNotMatchedInsert(values=insert_values)
-            .whenNotMatchedBySourceUpdate(
-                condition=f"target.{cfg.is_current_column} = true",
-                set=close_set_missing,
-            )
-        )
-    else:
-        builder = builder.whenMatchedUpdate(set=close_set).whenNotMatchedInsert(
-            values=insert_values
+        builder = builder.whenNotMatchedBySourceUpdate(
+            condition=f"target.{cfg.is_current_column} = true",
+            set=close_set_missing,
         )
     builder.execute()
 
