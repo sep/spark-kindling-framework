@@ -624,6 +624,91 @@ def test_scd2_nested_map_payload_without_sequence_by(spark, provider, request):
     assert current[0]["payload"]["attrs"] == {"a": "1"}
 
 
+def _payload_field():
+    from pyspark.sql.types import ArrayType, MapType
+
+    return StructField(
+        "payload",
+        StructType(
+            [
+                StructField("attrs", MapType(StringType(), StringType()), True),
+                StructField("tags", ArrayType(MapType(StringType(), StringType())), True),
+            ]
+        ),
+        True,
+    )
+
+
+def test_scd2_untracked_nested_map_payload_updates_in_place(spark, provider, request):
+    """Change detection compares a struct or array containing a map through
+    its JSON form: with scd.tracked: status, an untracked payload change
+    updates the current version in place, and an unchanged row is a no-op."""
+    source_schema = StructType(BUSINESS_SCHEMA + [_payload_field()])
+    entity = _scd2_entity(request, "scd2_nested_payload", {"scd.tracked": "status"})
+    entity.schema = StructType(BUSINESS_SCHEMA + [_payload_field()] + TEMPORAL_SCHEMA)
+
+    _merge(
+        spark,
+        provider,
+        entity,
+        [("c1", "bronze", "L1", TS(1), ({"a": "1"}, [{"k": "v"}]))],
+        source_schema,
+    )
+    _merge(
+        spark,
+        provider,
+        entity,
+        [("c1", "bronze", "L1", TS(1), ({"a": "2"}, [{"k": "v"}]))],
+        source_schema,
+    )
+    _merge(
+        spark,
+        provider,
+        entity,
+        [("c1", "bronze", "L1", TS(1), ({"a": "2"}, [{"k": "v"}]))],
+        source_schema,
+    )
+
+    current, closed = _versions(provider, entity)
+    assert closed == [] and len(current) == 1
+    assert current[0]["payload"]["attrs"] == {"a": "2"}
+
+
+def test_scd1_tracked_nested_map_payload(spark, provider, request):
+    """SCD1 with scd.untracked: a tracked struct-with-map payload is compared
+    through its JSON form; an unchanged payload is skipped, a changed one
+    updates the row."""
+    source_schema = StructType(BUSINESS_SCHEMA + [_payload_field()])
+    entity = _scd1_entity(request, "scd1_nested_payload", {"scd.untracked": "load_id"})
+    entity.schema = source_schema
+
+    _merge(
+        spark,
+        provider,
+        entity,
+        [("c1", "bronze", "L1", TS(1), ({"a": "1"}, [{"k": "v"}]))],
+        source_schema,
+    )
+    _merge(
+        spark,
+        provider,
+        entity,
+        [("c1", "bronze", "L2", TS(1), ({"a": "1"}, [{"k": "v"}]))],
+        source_schema,
+    )
+    assert _scd1_rows(provider, entity)["c1"]["load_id"] == "L1"  # untracked-only: skipped
+
+    _merge(
+        spark,
+        provider,
+        entity,
+        [("c1", "bronze", "L3", TS(1), ({"a": "9"}, [{"k": "v"}]))],
+        source_schema,
+    )
+    row = _scd1_rows(provider, entity)["c1"]
+    assert row["payload"]["attrs"] == {"a": "9"} and row["load_id"] == "L3"
+
+
 def test_scd2_differing_duplicate_keys_without_sequence_by_are_rejected(spark, provider, request):
     """Without scd.sequence_by nothing orders two different rows for one key,
     so the batch is rejected on both providers and the table is unchanged."""

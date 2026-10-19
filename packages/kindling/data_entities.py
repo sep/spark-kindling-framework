@@ -360,6 +360,19 @@ def quote_sql_identifier(name: str, alias: Optional[str] = None) -> str:
     return f"`{escaped}`"
 
 
+def _type_contains_map(data_type) -> bool:
+    """Whether a Spark type is a MAP or contains one at any depth (in a
+    struct field or an array element). Spark can neither compare (``<=>``)
+    nor partition by such values, so callers compare their JSON form."""
+    if isinstance(data_type, MapType):
+        return True
+    if isinstance(data_type, StructType):
+        return any(_type_contains_map(field.dataType) for field in data_type.fields)
+    if isinstance(data_type, ArrayType):
+        return _type_contains_map(data_type.elementType)
+    return False
+
+
 def build_null_safe_change_condition(
     source_alias: str, target_alias: str, tracked_columns: List[str], schema=None
 ) -> str:
@@ -370,14 +383,14 @@ def build_null_safe_change_condition(
     unorderable = {
         field.name
         for field in (schema.fields if schema else [])
-        if isinstance(field.dataType, MapType)
+        if _type_contains_map(field.dataType)
     }
 
     def _comparable(column: str, alias: str) -> str:
         ident = quote_sql_identifier(column, alias)
-        # Spark's binary comparison does not support ordering on MAP types;
-        # compare their JSON projection instead (same approach as the
-        # optimize_unchanged hash path).
+        # Spark's binary comparison does not support MAP types, nor structs
+        # or arrays containing one; compare their JSON projection instead
+        # (same approach as the optimize_unchanged hash path).
         if column in unorderable:
             return f"to_json({ident})"
         return ident
@@ -503,16 +516,7 @@ def normalize_scd2_batch(df: DataFrame, entity: EntityMetadata, cfg: SCDConfig) 
     # Exact duplicates are harmless: keep one. Spark can't partition by a MAP,
     # or by a struct or array containing one, so such columns are compared
     # through their JSON form.
-    def _contains_map(data_type) -> bool:
-        if isinstance(data_type, MapType):
-            return True
-        if isinstance(data_type, StructType):
-            return any(_contains_map(field.dataType) for field in data_type.fields)
-        if isinstance(data_type, ArrayType):
-            return _contains_map(data_type.elementType)
-        return False
-
-    map_columns = {f.name for f in df.schema.fields if _contains_map(f.dataType)}
+    map_columns = {f.name for f in df.schema.fields if _type_contains_map(f.dataType)}
     row_identity = [
         (
             to_json(_col(quote_sql_identifier(name)))
