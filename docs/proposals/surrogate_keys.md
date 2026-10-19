@@ -101,6 +101,7 @@ streaming start path (`pipe_streaming.py`) never emits it.
 | `surrogate.hash.format` | `hex` \| `binary`; not for `xxhash64` | `hex` |
 | `surrogate.uuid.namespace` | UUID; `uuid5` only | required for `uuid5` |
 | `surrogate.generator` | registered generator name; `custom` only | required for `custom` |
+| `surrogate.generator.<option>` | string; `custom` only; passed to the generator as `ctx.options["<option>"]` | none |
 | `surrogate.require_reproducible` | `true` \| `false` | `false` |
 | `surrogate.encoding` | `v1` | `v1`; written by the framework |
 
@@ -426,10 +427,22 @@ def acme_customer_key(ctx: KeyContext) -> Column:
 - `effective_to`, `is_current`: their values **at insert time** (`NULL`, `true`). A
   generator therefore cannot depend on values that change when the version closes.
 - `entity`: a read-only view of the entity metadata (id, tags, merge columns).
+- `kind`: which key is being built: `"version"` (SCD2 version key), `"durable"` (SCD2
+  durable key) or `"key"` (non-SCD2). For a durable key, `effective_from` is `None`, so a
+  generator can't build a "durable" key that changes with each version by mistake.
+- `options`: the entity's `surrogate.generator.<option>` tags as a read-only
+  `{option: value}` mapping (string values), so one generator can be parameterized per
+  entity, e.g. `surrogate.generator.prefix: CUST`.
 - `canonical(*cols)` and `hash(*cols, algo=)`: the `v1` helpers, so a generator can
   compose a standard hash with custom parts.
 
 There are deliberately no batch or run IDs, which would make every key non-reproducible.
+
+**Overriding the default for many entities.** There is no global "default generator"
+setting. To apply a generator across a group of entities, use the existing by-tag entity
+overlays (`dataentities-bytag:` in settings) to set `surrogate.strategy: custom`,
+`surrogate.generator` and any `surrogate.generator.*` options on every entity with a
+given tag. The override then stays declarative and visible per entity.
 
 **Registration** is a plain class-level registry modelled on `DeltaMergeStrategies`, not
 the injector. Under Spark Connect, `merge_as_stream`'s `foreachBatch` callback runs in a
@@ -470,8 +483,7 @@ default**, fixing the null and separator collisions described above. The legacy
   the table and the two ways forward: set `legacy` explicitly, or rebuild the table to
   adopt `v1`. It then **keeps writing that table with the legacy encoding** and records
   `legacy` on it, so a table never mixes two ID encodings. New tables get `v1`.
-  (This "warn and keep legacy" reading of the decision is to be confirmed before
-  implementing.)
+  (Confirmed 2026-10-19.)
 - **Engine parity**: the Databricks lowering (`temporal_lowering.py`) constructs the same
   event IDs as the engine, so both must switch together and share one encoder.
   Otherwise the two execution modes would produce different IDs. A parity test asserts
@@ -528,16 +540,18 @@ Recorded 2026-10-19.
 
 ## Phases
 
-1. **Core:** the `surrogate_keys.py` encoder (`v1`), `hash` and `uuid5`, tags, sugar,
-   validation and schema augmentation. SCD2 version and durable keys inside both
-   providers' merges, the staged effective_from column, and key columns as insert-only
-   (out of tracking, the in-place update set and the SCD1 update set). The
-   `before_persist` chaining fix, then the non-SCD2 batch aspect plus the streaming-start
-   call.
-2. **Generators and random keys:** `custom` (registry, `KeyContext`, resolution at
-   `ensure_destination`, determinism helper) and `uuid4` insert-clause placement. The
-   temporal extension's switch to `v1` with legacy opt-out and detection, in both the
-   engine and the Databricks lowering.
+1. **Core and custom generators** (targeted at 0.14.0rc3): the `surrogate_keys.py`
+   encoder (`v1`), `hash` and `uuid5`, tags, sugar, validation and schema augmentation.
+   SCD2 version and durable keys inside both providers' merges, the staged
+   effective_from column, and key columns as insert-only (out of tracking, the in-place
+   update set and the SCD1 update set). The `before_persist` chaining fix, then the
+   non-SCD2 batch aspect plus the streaming-start call. `custom` generators: registry,
+   `KeyContext` (including `kind` and `options`), resolution at `ensure_destination`,
+   the determinism helper. Deterministic generators only; non-deterministic ones arrive
+   with `uuid4`.
+2. **Random keys and temporal IDs:** `uuid4` insert-clause placement (and
+   `deterministic=False` generators). The temporal extension's switch to `v1` with
+   legacy opt-out and detection, in both the engine and the Databricks lowering.
 3. **Options and conventions:** `xxhash64` and `md5`, `binary` format, `normalize`,
    unknown-member seeding.
 4. **Later:** `identity` (DDL in ensure/migration through the `DeltaTable` builder with
