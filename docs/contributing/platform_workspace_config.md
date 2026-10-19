@@ -4,7 +4,7 @@
 
 Kindling supports a **hierarchical configuration system** with multiple layers of YAML configuration files. This allows you to organize settings from most general (base settings) to most specific (environment overrides).
 
-See `docs/config_reference.md` for an exhaustive list of Kindling config keys and provider tag settings.
+See `docs/reference/config_reference.md` for an exhaustive list of Kindling config keys and provider tag settings.
 
 ## Configuration Priority
 
@@ -521,5 +521,5 @@ Move settings to YAML files for better maintainability and version control.
 ## See Also
 
 - [Platform API Architecture](./platform_api_architecture.md) - Technical deep dive
-- [Setup Guide](./setup_guide.md) - Initialization and configuration workflow
+- [Setup Guide](../guide/setup_guide.md) - Initialization and configuration workflow
 - [Example Configs](../../examples/config/) - Complete working examples

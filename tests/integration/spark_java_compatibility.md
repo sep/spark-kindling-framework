@@ -1,5 +1,9 @@
 # Spark/Java Compatibility Issues - Root Cause Analysis
 
+> Historical analysis, not a current implementation or support matrix. Consult
+> [the October reconciliation](../../docs/audit/2026-10-16-reconciliation.md) and the current source/tests
+> before using the proposed APIs or commands below.
+
 ## 🔴 Problem Summary
 
 The integration tests fail with the following error:

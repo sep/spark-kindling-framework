@@ -19,7 +19,9 @@ If you encounter a bug:
 - All new features must include unit tests using pytest
 - Bug fixes should include a test that reproduces the bug
 - Maintain or improve current test coverage
-- Run the full test suite before submitting a PR
+- Use repository `poe` tasks (never invoke pytest directly): `poe test-unit`,
+  `poe test-integration`, and targeted `poe test-system --platform ... --test ...`.
+  Run unit tests when cloud credentials are unavailable; run `poe format` for code changes.
 
 ### Spark Compatibility
 - Ensure compatibility with Spark 3.x (specify minimum version in PR)
@@ -50,7 +52,7 @@ All contributions undergo formal code review before merging:
 When adding or updating dependencies:
 - Document why the dependency is needed
 - Verify license compatibility (MIT, Apache 2.0, BSD preferred)
-- Update requirements.txt or setup.py appropriately
+- Update the relevant `pyproject.toml` and refresh `uv.lock` with uv when workspace dependencies change
 - Note any version constraints
 
 ## Documentation

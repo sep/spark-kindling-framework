@@ -110,8 +110,9 @@ az login
 
 To test with Government Cloud:
 
-```python
+```bash
 # Set environment
+export AZURE_CLOUD=AZURE_US_GOVERNMENT
 export AZURE_STORAGE_ACCOUNT=mygovacct
 export AZURE_CONTAINER=data
 
@@ -120,8 +121,7 @@ az cloud set --name AzureUSGovernment
 az login
 
 # Run tests
-pytest tests/integration/test_azure_storage_example.py -v \
-    --azure-cloud=government
+poe test-integration
 ```
 
 Or programmatically:
@@ -152,8 +152,8 @@ print("✓ Government Cloud connection successful!")
 ## Files Modified
 
 - `tests/spark_test_helper.py` - Added cloud support
-- `docs/azure_storage_configuration.md` - Updated with cloud examples
-- `docs/azure_storage_quickref.md` - Updated quick reference
+- `docs/guide/azure_storage_configuration.md` - Updated with cloud examples
+- `docs/guide/azure_storage_quickref.md` - Updated quick reference
 
 ## References
 

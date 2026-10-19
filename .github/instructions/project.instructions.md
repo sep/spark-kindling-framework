@@ -468,8 +468,8 @@ kindling:
 
 ### Documentation
 
-- **Complete Guide**: [docs/platform_workspace_config.md](docs/platform_workspace_config.md)
-- **Example Configs**: [examples/config/](examples/config/)
+- **Complete Guide**: [docs/platform_workspace_config.md](../../docs/contributing/platform_workspace_config.md)
+- **Example Configs**: [examples/config/](../../examples/config/)
 - **Implementation**: `packages/kindling/bootstrap.py` (`download_config_files()`, `_get_workspace_id_for_platform()`)
 - **Tests**: `tests/unit/test_platform_workspace_config.py`
 

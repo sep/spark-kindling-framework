@@ -203,22 +203,23 @@ def test_pipe_skip_on_missing_data():
 - Apache Spark installed
 - PySpark accessible
 - Sufficient memory (2GB+)
-- Java 8 or 11 (not 17+ due to compatibility)
+- A Java runtime matching the selected Spark lane; use the repository devcontainer
+  and [current testing guide](../../docs/contributing/testing.md) rather than the historical Java troubleshooting matrix.
 
 ### Execution
 
 ```bash
 # Run all integration tests
-pytest tests/integration/ -v
+poe test-integration
 
 # Run specific test class
-pytest tests/integration/test_data_pipes_integration.py::TestDataPipesRegistrationAndExecution -v
+PYTEST_ADDOPTS="-k TestDataPipesRegistrationAndExecution" poe test-integration
 
 # Run with coverage
-pytest tests/integration/ --cov=src/kindling/data_pipes --cov-report=html
+poe test-integration  # repository coverage defaults apply
 
 # Run single test
-pytest tests/integration/test_data_pipes_integration.py::TestDataPipesRegistrationAndExecution::test_register_and_execute_simple_pipe -v
+PYTEST_ADDOPTS="-k test_register_and_execute_simple_pipe" poe test-integration
 ```
 
 ### Environment Setup
@@ -320,7 +321,7 @@ products = spark.createDataFrame([...])
 2. **Inspect DataFrames** - Use `df.show()` to see actual data
 3. **Verify schemas** - Schema mismatches cause cryptic errors
 4. **Check logs** - Spark logs reveal execution issues
-5. **Run interactively** - Use `pytest --pdb` to debug
+5. **Run interactively** - Use `PYTEST_ADDOPTS="--pdb" poe test-integration` to debug
 
 ### Common Issues:
 

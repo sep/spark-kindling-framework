@@ -51,10 +51,10 @@ export FABRIC_LAKEHOUSE_ID="87654321-4321-4321-4321-cba987654321"
 
 ```bash
 # Run all Fabric tests
-pytest tests/system/ -v -s -m fabric
+poe test-system --platform fabric
 
 # Run a specific test
-pytest tests/system/test_fabric_job_deployment.py::TestFabricJobDeployment::test_deploy_app_as_job -v -s
+poe test-system --platform fabric --test deploy_app_as_job
 ```
 
 ## How It Works
@@ -122,7 +122,7 @@ nano tests/system/.env
 Then load it before running tests:
 ```bash
 source tests/system/.env
-pytest tests/system/ -v -s -m fabric
+poe test-system --platform fabric
 ```
 
 Or use a tool like `python-dotenv`:
@@ -149,7 +149,7 @@ This way, CI/CD uses service principal (Option B) while developers use `az login
 
 - Read the full [System Tests README](README.md)
 - Review the [Job Deployment Documentation](../../docs/contributing/job_deployment.md)
-- Check out the [test app source](../data-apps/kda-test-app/main.py)
+- Check out the [test app source](../data-apps/kda-test-app/app.py)
 
 ## Questions?
 

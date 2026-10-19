@@ -126,7 +126,7 @@ Use `kindling app validate` to check entity/pipe wiring without starting Spark:
 kindling app validate
 ```
 
-See [Local Python-First Development](local_python_first.md) for full details on
+See [Local Python-First Development](../guide/local_python_first.md) for full details on
 both commands, the memory-first scaffold, and `KindlingNotInitializedError`.
 
 ## CLI Lifecycle Commands

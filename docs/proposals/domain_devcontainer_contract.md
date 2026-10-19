@@ -1,5 +1,16 @@
 # Domain Devcontainer Contract
 
+> **Reconciliation (2026-10-16): retain as partially implemented.** The August
+> implementation notes and checklist below describe an earlier baseline. Current
+> scaffolds use uv workspaces and PEP 621 metadata, one root `uv.lock`/`.venv`,
+> and `uv run kindling`. Dependency pins prefer PyPI versions with GitHub-wheel
+> fallback; `env check` reports declared versions and available updates. See
+> `cli.py`, `scaffold.py`, `tests/unit/test_cli.py`, and
+> [developer workflow](../contributing/developer_workflow.md). The proposed
+> immutable wheelhouse/image contract, candidate-testing workflow, and generated-CI
+> parity are not established by those changes. Do not implement the old Poetry
+> or wheel-URL-only requirements as new work.
+
 **Date:** 2026-08-18
 **Status:** Partially implemented — see Implementation Update
 **Scope:** The published Kindling devcontainer used to develop separate domain

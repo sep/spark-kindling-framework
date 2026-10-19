@@ -44,12 +44,12 @@ poe cleanup --skip-packages              # Clean all platforms, skip package cle
 # Deploy wheels (flexible filtering)
 poe deploy                                # Deploy all platforms from local dist/
 poe deploy --platform fabric              # Deploy Fabric only from local dist/
-poe deploy --release                      # Deploy all from latest GitHub release
+poe deploy --release latest               # Deploy all from latest GitHub release
 poe deploy --release 0.4.0                # Deploy all from specific release
-poe deploy --platform fabric --release    # Deploy Fabric from latest release
+poe deploy --platform fabric --release latest # Deploy Fabric from latest release
 
-# Specific test file (use pytest directly)
-pytest tests/integration/test_data_pipes_integration.py -v
+# Narrow a repository task with pytest's environment options
+PYTEST_ADDOPTS="-k test_register_and_execute_simple_pipe" poe test-integration
 ```
 
 ### System Test Filtering
@@ -323,31 +323,10 @@ poe test-system --platform databricks               # Databricks tests only
 poe test-system --test deploy_app_as_job           # Specific test on all platforms
 poe test-system --platform fabric --test deploy    # Fabric + deploy tests
 
-# Direct pytest commands (for advanced usage)
-pytest tests/ -v                    # All tests
-pytest tests/unit/ -v               # Unit tests
-pytest tests/integration/ -v        # Integration tests
-
-# Run with coverage report
-pytest tests/ --cov=kindling --cov-report=html:test-results/htmlcov --cov-report=term-missing
-
-# Run specific test class
-pytest tests/unit/test_data_pipes.py::TestDataPipesRegistration -v
-
-# Run specific test method
-pytest tests/integration/test_data_pipes_integration.py::TestDataPipesRegistrationAndExecution::test_register_and_execute_simple_pipe -v
-
-# Run tests matching pattern
-pytest tests/ -k "pipe" -v
-
-# Stop on first failure
-pytest tests/ -x
-
-# Show print statements
-pytest tests/ -v -s
-
-# Run in parallel (requires pytest-xdist)
-pytest tests/ -n auto
+# Filter within the task's selected suite
+PYTEST_ADDOPTS="-k pipe" poe test-unit
+PYTEST_ADDOPTS="-x -s" poe test-unit
+poe test-unit --workers auto
 ```
 
 ---

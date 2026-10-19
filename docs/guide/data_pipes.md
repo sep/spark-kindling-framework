@@ -375,4 +375,4 @@ DataPipes.extend("silver.build_orders", tags={"sla": "gold"})
 
 In settings YAML, `clone_of` and `add_inputs` on an exact id under
 `datapipes:` do the same without a transform. See
-`docs/proposals/declaration_derivations.md`.
+`docs/proposals/obsolete/declaration_derivations.md`.

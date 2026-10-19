@@ -2,8 +2,10 @@
 
 **Status:** Partially implemented. `provider.transport` supports
 `auto`/`eventhubs`/`kafka`, and `auto` already selects Kafka on Databricks.
-The remaining decision is the cross-platform default-to-Kafka policy and its
-compatibility rollout for Fabric and Synapse.
+Remaining work first addresses Kafka correctness (offset/data-loss policy,
+consumer-group mapping, runtime login module and SAS normalization), then the
+cross-platform default policy and rollout. Track these separately under
+[issue #198](https://github.com/sep/spark-kindling-framework/issues/198).
 **Scope:** Make the Kafka Spark connector the default transport for the Event
 Hub entity provider across Synapse, Fabric, and Databricks.
 **Target provider:** `eventhub`
