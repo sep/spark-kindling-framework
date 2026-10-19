@@ -18,9 +18,11 @@ from .data_entities import (
     SCDConfig,
     augment_schema_for_scd2,
     build_null_safe_change_condition,
+    column_name_key,
     quote_sql_identifier,
     scd_change_columns,
     scd_config_from_tags,
+    spark_case_sensitive,
     surrogate_key_columns,
 )
 from .entity_provider import (
@@ -63,17 +65,21 @@ def _memory_scd1_merge(
     """
     business_keys = entity_metadata.merge_columns
     key_columns = surrogate_key_columns(entity_metadata)
-    case_sensitive = False
-    if key_columns:
-        from kindling.surrogate_keys import session_case_sensitive
-
-        case_sensitive = session_case_sensitive(incoming_df.sparkSession)
+    case_sensitive = True
+    if key_columns or (cfg is not None and cfg.untracked_columns):
+        case_sensitive = spark_case_sensitive(incoming_df.sparkSession)
     replacing_df = incoming_df
     if cfg is not None and cfg.untracked_columns:
+        name_key = column_name_key(case_sensitive)
         tracked_columns, _ = scd_change_columns(
-            cfg, incoming_df.columns, business_keys, key_columns, case_sensitive
+            cfg,
+            incoming_df.columns,
+            business_keys,
+            case_sensitive=case_sensitive,
+            insert_only_columns=key_columns,
         )
-        if all(column in current_df.columns for column in tracked_columns):
+        current_keys = {name_key(column) for column in current_df.columns}
+        if all(name_key(column) in current_keys for column in tracked_columns):
             current_df = current_df.toDF(*current_df.columns)
             incoming_df = incoming_df.toDF(*incoming_df.columns)
             change_condition = build_null_safe_change_condition(
@@ -179,10 +185,16 @@ def _memory_scd2_merge(
     current_df = current_df.toDF(*current_df.columns)
     incoming_df = incoming_df.toDF(*incoming_df.columns)
 
+    # Column names compare the way the session resolves them: by default
+    # (spark.sql.caseSensitive=false) `STATUS` in the batch is the table's
+    # `status`, not a new column.
+    case_sensitive = spark_case_sensitive(incoming_df.sparkSession)
+    name_key = column_name_key(case_sensitive)
     reserved = [
         column
         for column in incoming_df.columns
-        if column == _SCD2_MERGE_KEY_COLUMN or column.startswith(_SCD2_RESERVED_PREFIX)
+        if name_key(column) == _SCD2_MERGE_KEY_COLUMN
+        or name_key(column).startswith(_SCD2_RESERVED_PREFIX)
     ]
     if reserved:
         raise ValueError(
@@ -195,31 +207,33 @@ def _memory_scd2_merge(
     from kindling.surrogate_keys import (
         drop_surrogate_key_columns,
         resolve_surrogate_keys,
-        session_case_sensitive,
         with_scd2_surrogate_keys,
     )
 
     if key_plan is None:
         key_plan = resolve_surrogate_keys(entity_metadata)
     key_columns = key_plan.key_columns if key_plan is not None else []
-    case_sensitive = False
     if key_plan is not None:
-        case_sensitive = session_case_sensitive(incoming_df.sparkSession)
         incoming_df = drop_surrogate_key_columns(incoming_df, key_plan, case_sensitive)
 
     business_keys = entity_metadata.merge_columns
     temporal_columns = {cfg.effective_from_column, cfg.effective_to_column, cfg.is_current_column}
+    temporal_keys = {name_key(column) for column in temporal_columns}
+    key_keys = {name_key(column) for column in business_keys}
 
     # Batch columns the table does not have yet (additive schema): give the
     # current rows typed nulls so they compare (and project) like the Delta
     # provider's evolved table.
+    current_keys = {name_key(column) for column in current_df.columns}
     for column in incoming_df.columns:
-        if column not in current_df.columns and column not in temporal_columns:
+        if name_key(column) not in current_keys and name_key(column) not in temporal_keys:
             current_df = current_df.withColumn(
                 column, lit(None).cast(incoming_df.schema[column].dataType)
             )
 
-    if cfg.sequence_by and cfg.sequence_by not in incoming_df.columns:
+    if cfg.sequence_by and name_key(cfg.sequence_by) not in {
+        name_key(column) for column in incoming_df.columns
+    }:
         raise ValueError(
             f"Entity '{entity_metadata.entityid}': scd.sequence_by column "
             f"'{cfg.sequence_by}' is missing from the incoming DataFrame"
@@ -235,8 +249,13 @@ def _memory_scd2_merge(
     # untracked (incl. sequence_by): a change only to these updates the
     # current version in place.
     tracked_columns, untracked_columns = scd_change_columns(
-        cfg, incoming_df.columns, business_keys, key_columns, case_sensitive
+        cfg,
+        incoming_df.columns,
+        business_keys,
+        case_sensitive=case_sensitive,
+        insert_only_columns=key_columns,
     )
+    untracked_keys = {name_key(column) for column in untracked_columns}
 
     historical_rows = current_df.filter(_qcol(cfg.is_current_column) == lit(False))
     current_rows = current_df.filter(_qcol(cfg.is_current_column) == lit(True))
@@ -247,7 +266,7 @@ def _memory_scd2_merge(
         delete_predicate = expr(cfg.delete_when)
         deletes_df = incoming_df.filter(delete_predicate)
         upserts_df = incoming_df.filter(~delete_predicate)
-    upserts_df = upserts_df.drop(*[c for c in temporal_columns if c in upserts_df.columns])
+    upserts_df = upserts_df.drop(*[c for c in upserts_df.columns if name_key(c) in temporal_keys])
 
     # One source row per key (upserts and change-feed deletes), flagged so a
     # single left join from the current rows classifies every current row.
@@ -261,7 +280,7 @@ def _memory_scd2_merge(
         # staged for change feeds. Under close_on_missing a deleted key is
         # simply absent from the snapshot and closes as missing.
         source_df = source_df.unionByName(
-            deletes_df.drop(*[c for c in temporal_columns if c in deletes_df.columns])
+            deletes_df.drop(*[c for c in deletes_df.columns if name_key(c) in temporal_keys])
             .withColumn(_SOURCE_PRESENT, lit(True))
             .withColumn(_SOURCE_DELETE, lit(True)),
             allowMissingColumns=True,
@@ -319,16 +338,17 @@ def _memory_scd2_merge(
     current_projection = []
     for column in current_rows.columns:
         # Using-join keys resolve unqualified; everything else from target.
-        target_value = _qcol(column) if column in business_keys else _qcol(column, "target")
-        if column == cfg.effective_to_column:
+        column_key = name_key(column)
+        target_value = _qcol(column) if column_key in key_keys else _qcol(column, "target")
+        if column_key == name_key(cfg.effective_to_column):
             value = (
                 when(close_cond, close_value)
                 .when(missing_cond, lit(now_ts))
                 .otherwise(target_value)
             )
-        elif column == cfg.is_current_column:
+        elif column_key == name_key(cfg.is_current_column):
             value = when(close_cond | missing_cond, lit(False)).otherwise(target_value)
-        elif column in untracked_columns:
+        elif column_key in untracked_keys:
             value = when(touch_cond, _qcol(column, "source")).otherwise(target_value)
         else:
             value = target_value
@@ -340,7 +360,7 @@ def _memory_scd2_merge(
         joined.where(close_cond & ~is_delete)
         .select(
             *[
-                (_qcol(column) if column in business_keys else _qcol(column, "source")).alias(
+                (_qcol(column) if name_key(column) in key_keys else _qcol(column, "source")).alias(
                     column
                 )
                 for column in upserts_df.columns

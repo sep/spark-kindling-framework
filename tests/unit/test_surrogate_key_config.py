@@ -384,7 +384,11 @@ def _scd2_cfg(**changes):
 def test_key_columns_are_neither_tracked_nor_untracked():
     columns = ["id", "status", "load_id", "SK"]
     tracked, untracked = scd_change_columns(
-        _scd2_cfg(untracked_columns=["load_id"]), columns, ["id"], ["sk"]
+        _scd2_cfg(untracked_columns=["load_id"]),
+        columns,
+        ["id"],
+        case_sensitive=False,
+        insert_only_columns=["sk"],
     )
     assert tracked == ["status"] and untracked == ["load_id"]
 
@@ -393,14 +397,18 @@ def test_key_columns_stay_out_of_the_touch_set_under_scd_tracked():
     """Under scd.tracked every column outside the allow-list is untracked (and
     updated in place); a key column there would be overwritten."""
     tracked, untracked = scd_change_columns(
-        _scd2_cfg(tracked_columns=["status"]), ["id", "status", "load_id", "sk"], ["id"], ["sk"]
+        _scd2_cfg(tracked_columns=["status"]),
+        ["id", "status", "load_id", "sk"],
+        ["id"],
+        case_sensitive=False,
+        insert_only_columns=["sk"],
     )
     assert tracked == ["status"] and untracked == ["load_id"]
 
 
 def test_case_sensitive_classification_keeps_differently_cased_columns():
     tracked, _ = scd_change_columns(
-        _scd2_cfg(), ["id", "status", "SK"], ["id"], ["sk"], case_sensitive=True
+        _scd2_cfg(), ["id", "status", "SK"], ["id"], case_sensitive=True, insert_only_columns=["sk"]
     )
     assert tracked == ["status", "SK"]
 

@@ -140,10 +140,8 @@ class SCD1MergeStrategy(DeltaMergeStrategy):
         """
         builder = delta_table.alias("old").merge(source=df.alias("new"), condition=merge_condition)
         key_columns = surrogate_key_columns(entity)
-        case_sensitive = _session_case_sensitive(df) if key_columns else False
-        update_condition = _scd1_change_condition(
-            delta_table, df, entity, key_columns, case_sensitive
-        )
+        case_sensitive = spark_case_sensitive(df.sparkSession) if key_columns else True
+        update_condition = _scd1_change_condition(delta_table, df, entity, key_columns)
         if key_columns:
             # Surrogate keys are insert-only: the matched update is an
             # explicit set without them, so an update never rewrites a key.
@@ -188,13 +186,6 @@ def _execute_with_schema_evolution(builder, spark, add_clauses) -> None:
             spark.conf.set(conf_key, previous)
 
 
-def _session_case_sensitive(df: DataFrame) -> bool:
-    """The batch session's ``spark.sql.caseSensitive`` (False by default)."""
-    from kindling.surrogate_keys import session_case_sensitive
-
-    return session_case_sensitive(df.sparkSession)
-
-
 def _scd1_update_set(columns, key_columns, case_sensitive: bool) -> Dict[str, str]:
     """Explicit SCD1 update assignments for every batch column except keys."""
     keys = {name if case_sensitive else name.lower() for name in key_columns}
@@ -212,9 +203,7 @@ def _when_matched_update_set(builder, condition: Optional[str], update_set: Dict
     return builder.whenMatchedUpdate(condition=condition, set=update_set)
 
 
-def _scd1_change_condition(
-    delta_table, df: DataFrame, entity, key_columns=None, case_sensitive: bool = False
-) -> Optional[str]:
+def _scd1_change_condition(delta_table, df: DataFrame, entity, key_columns=None) -> Optional[str]:
     """Matched-row update condition for the SCD1 merge, or None (update all).
 
     Only entities declaring ``scd.untracked`` get change detection: a
@@ -227,11 +216,17 @@ def _scd1_change_condition(
     cfg = scd_config_from_tags(entity)
     if not cfg.untracked_columns:
         return None
+    case_sensitive = spark_case_sensitive(df.sparkSession)
+    name_key = column_name_key(case_sensitive)
     tracked_columns, _ = scd_change_columns(
-        cfg, df.columns, entity.merge_columns, key_columns, case_sensitive
+        cfg,
+        df.columns,
+        entity.merge_columns,
+        case_sensitive=case_sensitive,
+        insert_only_columns=key_columns,
     )
-    target_columns = set(delta_table.toDF().columns)
-    if any(column not in target_columns for column in tracked_columns):
+    target_columns = {name_key(column) for column in delta_table.toDF().columns}
+    if any(name_key(column) not in target_columns for column in tracked_columns):
         return None
     return build_null_safe_change_condition("new", "old", tracked_columns, schema=df.schema)
 
@@ -384,10 +379,16 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity, key_plan=None) -> No
     incoming batch are ignored. ``key_plan`` is the driver-resolved plan
     (the streaming merge passes it); without it, the plan is resolved here.
     """
+    # Column names compare the way the session resolves them: by default
+    # (spark.sql.caseSensitive=false) `STATUS` in the batch is the table's
+    # `status`, not a new column.
+    case_sensitive = spark_case_sensitive(df.sparkSession)
+    name_key = column_name_key(case_sensitive)
     reserved = [
         column
         for column in df.columns
-        if column == _SCD2_MERGE_KEY_COLUMN or column.startswith(_SCD2_RESERVED_PREFIX)
+        if name_key(column) == _SCD2_MERGE_KEY_COLUMN
+        or name_key(column).startswith(_SCD2_RESERVED_PREFIX)
     ]
     if reserved:
         raise ValueError(
@@ -402,13 +403,11 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity, key_plan=None) -> No
 
         key_plan = resolve_surrogate_keys(entity)
     key_columns = key_plan.key_columns if key_plan is not None else []
-    case_sensitive = False
     if key_plan is not None:
         from kindling.surrogate_keys import drop_surrogate_key_columns
 
-        case_sensitive = _session_case_sensitive(df)
         df = drop_surrogate_key_columns(df, key_plan, case_sensitive)
-    if cfg.sequence_by and cfg.sequence_by not in df.columns:
+    if cfg.sequence_by and name_key(cfg.sequence_by) not in {name_key(c) for c in df.columns}:
         raise ValueError(
             f"Entity '{entity.entityid}': scd.sequence_by column "
             f"'{cfg.sequence_by}' is missing from the incoming DataFrame"
@@ -430,18 +429,24 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity, key_plan=None) -> No
     }
     # The sequence column is ordering authority, not content: a row whose
     # only difference is a newer sequence value is an in-place update.
+    temporal_keys = {name_key(column) for column in temporal_columns}
     tracked_columns, untracked_columns = scd_change_columns(
-        cfg, df.columns, business_keys, key_columns, case_sensitive
+        cfg,
+        df.columns,
+        business_keys,
+        case_sensitive=case_sensitive,
+        insert_only_columns=key_columns,
     )
     # Batch columns the table does not have yet (additive schema): compare
     # them against typed nulls, and let the MERGE evolve the table to add
     # them (a new untracked column lands on the current version in place, a
     # new tracked column re-versions every key that now carries a value).
     target_df = delta_table.toDF()
+    target_keys = {name_key(column) for column in target_df.columns}
     new_columns = [
         column
         for column in df.columns
-        if column not in target_df.columns and column not in temporal_columns
+        if name_key(column) not in target_keys and name_key(column) not in temporal_keys
     ]
     for column in new_columns:
         target_df = target_df.withColumn(column, lit(None).cast(df.schema[column].dataType))
@@ -591,7 +596,7 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity, key_plan=None) -> No
         lambda left, right: left.unionByName(right, allowMissingColumns=True), staged_parts
     )
 
-    source_columns = [column for column in df.columns if column not in temporal_columns]
+    source_columns = [column for column in df.columns if name_key(column) not in temporal_keys]
     insert_values = {
         quote_sql_identifier(column): quote_sql_identifier(column, "staged")
         for column in source_columns
@@ -633,12 +638,8 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity, key_plan=None) -> No
     )
     # A key column the table does not have yet (keys declared on an existing
     # table) is added by schema evolution, like any new batch column.
-    target_names = {name if case_sensitive else name.lower() for name in delta_table.toDF().columns}
-    missing_key_columns = [
-        name
-        for name in key_columns
-        if (name if case_sensitive else name.lower()) not in target_names
-    ]
+    target_names = {name_key(name) for name in delta_table.toDF().columns}
+    missing_key_columns = [name for name in key_columns if name_key(name) not in target_names]
     if new_columns or missing_key_columns:
         _execute_with_schema_evolution(builder, df.sparkSession, _add_clauses)
     else:

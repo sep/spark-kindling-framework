@@ -539,3 +539,51 @@ def test_validate_scd_config_scd2_staging_prefix_in_schema_raises_value_error():
 
     with pytest.raises(ValueError, match="__scd2_.*reserved"):
         _validate_scd_config(entity)
+
+
+# -- case-insensitive column names (spark.sql.caseSensitive) ------------------
+
+
+def test_change_columns_case_insensitive_matches_keys_tags_and_temporal():
+    cfg = _cfg({"scd.type": "2", "scd.untracked": "load_id", "scd.sequence_by": "updated_at"})
+    columns = ["ID", "STATUS", "LOAD_ID", "UPDATED_AT", "__IS_CURRENT"]
+
+    tracked, untracked = scd_change_columns(cfg, columns, ["id"], case_sensitive=False)
+
+    assert tracked == ["STATUS"]
+    assert untracked == ["LOAD_ID", "UPDATED_AT"]
+
+
+def test_change_columns_case_insensitive_tracked_allow_list():
+    cfg = _cfg({"scd.type": "2", "scd.tracked": "status"})
+
+    tracked, untracked = scd_change_columns(
+        cfg, ["id", "STATUS", "load_id"], ["id"], case_sensitive=False
+    )
+
+    assert tracked == ["status"]
+    assert untracked == ["load_id"]
+
+
+def test_change_columns_case_sensitive_keeps_names_distinct():
+    cfg = _cfg({"scd.type": "2", "scd.untracked": "load_id"})
+
+    tracked, untracked = scd_change_columns(cfg, ["id", "STATUS", "LOAD_ID"], ["id"])
+
+    assert tracked == ["STATUS", "LOAD_ID"]
+    assert untracked == []
+
+
+@pytest.mark.parametrize(
+    "value, expected", [("true", True), ("TRUE", True), ("false", False), (None, False)]
+)
+def test_spark_case_sensitive_reads_session_conf(value, expected):
+    from unittest.mock import MagicMock
+
+    from kindling.data_entities import spark_case_sensitive
+
+    spark = MagicMock()
+    spark.conf.get.return_value = "false" if value is None else value
+
+    assert spark_case_sensitive(spark) is expected
+    spark.conf.get.assert_called_once_with("spark.sql.caseSensitive", "false")

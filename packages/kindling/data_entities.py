@@ -394,12 +394,31 @@ def build_null_safe_change_condition(
     )
 
 
+def spark_case_sensitive(spark) -> bool:
+    """Whether ``spark`` resolves column names case-sensitively.
+
+    Reads ``spark.sql.caseSensitive`` (Spark's default is false: ``STATUS``
+    and ``status`` name the same column).
+    """
+    try:
+        return str(spark.conf.get("spark.sql.caseSensitive", "false")).strip().lower() == "true"
+    except Exception:
+        return False
+
+
+def column_name_key(case_sensitive: bool) -> Callable[[str], str]:
+    """Key function under which two column names are the same column."""
+    if case_sensitive:
+        return lambda name: name
+    return lambda name: name.lower()
+
+
 def scd_change_columns(
     cfg: SCDConfig,
     columns: List[str],
     business_keys: List[str],
+    case_sensitive: bool = True,
     insert_only_columns: Optional[List[str]] = None,
-    case_sensitive: bool = False,
 ) -> Tuple[List[str], List[str]]:
     """Split a batch's columns into ``(tracked, untracked)`` for change detection.
 
@@ -415,40 +434,38 @@ def scd_change_columns(
       (ordering authority, not content).
 
     Untracked columns absent from the batch are skipped. Temporal columns
-    are only excluded for SCD2 entities (``cfg.enabled``).
+    are only excluded for SCD2 entities (``cfg.enabled``). Names match
+    exactly unless ``case_sensitive`` is False; providers pass the session's
+    ``spark_case_sensitive`` so ``STATUS`` and ``status`` are one column.
 
     ``insert_only_columns`` (surrogate key columns) are a third class: they
     are neither tracked nor untracked, so no merge clause ever rewrites
-    them. They are matched by name per ``case_sensitive`` (Spark resolves
-    column names case-insensitively by default).
+    them.
     """
+    key = column_name_key(case_sensitive)
     temporal_columns = (
         {cfg.effective_from_column, cfg.effective_to_column, cfg.is_current_column}
         if cfg.enabled
         else set()
     )
-    insert_only = {name if case_sensitive else name.lower() for name in (insert_only_columns or ())}
-
-    def _insert_only(column: str) -> bool:
-        return (column if case_sensitive else column.lower()) in insert_only
-
+    insert_only = {key(name) for name in insert_only_columns or ()}
+    non_candidates = {key(name) for name in list(business_keys) + list(temporal_columns)}
     candidates = [
         column
         for column in columns
-        if column not in business_keys
-        and column not in temporal_columns
-        and not _insert_only(column)
+        if key(column) not in non_candidates and key(column) not in insert_only
     ]
     if cfg.tracked_columns:
-        tracked = [column for column in cfg.tracked_columns if not _insert_only(column)]
-        untracked = [column for column in candidates if column not in tracked]
+        tracked = [name for name in cfg.tracked_columns if key(name) not in insert_only]
+        tracked_keys = {key(name) for name in tracked}
+        untracked = [column for column in candidates if key(column) not in tracked_keys]
         return tracked, untracked
 
-    excluded = set(cfg.untracked_columns or ())
+    excluded = {key(name) for name in cfg.untracked_columns or ()}
     if cfg.sequence_by:
-        excluded.add(cfg.sequence_by)
-    tracked = [column for column in candidates if column not in excluded]
-    untracked = [column for column in candidates if column in excluded]
+        excluded.add(key(cfg.sequence_by))
+    tracked = [column for column in candidates if key(column) not in excluded]
+    untracked = [column for column in candidates if key(column) in excluded]
     return tracked, untracked
 
 

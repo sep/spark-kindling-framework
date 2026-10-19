@@ -39,6 +39,7 @@ from kindling.data_entities import (
     SurrogateKeyConfig,
     quote_sql_identifier,
     scd_config_from_tags,
+    spark_case_sensitive,
     surrogate_config_from_tags,
 )
 from kindling.injection import GlobalInjector
@@ -682,14 +683,6 @@ def augment_schema_for_surrogate_keys(schema: StructType, entity: EntityMetadata
 # ── Key expressions ──────────────────────────────────────────────────────────
 
 
-def session_case_sensitive(spark) -> bool:
-    """``spark.sql.caseSensitive`` (False, Spark's default, when unreadable)."""
-    try:
-        return str(spark.conf.get("spark.sql.caseSensitive", "false")).strip().lower() == "true"
-    except Exception:
-        return False
-
-
 def _find_field(schema: StructType, name: str, case_sensitive: bool) -> Optional[StructField]:
     for field in schema.fields:
         if field.name == name or (not case_sensitive and field.name.lower() == name.lower()):
@@ -822,7 +815,7 @@ def apply_surrogate_keys(
     plan = plan if plan is not None else resolve_surrogate_keys(entity)
     if plan is None or plan.scd2:
         return df
-    case_sensitive = session_case_sensitive(df.sparkSession)
+    case_sensitive = spark_case_sensitive(df.sparkSession)
     df = drop_surrogate_key_columns(df, plan, case_sensitive)
     schema = df.schema
     for column, kind in plan.keys():
