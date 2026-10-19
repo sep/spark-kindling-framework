@@ -36,6 +36,7 @@ from kindling_ext_databricks.auto_cdc import (
     SCD_SOURCE_SUFFIX,
     ScdSpec,
     scd_spec_from_tags,
+    track_history_kwargs,
     validate_scd_spec,
 )
 from kindling_ext_sdp.capabilities import DATABRICKS_SDP, CapabilitySet
@@ -366,11 +367,15 @@ class DatabricksSdpEngine(OssSdpEngine):
 
         keys = list(entity.merge_columns or ())
         if spec.is_snapshot:
+            # The snapshot API takes the same tracking lists as the change
+            # feed one (see track_history_kwargs); without them scd.tracked
+            # / scd.untracked would be silently dropped for snapshots.
             dp.create_auto_cdc_from_snapshot_flow(
                 target=target_name,
                 source=source_name,
                 keys=keys,
                 stored_as_scd_type=int(spec.scd_type),
+                **track_history_kwargs(spec),
             )
             return
 
@@ -387,11 +392,9 @@ class DatabricksSdpEngine(OssSdpEngine):
             flow_kwargs["apply_as_deletes"] = expr(spec.delete_when)
         # Parity with #159: the sequence column is ordering authority, not
         # content — a row whose only difference is a newer sequence value
-        # must not create a new history version.
-        if spec.tracked_columns:
-            flow_kwargs["track_history_column_list"] = list(spec.tracked_columns)
-        elif spec.sequence_by:
-            flow_kwargs["track_history_except_column_list"] = [spec.sequence_by]
+        # updates the current version in place rather than opening a new
+        # one. scd.tracked / scd.untracked map to the allow / exclude list.
+        flow_kwargs.update(track_history_kwargs(spec))
         dp.create_auto_cdc_flow(**flow_kwargs)
 
     def _apply_expectations(self, dp, dataset: DatasetDeclaration, query_function: Callable):

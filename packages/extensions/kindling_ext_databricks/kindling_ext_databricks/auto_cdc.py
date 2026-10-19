@@ -25,13 +25,24 @@ criterion):
 - The ``scd.current_entity_id`` current-view companion is runner-only
   machinery; in SDP it should become an ordinary declared view (tracked
   separately).
+- Untracked-column skipping for SCD1 (``scd.untracked`` on a keyed merge
+  without ``scd.type``) is runner-only: keyed SCD1 is not lowered to AUTO
+  CDC type 1 today, so there is nothing to map it to. If SCD1 is ever
+  lowered, AUTO CDC type 1 has no untracked-column concept and rewrites
+  the row on any change — that would be a divergence to document here.
+
+Not a divergence: ``scd.tracked`` / ``scd.untracked`` under SCD2. A change
+confined to columns outside the tracked set (and a sequence-only bump)
+updates the current version in place in both engines; AUTO CDC does this
+for columns outside ``track_history_column_list`` / inside
+``track_history_except_column_list``.
 
 ``stored_as_scd_type="bitemporal"`` is deliberately NOT mapped while the
 feature is in Beta (proposal decision).
 """
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 #: Suffix for the pipeline-scoped view holding the pipe's change/snapshot
 #: source — the AUTO CDC flow reads it by name.
@@ -47,6 +58,7 @@ class ScdSpec:
     source_kind: str  # "snapshot" | "change_feed"
     delete_when: Optional[str]
     tracked_columns: Tuple[str, ...]
+    untracked_columns: Tuple[str, ...] = ()
 
     @property
     def is_snapshot(self) -> bool:
@@ -65,16 +77,49 @@ def scd_spec_from_tags(tags) -> Optional[ScdSpec]:
     source_kind = str(tags.get("scd.source_kind", "")).strip().lower() or (
         "snapshot" if close_on_missing else "change_feed"
     )
-    tracked_raw = str(tags.get("scd.tracked", "")).strip()
     return ScdSpec(
         scd_type=scd_type,
         sequence_by=str(tags.get("scd.sequence_by", "")).strip() or None,
         source_kind=source_kind,
         delete_when=str(tags.get("scd.delete_when", "")).strip() or None,
-        tracked_columns=tuple(
-            column.strip() for column in tracked_raw.split(",") if column.strip()
-        ),
+        tracked_columns=_column_list(tags.get("scd.tracked", "")),
+        untracked_columns=_column_list(tags.get("scd.untracked", "")),
     )
+
+
+def _column_list(raw) -> Tuple[str, ...]:
+    """Split a comma-separated column tag into literal column names."""
+    return tuple(column.strip() for column in str(raw).split(",") if column.strip())
+
+
+def track_history_kwargs(spec: ScdSpec) -> Dict[str, List[str]]:
+    """The AUTO CDC history-tracking argument for an SCD spec.
+
+    Both ``create_auto_cdc_flow`` and ``create_auto_cdc_from_snapshot_flow``
+    accept ``track_history_column_list`` or ``track_history_except_column_list``
+    (https://docs.databricks.com/aws/en/ldp/developer/ldp-python-ref-apply-changes,
+    https://docs.databricks.com/aws/en/ldp/developer/ldp-python-ref-apply-changes-from-snapshot).
+    The two are alternatives, so at most one is returned. Columns outside
+    the tracked set are updated in place on the current version
+    (https://docs.databricks.com/aws/en/ldp/cdc), which is the runner's
+    behaviour for ``scd.tracked`` / ``scd.untracked``.
+
+    - ``scd.tracked`` -> ``track_history_column_list`` (the allow-list).
+    - ``scd.untracked`` -> ``track_history_except_column_list`` with the
+      untracked columns plus ``scd.sequence_by`` when set.
+    - neither -> ``track_history_except_column_list=[sequence_by]`` when
+      ``scd.sequence_by`` is set (the sequence column is ordering
+      authority, not content, so a sequence-only bump updates in place),
+      otherwise nothing (every column is tracked).
+    """
+    if spec.tracked_columns:
+        return {"track_history_column_list": list(spec.tracked_columns)}
+    except_columns = list(spec.untracked_columns)
+    if spec.sequence_by and spec.sequence_by not in except_columns:
+        except_columns.append(spec.sequence_by)
+    if except_columns:
+        return {"track_history_except_column_list": list(dict.fromkeys(except_columns))}
+    return {}
 
 
 def validate_scd_spec(spec: ScdSpec, merge_columns: List[str]) -> List[Tuple[str, str]]:
@@ -108,6 +153,16 @@ def validate_scd_spec(spec: ScdSpec, merge_columns: List[str]) -> List[Tuple[str
                 "the AUTO CDC change-feed mapping requires scd.sequence_by — "
                 "ordering authority must come from the data (declare the "
                 "tag, or use scd.source_kind: snapshot)",
+            )
+        )
+    if spec.tracked_columns and spec.untracked_columns:
+        issues.append(
+            (
+                "scd_tracked_untracked_exclusive",
+                "scd.tracked and scd.untracked are mutually exclusive — declare "
+                "the allow-list or the exclude-list, not both (AUTO CDC takes "
+                "only one of track_history_column_list / "
+                "track_history_except_column_list)",
             )
         )
     if not merge_columns:
