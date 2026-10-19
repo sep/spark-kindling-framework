@@ -25,6 +25,7 @@ from pyspark.sql import DataFrame
 from pyspark.sql.types import (
     BooleanType,
     MapType,
+    StringType,
     StructField,
     StructType,
     TimestampType,
@@ -394,7 +395,11 @@ def build_null_safe_change_condition(
 
 
 def scd_change_columns(
-    cfg: SCDConfig, columns: List[str], business_keys: List[str]
+    cfg: SCDConfig,
+    columns: List[str],
+    business_keys: List[str],
+    insert_only_columns: Optional[List[str]] = None,
+    case_sensitive: bool = False,
 ) -> Tuple[List[str], List[str]]:
     """Split a batch's columns into ``(tracked, untracked)`` for change detection.
 
@@ -411,19 +416,31 @@ def scd_change_columns(
 
     Untracked columns absent from the batch are skipped. Temporal columns
     are only excluded for SCD2 entities (``cfg.enabled``).
+
+    ``insert_only_columns`` (surrogate key columns) are a third class: they
+    are neither tracked nor untracked, so no merge clause ever rewrites
+    them. They are matched by name per ``case_sensitive`` (Spark resolves
+    column names case-insensitively by default).
     """
     temporal_columns = (
         {cfg.effective_from_column, cfg.effective_to_column, cfg.is_current_column}
         if cfg.enabled
         else set()
     )
+    insert_only = {name if case_sensitive else name.lower() for name in (insert_only_columns or ())}
+
+    def _insert_only(column: str) -> bool:
+        return (column if case_sensitive else column.lower()) in insert_only
+
     candidates = [
         column
         for column in columns
-        if column not in business_keys and column not in temporal_columns
+        if column not in business_keys
+        and column not in temporal_columns
+        and not _insert_only(column)
     ]
     if cfg.tracked_columns:
-        tracked = list(cfg.tracked_columns)
+        tracked = [column for column in cfg.tracked_columns if not _insert_only(column)]
         untracked = [column for column in candidates if column not in tracked]
         return tracked, untracked
 
@@ -453,6 +470,327 @@ def augment_schema_for_scd2(schema: StructType, cfg: SCDConfig) -> StructType:
     if not extra_fields:
         return schema_struct
     return StructType(schema_struct.fields + extra_fields)
+
+
+# ── Surrogate keys (tags-first; see docs/guide/data_entities.md) ─────────────
+#
+# Tag parsing and registration-time validation live here, beside the SCD
+# configuration they interact with. The encoder, the strategies, custom
+# generators and the key placements are in kindling.surrogate_keys.
+
+_SURROGATE_STRATEGIES = ("hash", "uuid5", "custom")
+_SURROGATE_KNOWN_TAGS = (
+    "surrogate.column",
+    "surrogate.durable_column",
+    "surrogate.strategy",
+    "surrogate.from",
+    "surrogate.include_effective_from",
+    "surrogate.namespace",
+    "surrogate.normalize",
+    "surrogate.hash.algo",
+    "surrogate.hash.format",
+    "surrogate.uuid.namespace",
+    "surrogate.generator",
+    "surrogate.require_reproducible",
+    "surrogate.encoding",
+)
+
+
+@dataclass(frozen=True)
+class SurrogateKeyConfig:
+    """Parsed surrogate key configuration derived from an entity's tags.
+
+    ``column`` is the key column (the *version* key on an SCD2 entity);
+    ``durable_column`` is the SCD2 durable key. ``from_columns`` defaults
+    to the entity's ``merge_columns``. Parsing never raises; registration
+    (``_validate_surrogate_config``) rejects invalid or unsupported values.
+    """
+
+    column: Optional[str] = None
+    durable_column: Optional[str] = None
+    strategy: str = "hash"
+    from_columns: Tuple[str, ...] = ()
+    include_effective_from: bool = True
+    namespace: Optional[str] = None
+    normalize: str = "none"
+    hash_algo: str = "sha256"
+    hash_format: str = "hex"
+    uuid_namespace: Optional[str] = None
+    generator: Optional[str] = None
+    # (option, value) pairs from surrogate.generator.<option> tags.
+    generator_options: Tuple[Tuple[str, str], ...] = ()
+    require_reproducible: bool = False
+    encoding: str = "v1"
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.column or self.durable_column)
+
+    @property
+    def key_columns(self) -> List[str]:
+        """The declared key columns (version/plain key first, then durable)."""
+        return [name for name in (self.column, self.durable_column) if name]
+
+
+def _tag_text(tags: Dict[str, Any], key: str) -> str:
+    value = tags.get(key)
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value).strip()
+
+
+def surrogate_config_from_tags(entity: EntityMetadata) -> SurrogateKeyConfig:
+    """Extract surrogate key configuration from an entity's tags (never raises)."""
+    tags = entity.tags or {}
+    column = _tag_text(tags, "surrogate.column") or None
+    durable_column = _tag_text(tags, "surrogate.durable_column") or None
+    if (
+        not column
+        and not durable_column
+        and not any(str(key).startswith("surrogate.") for key in tags)
+    ):
+        return SurrogateKeyConfig()
+    from_columns = _parse_column_list_tag(tags, "surrogate.from")
+    if from_columns is None:
+        from_columns = list(entity.merge_columns or [])
+    include_raw = _tag_text(tags, "surrogate.include_effective_from").lower()
+    namespace_raw = tags.get("surrogate.namespace")
+    namespace = None if namespace_raw is None or str(namespace_raw) == "" else str(namespace_raw)
+    options = tuple(
+        sorted(
+            (key[len("surrogate.generator.") :], str(value))
+            for key, value in tags.items()
+            if key.startswith("surrogate.generator.") and key != "surrogate.generator."
+        )
+    )
+    return SurrogateKeyConfig(
+        column=column,
+        durable_column=durable_column,
+        strategy=_tag_text(tags, "surrogate.strategy").lower() or "hash",
+        from_columns=tuple(from_columns),
+        include_effective_from=include_raw != "false",
+        namespace=namespace,
+        normalize=_tag_text(tags, "surrogate.normalize").lower() or "none",
+        hash_algo=_tag_text(tags, "surrogate.hash.algo").lower() or "sha256",
+        hash_format=_tag_text(tags, "surrogate.hash.format").lower() or "hex",
+        uuid_namespace=_tag_text(tags, "surrogate.uuid.namespace") or None,
+        generator=_tag_text(tags, "surrogate.generator") or None,
+        generator_options=options,
+        require_reproducible=_tag_text(tags, "surrogate.require_reproducible").lower() == "true",
+        encoding=_tag_text(tags, "surrogate.encoding") or "v1",
+    )
+
+
+def surrogate_key_columns(entity: EntityMetadata) -> List[str]:
+    """The entity's surrogate key column names (insert-only), or ``[]``."""
+    return surrogate_config_from_tags(entity).key_columns
+
+
+def _stamp_surrogate_encoding(entity: EntityMetadata) -> EntityMetadata:
+    """Record the key encoding (``surrogate.encoding``) on an entity with keys."""
+    tags = entity.tags or {}
+    if "surrogate.encoding" in tags or not surrogate_config_from_tags(entity).enabled:
+        return entity
+    return replace(entity, tags={**tags, "surrogate.encoding": "v1"})
+
+
+def _validate_surrogate_config(entity: EntityMetadata) -> None:
+    """Validate ``surrogate.*`` tags at registration time.
+
+    Column names compare case-insensitively (Spark's default resolution),
+    so a collision that differs only in case is still rejected. Custom
+    generator names are not resolved here: they resolve at
+    ``ensure_destination``, after bootstrap has imported every module.
+    """
+    tags = entity.tags or {}
+    surrogate_tags = [key for key in tags if key.startswith("surrogate.")]
+    if not surrogate_tags:
+        return
+    eid = entity.entityid
+
+    def fail(message: str) -> None:
+        raise ValueError(f"Entity '{eid}': {message}")
+
+    for key in surrogate_tags:
+        if key == "surrogate.unknown_member":
+            fail(
+                "surrogate.unknown_member is not yet supported (unknown-member "
+                "seeding arrives in a later release)"
+            )
+        if key not in _SURROGATE_KNOWN_TAGS and not key.startswith("surrogate.generator."):
+            fail(f"unknown surrogate tag '{key}' (known: {sorted(_SURROGATE_KNOWN_TAGS)})")
+
+    cfg = surrogate_config_from_tags(entity)
+    if not cfg.enabled:
+        fail(
+            "surrogate.* tags are set but neither surrogate.column nor "
+            "surrogate.durable_column names a key column"
+        )
+    if entity.is_sql_entity:
+        fail("surrogate keys do not apply to a SQL entity (a read-only view)")
+
+    if cfg.strategy == "uuid4":
+        fail(
+            "surrogate.strategy 'uuid4' is not yet supported (random keys arrive "
+            "in a later release); use 'uuid5' for a deterministic UUID-shaped key"
+        )
+    if cfg.strategy == "identity":
+        fail(
+            "surrogate.strategy 'identity' is not yet supported (Delta IDENTITY "
+            "columns arrive in a later release)"
+        )
+    if cfg.strategy not in _SURROGATE_STRATEGIES:
+        fail(
+            f"invalid surrogate.strategy '{cfg.strategy}' (expected one of "
+            f"{list(_SURROGATE_STRATEGIES)})"
+        )
+    if cfg.hash_algo in ("md5", "xxhash64"):
+        fail(
+            f"surrogate.hash.algo '{cfg.hash_algo}' is not yet supported "
+            "(only 'sha256' in this release)"
+        )
+    if cfg.hash_algo != "sha256":
+        fail(f"invalid surrogate.hash.algo '{cfg.hash_algo}' (expected 'sha256')")
+    if cfg.hash_format == "binary":
+        fail("surrogate.hash.format 'binary' is not yet supported (only 'hex' in this release)")
+    if cfg.hash_format != "hex":
+        fail(f"invalid surrogate.hash.format '{cfg.hash_format}' (expected 'hex')")
+    if cfg.normalize in ("trim", "trim_upper"):
+        fail(
+            f"surrogate.normalize '{cfg.normalize}' is not yet supported "
+            "(only 'none' in this release)"
+        )
+    if cfg.normalize != "none":
+        fail(f"invalid surrogate.normalize '{cfg.normalize}' (expected 'none')")
+    if cfg.encoding != "v1":
+        fail(f"unsupported surrogate.encoding '{cfg.encoding}' (expected 'v1')")
+    for key in ("surrogate.include_effective_from", "surrogate.require_reproducible"):
+        raw = _tag_text(tags, key).lower()
+        if raw not in ("", "true", "false"):
+            fail(f"{key} must be 'true' or 'false', got '{raw}'")
+    if "surrogate.from" in tags and not _parse_column_list_tag(tags, "surrogate.from"):
+        fail(
+            f"surrogate.from is set but contains no usable column names: "
+            f"'{tags.get('surrogate.from')}'"
+        )
+
+    # Strategy companions.
+    if cfg.strategy == "uuid5":
+        if not cfg.uuid_namespace:
+            fail("surrogate.strategy 'uuid5' requires surrogate.uuid.namespace (a UUID)")
+        import uuid as _uuid
+
+        try:
+            _uuid.UUID(cfg.uuid_namespace)
+        except ValueError:
+            fail(f"surrogate.uuid.namespace is not a valid UUID: '{cfg.uuid_namespace}'")
+    elif cfg.uuid_namespace:
+        fail("surrogate.uuid.namespace applies to surrogate.strategy 'uuid5' only")
+    if cfg.strategy == "custom":
+        if not cfg.generator:
+            fail("surrogate.strategy 'custom' requires surrogate.generator (a registered name)")
+    elif cfg.generator or cfg.generator_options:
+        fail("surrogate.generator and surrogate.generator.* apply to surrogate.strategy 'custom'")
+    if cfg.strategy != "custom" and not cfg.from_columns:
+        fail("surrogate keys need input columns: declare merge_columns or " "surrogate.from")
+
+    scd = scd_config_from_tags(entity)
+    if cfg.durable_column and not scd.enabled:
+        fail("surrogate.durable_column requires an SCD2 entity (scd.type: '2')")
+    if "surrogate.include_effective_from" in tags and not (scd.enabled and cfg.column):
+        fail("surrogate.include_effective_from applies to an SCD2 version key only")
+
+    def norm(name: str) -> str:
+        return name.lower()
+
+    key_names = cfg.key_columns
+    if len({norm(name) for name in key_names}) != len(key_names):
+        fail("surrogate.column and surrogate.durable_column must be different columns")
+    key_set = {norm(name) for name in key_names}
+    from_set = {norm(name) for name in cfg.from_columns}
+    for label, names in (
+        ("merge_columns", entity.merge_columns or []),
+        ("surrogate.from", cfg.from_columns),
+        ("scd.tracked", scd.tracked_columns or []),
+        ("scd.untracked", scd.untracked_columns or []),
+    ):
+        overlap = sorted(name for name in names if norm(name) in key_set)
+        if overlap:
+            fail(
+                f"surrogate key columns must not appear in {label} (keys are "
+                f"insert-only): {overlap}"
+            )
+    if scd.enabled:
+        temporal = {
+            norm(scd.effective_from_column): scd.effective_from_column,
+            norm(scd.effective_to_column): scd.effective_to_column,
+            norm(scd.is_current_column): scd.is_current_column,
+        }
+        clash = sorted(name for name in key_names if norm(name) in temporal)
+        if clash:
+            fail(f"surrogate key columns must not be SCD2 temporal columns: {clash}")
+        if norm(scd.effective_from_column) in from_set:
+            fail(
+                "surrogate.from must not include the effective_from column; the "
+                "version key includes it through surrogate.include_effective_from"
+            )
+        closing = sorted(
+            name
+            for name in cfg.from_columns
+            if norm(name) in (norm(scd.effective_to_column), norm(scd.is_current_column))
+        )
+        if closing:
+            fail(
+                "surrogate.from must not include effective_to or is_current, which "
+                f"change when a version is closed: {closing}"
+            )
+        if scd.sequence_by and norm(scd.sequence_by) in key_set:
+            fail("a surrogate key column must not be the scd.sequence_by column")
+    reserved = sorted(
+        name for name in key_names if name == "__merge_key" or name.startswith("__scd2_")
+    )
+    if reserved:
+        fail(f"surrogate key columns use reserved SCD2 staging names: {reserved}")
+
+    if entity.schema is not None:
+        from kindling.surrogate_keys import v1_type_problem
+
+        fields_by_name = {norm(field.name): field for field in entity.schema.fields}
+        missing = [name for name in cfg.from_columns if norm(name) not in fields_by_name]
+        if missing:
+            fail(f"surrogate.from columns not in the entity schema: {missing}")
+        for name in cfg.from_columns:
+            problem = v1_type_problem(fields_by_name[norm(name)].dataType)
+            if problem:
+                fail(f"surrogate.from column '{name}' cannot be encoded: {problem}")
+        if cfg.strategy in ("hash", "uuid5"):
+            for name in key_names:
+                declared = fields_by_name.get(norm(name))
+                if declared is not None and not isinstance(declared.dataType, StringType):
+                    fail(
+                        f"surrogate key column '{name}' is declared as "
+                        f"{declared.dataType.simpleString()}, but a '{cfg.strategy}' key "
+                        "is a STRING"
+                    )
+
+    if scd.enabled and cfg.column and cfg.include_effective_from and not scd.sequence_by:
+        message = (
+            f"Entity '{eid}': the SCD2 version key '{cfg.column}' includes "
+            "effective_from, which is processing time without scd.sequence_by, so "
+            "version keys are unique and fixed once stored but not reproducible on "
+            "a rebuild"
+        )
+        if cfg.require_reproducible:
+            raise ValueError(
+                message + "; surrogate.require_reproducible=true requires scd.sequence_by"
+            )
+        _ENTITY_LOGGER.warning(
+            "%s. Declare scd.sequence_by, or set surrogate.require_reproducible=true "
+            "to make this an error.",
+            message,
+        )
 
 
 @dataclass(frozen=True)
@@ -941,7 +1279,27 @@ class DataEntities:
         return cls.deregistry
 
     @classmethod
-    def entity(cls, **decorator_params):
+    def entity(cls, surrogate_key=None, durable_key=None, **decorator_params):
+        """Register an entity.
+
+        ``surrogate_key`` / ``durable_key`` are sugar for the
+        ``surrogate.column`` / ``surrogate.durable_column`` tags (see
+        docs/guide/data_entities.md, "Surrogate keys"). Like
+        ``insert_only_entity``, they only fill in default tags: explicit
+        tags win, and the framework reads the tags, never these arguments.
+        """
+        sugar_tags = {}
+        for tag, value in (
+            ("surrogate.column", surrogate_key),
+            ("surrogate.durable_column", durable_key),
+        ):
+            if value is None:
+                continue
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{tag} sugar expects a column name, got {value!r}")
+            sugar_tags[tag] = value.strip()
+        if sugar_tags:
+            decorator_params["tags"] = {**sugar_tags, **(decorator_params.get("tags") or {})}
         if cls.deregistry is None:
             try:
                 _raise_if_not_initialized("DataEntities.entity", "entity")
@@ -1206,7 +1564,7 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         if params is None:
             staged[entityid] = None
         else:
-            entity = self._build_metadata(entityid, params)
+            entity = _stamp_surrogate_encoding(self._build_metadata(entityid, params))
             self._validate_entity(entity)
             staged[entityid] = entity
         for target, derivations in list(self._derivations.items()):
@@ -1426,6 +1784,7 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
             # dataset", not with a downstream state-vocabulary complaint.
             _validate_derived_config(entity)
             _validate_scd_config(entity)
+            _validate_surrogate_config(entity)
             _validate_write_mode_tag(entity)
             _validate_schema_drift_tag(entity)
         except ValueError as error:
