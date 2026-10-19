@@ -578,15 +578,30 @@ def test_scd2_several_newer_events_for_one_key_apply_the_latest(spark, provider,
     assert closed[0]["status"] == "bronze" and closed[0]["__effective_to"] == TS(4)
 
 
-def test_scd2_duplicate_keys_without_sequence_by_are_rejected(spark, provider, request):
-    """Without scd.sequence_by nothing orders two rows for one key, so the
-    batch is rejected (one row per key per batch) on both providers."""
+def test_scd2_exact_duplicate_rows_without_sequence_by_collapse(spark, provider, request):
+    """Without scd.sequence_by, rows identical in every column (full reloads,
+    retried extracts) collapse to one on both providers: an unchanged key is
+    a no-op and a new key gets a single version."""
+    entity = _scd2_entity(request, "dup_exact_noseq", {})
+    _merge(spark, provider, entity, [("c1", "bronze", "L1", TS(1))])
+    before = sorted(provider.read_entity(entity).collect())
+
+    _merge(spark, provider, entity, [("c1", "bronze", "L1", TS(1)), ("c1", "bronze", "L1", TS(1))])
+    assert sorted(provider.read_entity(entity).collect()) == before
+
+    _merge(spark, provider, entity, [("c2", "gold", "L2", TS(2)), ("c2", "gold", "L2", TS(2))])
+    assert len([r for r in provider.read_entity(entity).collect() if r["customer_id"] == "c2"]) == 1
+
+
+def test_scd2_differing_duplicate_keys_without_sequence_by_are_rejected(spark, provider, request):
+    """Without scd.sequence_by nothing orders two different rows for one key,
+    so the batch is rejected on both providers and the table is unchanged."""
     entity = _scd2_entity(request, "dup_noseq", {})
     _merge(spark, provider, entity, [("c1", "bronze", "L1", TS(1))])
     before = sorted(provider.read_entity(entity).collect())
 
-    with pytest.raises(ValueError, match="more than one row"):
+    with pytest.raises(ValueError, match="differing rows"):
         _merge(
-            spark, provider, entity, [("c1", "bronze", "L1", TS(1)), ("c1", "bronze", "L1", TS(1))]
+            spark, provider, entity, [("c1", "bronze", "L1", TS(1)), ("c1", "silver", "L1", TS(1))]
         )
     assert sorted(provider.read_entity(entity).collect()) == before

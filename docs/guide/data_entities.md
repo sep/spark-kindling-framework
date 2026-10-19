@@ -691,7 +691,9 @@ Closed versions keep the untracked values they had when they were closed.
 A merge applies one row per business key. With `scd.sequence_by`, a batch with
 several rows for one key keeps the latest by sequence (as streaming merges do
 per micro-batch); the earlier rows in that batch open no versions. Without
-`scd.sequence_by` nothing orders such rows, so the batch is rejected.
+`scd.sequence_by`, rows identical in every column collapse to one (full reloads
+and retried extracts often contain them); a key whose rows differ is rejected,
+since nothing orders them.
 
 > **Behaviour change for `scd.tracked`.** Columns outside the `scd.tracked`
 > allow-list used to be ignored when only they changed: the current version

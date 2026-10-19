@@ -476,7 +476,9 @@ def normalize_scd2_batch(df: DataFrame, entity: EntityMetadata, cfg: SCDConfig) 
     by sequence (the latest-change-per-key convention the streaming merge
     applies per micro-batch and the incremental read applies to change
     feeds); change-feed deletes take part like any other event. Without it
-    nothing orders two rows for one key, so such a batch is rejected.
+    nothing orders two rows for one key: exact duplicate rows (identical in
+    every column, common in full reloads and retried extracts) collapse to
+    one, and a key whose rows differ is rejected.
     Both SCD2 providers call this, so they agree: duplicate rows used to make
     the Delta MERGE fail (several source rows matching one target row) and
     the memory merge copy the current version once per source row.
@@ -485,7 +487,7 @@ def normalize_scd2_batch(df: DataFrame, entity: EntityMetadata, cfg: SCDConfig) 
     from pyspark.sql.functions import col as _col
     from pyspark.sql.functions import count as _count
     from pyspark.sql.functions import lit as _lit
-    from pyspark.sql.functions import row_number
+    from pyspark.sql.functions import row_number, to_json
 
     keys = [_col(quote_sql_identifier(key)) for key in entity.merge_columns]
     if cfg.sequence_by:
@@ -496,6 +498,23 @@ def normalize_scd2_batch(df: DataFrame, entity: EntityMetadata, cfg: SCDConfig) 
         return (
             df.withColumn(rank, row_number().over(latest_first)).filter(_col(rank) == 1).drop(rank)
         )
+    # Exact duplicates are harmless: keep one. Spark can't group, sort or
+    # distinct MAP columns, so they're compared through their JSON form.
+    map_columns = {f.name for f in df.schema.fields if isinstance(f.dataType, MapType)}
+    row_identity = [
+        (
+            to_json(_col(quote_sql_identifier(name)))
+            if name in map_columns
+            else _col(quote_sql_identifier(name))
+        )
+        for name in df.columns
+    ]
+    copy = "__scd2_batch_copy"
+    df = (
+        df.withColumn(copy, row_number().over(Window.partitionBy(*row_identity).orderBy(_lit(1))))
+        .filter(_col(copy) == 1)
+        .drop(copy)
+    )
     duplicate = (
         df.groupBy(*keys)
         .agg(_count(_lit(1)).alias("__scd2_batch_rows"))
@@ -506,9 +525,9 @@ def normalize_scd2_batch(df: DataFrame, entity: EntityMetadata, cfg: SCDConfig) 
     if duplicate:
         values = {key: duplicate[0][index] for index, key in enumerate(entity.merge_columns)}
         raise ValueError(
-            f"Entity '{entity.entityid}': the batch has more than one row for business key "
-            f"{values}; without scd.sequence_by an SCD2 merge needs one row per key per "
-            "batch (declare scd.sequence_by to apply the latest row per key)"
+            f"Entity '{entity.entityid}': the batch has differing rows for business key "
+            f"{values}; without scd.sequence_by an SCD2 merge can't tell which is latest "
+            "(declare scd.sequence_by to apply the latest row per key)"
         )
     return df
 

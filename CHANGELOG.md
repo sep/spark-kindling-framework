@@ -84,8 +84,9 @@ All notable changes to spark-kindling are documented here.
   with `DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE` when two of
   them were newer than the current version, and the memory merge copied the
   current version once per row (so two stale events left two identical
-  current versions). Without `scd.sequence_by` nothing orders such rows, and
-  the batch is rejected with an error naming the key.
+  current versions). Without `scd.sequence_by`, exact duplicate rows collapse
+  to one, and a key whose rows differ is rejected with an error naming it
+  (nothing orders them).
 - **SCD2 effective_from is staged once per merge.** Without
   `scd.sequence_by`, the Delta SCD2 merge now captures one processing-time
   instant on the driver (as the memory provider already did) and stages it as
