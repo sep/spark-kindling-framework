@@ -322,6 +322,12 @@ Proposed in this revision, for confirmation:
 3. **A provenance-only difference also never triggers an SCD2 in-place
    update** (it is excluded from the untracked comparison, not only from the
    tracked one), so an unchanged current row is not rewritten on every load.
+   Confirmed 2026-10-19: the stamp is built per run, so every incoming row of a
+   keyed merge carries a new one; counting it would rewrite every current row
+   on every load (a daily full load of 1M rows with 100 real changes would
+   rewrite 1M). With this rule, `__provenance` names the run that last
+   *changed* the row or version, not the last run that saw it. Append and
+   insert-only tables are unaffected: each row is written once.
 4. **Eligibility of the settings default:** Delta and memory providers; not
    read-only, SQL, companion or `system.*` entities.
 
