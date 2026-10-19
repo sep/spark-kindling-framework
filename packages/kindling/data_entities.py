@@ -469,6 +469,30 @@ def scd_change_columns(
     return tracked, untracked
 
 
+def scd2_batch_schema(entity: EntityMetadata, batch_schema: StructType) -> StructType:
+    """The declared schema of an SCD2 entity, or, when it declares none, the
+    batch's business columns (without temporal, staging or surrogate key
+    columns, which the merge sets). Used to create a missing SCD2
+    destination from its first batch."""
+    if entity.schema:
+        return entity.schema if isinstance(entity.schema, StructType) else StructType(entity.schema)
+    cfg = scd_config_from_tags(entity)
+    excluded = {
+        name.lower()
+        for name in [cfg.effective_from_column, cfg.effective_to_column, cfg.is_current_column]
+        + surrogate_key_columns(entity)
+    }
+    return StructType(
+        [
+            field
+            for field in batch_schema.fields
+            if field.name.lower() not in excluded
+            and field.name.lower() != "__merge_key"
+            and not field.name.lower().startswith("__scd2_")
+        ]
+    )
+
+
 def augment_schema_for_scd2(schema: StructType, cfg: SCDConfig) -> StructType:
     """Add SCD2 temporal columns (effective_from/to, is_current) to a schema when enabled."""
     schema_struct = schema if isinstance(schema, StructType) else StructType(schema)

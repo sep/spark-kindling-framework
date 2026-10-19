@@ -420,3 +420,31 @@ def test_sql_entity_output_rejected_whatever_its_tags(tags):
     out_provider.check_entity_exists.assert_not_called()
     out_provider.merge_to_entity.assert_not_called()
     out_provider.replace_entity.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "tags, expected",
+    [
+        ({"scd.type": "2"}, "merge"),
+        ({"scd.type": "2", "write.mode": "merge"}, "merge"),
+        ({"scd.type": "2", "write.mode": "append"}, "write"),
+        ({}, "write"),
+        ({"write.mode": "merge"}, "write"),
+    ],
+)
+def test_first_write_of_an_scd2_entity_goes_through_the_merge(tags, expected):
+    """A missing SCD2 table is created by the merge (temporal columns and
+    surrogate keys are set there); other entities keep the plain first write."""
+    dst_entity = Mock(entityid="entity.dst", tags=tags, merge_columns=["id"])
+    out_provider = Mock(spec=_MergeWritableProvider)
+    out_provider.check_entity_exists.return_value = False
+    persist, _ = _make_strategy(dst_entity, out_provider)
+
+    persist(Mock(name="df"))
+
+    if expected == "merge":
+        out_provider.merge_to_entity.assert_called_once()
+        out_provider.write_to_entity.assert_not_called()
+    else:
+        out_provider.write_to_entity.assert_called_once()
+        out_provider.merge_to_entity.assert_not_called()

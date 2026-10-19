@@ -419,6 +419,18 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                     output_provider.append_to_entity(df, output_entity)
                 else:
                     raise _read_only_output_error(output_entity)
+            elif (
+                write_mode != "append"
+                and hasattr(output_provider, "merge_to_entity")
+                and scd_config_from_tags(output_entity).enabled
+            ):
+                # An SCD2 entity's first write must produce the rows the
+                # merge would: temporal columns (effective_from/to,
+                # is_current) and surrogate keys are set by the merge, so a
+                # plain write would land rows that no current view sees and
+                # the next merge cannot match. The providers' merge creates
+                # the missing destination and runs the SCD2 insert path.
+                output_provider.merge_to_entity(df, output_entity)
             else:
                 if isinstance(output_provider, WritableEntityProvider):
                     output_provider.write_to_entity(df, output_entity)

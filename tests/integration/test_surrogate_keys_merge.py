@@ -620,3 +620,64 @@ def test_before_persist_aspect_and_user_transform_both_apply(
     (row,) = memory_provider.read_entity(output).collect()
     assert row["audit"] == "x"
     assert row["product_sk"] == sha256("S2:c1S3:crm")
+
+
+# ── first write through the persist path (no prior ensure_destination) ──────
+
+
+def _persist_through_strategy(spark, provider, entity, rows, schema=BUSINESS_SCHEMA):
+    """A sequential batch run's write: SimpleReadPersistStrategy's persist
+    lambda straight to the provider, nothing ensured beforehand."""
+    entities = {
+        "bronze.src": SimpleNamespace(entityid="bronze.src", tags={}),
+        entity.entityid: entity,
+    }
+    lp = MagicMock(spec=PythonLoggerProvider)
+    lp.get_logger.return_value = MagicMock()
+    registry = Mock()
+    registry.get_provider_for_entity.return_value = provider
+    strategy = SimpleReadPersistStrategy(
+        ep=Mock(),
+        der=_NamedEntityRegistry(entities),
+        tp=MagicMock(),
+        lp=lp,
+        provider_registry=registry,
+        signal_provider=BlinkerSignalProvider(),
+    )
+    pipe = Mock(pipeid="p", input_entity_ids=["bronze.src"], output_entity_id=entity.entityid)
+    strategy.create_pipe_persist_activator(pipe)(spark.createDataFrame(rows, schema))
+
+
+@pytest.mark.parametrize("declared_schema", [True, False], ids=["schema", "schemaless"])
+@pytest.mark.parametrize("keys", [True, False], ids=["with_keys", "without_keys"])
+def test_scd2_first_write_through_persist_runs_the_merge(
+    spark, provider, request, keys, declared_schema
+):
+    """A sequential batch run writes a missing SCD2 table through the merge:
+    the first load gets its temporal columns and keys, and the next one
+    versions on top of it. (It used to be a plain write: NULL effective_from
+    / is_current / keys on Delta, no temporal columns at all on memory.)"""
+    tags = dict(SEQ) if keys else {"scd.sequence_by": "updated_at"}
+    entity = _entity(
+        request, "first_write", tags, schema=BUSINESS_SCHEMA if declared_schema else None
+    )
+    assert not provider.check_entity_exists(entity)
+
+    _persist_through_strategy(spark, provider, entity, [("c1", "crm", "bronze", "L1", TS(1))])
+
+    (first,), closed = _rows(provider, entity)
+    assert closed == []
+    assert first["__is_current"] is True
+    assert first["__effective_from"] == TS(1)
+    assert first["__effective_to"] is None
+    if keys:
+        _assert_keys_match_stored_values(first)
+
+    _persist_through_strategy(spark, provider, entity, [("c1", "crm", "silver", "L1", TS(2))])
+
+    (current,), (closed,) = _rows(provider, entity)
+    assert current["status"] == "silver" and current["__effective_from"] == TS(2)
+    assert closed["__effective_to"] == TS(2) and closed["__is_current"] is False
+    if keys:
+        _assert_keys_match_stored_values(current)
+        assert closed["customer_version_sk"] == first["customer_version_sk"]

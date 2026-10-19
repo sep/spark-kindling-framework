@@ -2308,7 +2308,16 @@ class DeltaEntityProvider(
                 # writing the raw dataframe would skip SCD bookkeeping (an
                 # SCD2 entity's first rows would land with NULL
                 # is_current/effective columns, invisible to current views).
-                self.ensure_entity_table(entity)
+                # A schema-less SCD2 entity is created from the batch's
+                # business columns.
+                if not entity.schema and scd_config_from_tags(entity).enabled:
+                    import copy
+
+                    seeded = copy.copy(entity)
+                    seeded.schema = scd2_batch_schema(entity, df.schema)
+                    self.ensure_entity_table(seeded)
+                else:
+                    self.ensure_entity_table(entity)
             self._merge_to_delta_table(df, entity, table_ref)
 
             duration = time.time() - start_time

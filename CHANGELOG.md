@@ -136,6 +136,16 @@ All notable changes to spark-kindling are documented here.
 
 ### Fixed
 
+- **The first write of an SCD2 entity runs the SCD2 merge.** When the table
+  did not exist yet, a batch run wrote the first batch with a plain write: on
+  Delta its rows landed with NULL `__effective_from`, `__effective_to` and
+  `__is_current` (invisible to the `.current` companion, and the next load
+  inserted the key again instead of versioning it); on the memory provider
+  the temporal columns were missing and the next merge failed. The first
+  write now goes through the merge, which creates the table (from the
+  declared schema, or from the batch's columns when none is declared) and
+  sets the temporal columns and surrogate keys. Other entities keep the plain
+  first write.
 - **`persist.before_persist` and `read.after_read` receivers chain.** Each
   receiver used to get the original DataFrame, and the last non-None return
   won, so one receiver's transform could silently discard another's (a

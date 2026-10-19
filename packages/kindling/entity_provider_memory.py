@@ -20,6 +20,7 @@ from .data_entities import (
     build_null_safe_change_condition,
     column_name_key,
     quote_sql_identifier,
+    scd2_batch_schema,
     scd_change_columns,
     scd_config_from_tags,
     spark_case_sensitive,
@@ -728,18 +729,15 @@ class MemoryEntityProvider(
             if exists:
                 current_df = self.read_entity(entity_metadata)
             else:
-                if entity_metadata.schema is None:
-                    raise ValueError(
-                        f"Memory entity '{entity_metadata.entityid}' has scd.type=2 but no "
-                        "schema defined. A schema is required to bootstrap the SCD2 "
-                        "temporal columns for a not-yet-existing entity."
-                    )
+                # Without a declared schema, the batch's business columns
+                # bootstrap the table (as the Delta merge does).
                 from kindling.surrogate_keys import augment_schema_for_surrogate_keys
 
                 current_df = self.spark.createDataFrame(
                     [],
                     augment_schema_for_surrogate_keys(
-                        augment_schema_for_scd2(entity_metadata.schema, cfg), entity_metadata
+                        augment_schema_for_scd2(scd2_batch_schema(entity_metadata, df.schema), cfg),
+                        entity_metadata,
                     ),
                 )
             now_ts = self.spark.sql("SELECT current_timestamp() AS ts").collect()[0]["ts"]
