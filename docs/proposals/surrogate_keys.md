@@ -336,8 +336,8 @@ the Column / SQL expression from the entity's resolved config.
 `persist.before_persist` receivers, and gives each receiver the original DataFrame. A
 `SurrogateKeyAspect` returning a DataFrame with the key column can therefore be silently
 overwritten by a user's `before_persist` transform, or overwrite it. Receivers have to
-chain (each sees the previous one's output) before the batch aspect is safe. The same fix
-serves provenance stamping.
+chain (each sees the previous one's output) before the batch aspect is safe. Provenance
+stamping does not depend on the fix: the persist step adds its stamp after the receivers.
 
 **Staged effective_from.** Today the insert clause writes `staged.<sequence_by>`, or
 `current_timestamp()` when there is none. The revised merge computes it once as a staged
@@ -366,8 +366,11 @@ expressions before the MERGE.
     without the key columns), so a tracked SCD1 change doesn't rewrite a `uuid4` key.
     A deterministic key would be rewritten with the same value, but one rule for all
     strategies keeps it simple.
-  The same insert-only class is what a "frozen" provenance column would use
-  (`provenance_stamping.md`).
+  Provenance stamping's created stamp (`__provenance`, `provenance_stamping.md`) is
+  insert-only too and joins this set. Unlike a key it is supplied by the incoming batch,
+  not minted in the merge, so the SCD2 merge must not drop it the way it drops incoming
+  key columns. Its optional last-changed stamp is not insert-only: it is written with
+  the untracked columns but never compared.
 - Closing a version (setting effective_to / is_current) never touches keys.
 
 The internal routing key keeps its current expression. It is never stored, so it can

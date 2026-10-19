@@ -5,7 +5,9 @@
 **Related:** `docs/guide/data_entities.md` (SCD2 tags, including
 `scd.tracked`), `fan_in_upsert_pipes.md` (plans explicit-column merges in the
 same SCD1 code; sequence the two together), `provenance_stamping.md` (its
-column must be untracked), `kindling_ext_databricks` AUTO CDC lowering.
+created stamp is insert-only; its optional last-changed stamp is written like
+an untracked column but never compared), `kindling_ext_databricks` AUTO CDC
+lowering.
 
 ## Problem
 
@@ -95,8 +97,9 @@ documented divergence if SCD1 is ever lowered.
   evolution and lists insert values explicitly).
 - **Untracked column missing from the incoming data:** skipped.
 - **Nested types:** `build_null_safe_change_condition` handles top-level maps
-  only; a struct containing a map (e.g. a provenance struct) needs nested
-  handling or the hash path if it were ever compared.
+  only; a struct containing a map needs nested handling or the hash path if it
+  were ever compared. The provenance stamps are such structs, but they are
+  never compared (`provenance_stamping.md`).
 
 ## Decisions (2026-10-19)
 
@@ -112,8 +115,12 @@ documented divergence if SCD1 is ever lowered.
    providers, plus the AUTO CDC mapping and the snapshot-lowering fix, in one
    PR.
 
-Still open: in-place vs frozen per column for a provenance column (see
-`provenance_stamping.md`), to settle with that proposal.
+Provenance columns (resolved in `provenance_stamping.md`, "How the merges
+treat the stamps"): the created stamp is frozen, an insert-only column as in
+`surrogate_keys.md`. The optional last-changed stamp is updated in place: it is
+in the SCD2 touch set and the SCD1 update set, but left out of both change
+tests, so it moves only when the row is written for another reason, and never
+opens an SCD2 version or triggers an SCD1 update by itself.
 
 ## Size and risks
 
