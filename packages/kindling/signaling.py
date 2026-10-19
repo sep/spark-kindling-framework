@@ -24,7 +24,6 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Type
 
 from injector import inject
-
 from kindling.injection import GlobalInjector
 
 _signals_logger = logging.getLogger("kindling.signals")
@@ -135,6 +134,37 @@ class SignalEmitter:
             signal = self._signal_provider.create_signal(signal_name)
 
         return signal.send(self, **kwargs)
+
+    def emit_chained(
+        self, signal_name: str, chain_key: str, accept: Callable[[Any], bool], **kwargs
+    ) -> Tuple[Any, List[Tuple[Callable, Any]]]:
+        """Emit a signal whose receivers transform one payload value in turn.
+
+        Each receiver is called with ``kwargs[chain_key]`` set to the value
+        the previous receiver returned, when ``accept`` takes that return
+        (a receiver returning None, or anything ``accept`` rejects, leaves
+        the value unchanged). Returns ``(final value, [(receiver, return)])``.
+        Used for the DataFrame-transforming signals (``persist.before_persist``,
+        ``read.after_read``), so one receiver's transform can never silently
+        discard another's.
+        """
+        value = kwargs.get(chain_key)
+        provider = getattr(self, "_signal_provider", None)
+        signal = None
+        if provider is not None:
+            signal = provider.get_signal(signal_name) or provider.create_signal(signal_name)
+        # Only signal classes that implement chaining (BlinkerSignalWrapper)
+        # chain; checked on the type so mock providers fall through.
+        if signal is not None and callable(getattr(type(signal), "send_chained", None)):
+            return signal.send_chained(self, chain_key, accept, **kwargs)
+        # Otherwise (no provider, or a Signal without chaining support) go
+        # through emit(): every receiver sees the original value and the
+        # last accepted return wins.
+        results = self.emit(signal_name, **kwargs)
+        for _, retval in results or []:
+            if accept(retval):
+                value = retval
+        return value, results
 
     def get_emitted_signals(self) -> List[str]:
         """Return list of signals this emitter can emit.
@@ -300,6 +330,25 @@ class BlinkerSignalWrapper(Signal):
     def send(self, sender: Any, **kwargs) -> List[Tuple[Callable, Any]]:
         """Send signal via Blinker."""
         return self._signal.send(sender, **kwargs)
+
+    def send_chained(
+        self, sender: Any, chain_key: str, accept: Callable[[Any], bool], **kwargs
+    ) -> Tuple[Any, List[Tuple[Callable, Any]]]:
+        """Send to each receiver in turn, threading ``kwargs[chain_key]``.
+
+        A receiver's return value replaces ``kwargs[chain_key]`` for the next
+        receiver when ``accept`` takes it. See ``SignalEmitter.emit_chained``.
+        """
+        value = kwargs.get(chain_key)
+        if getattr(self._signal, "is_muted", False):
+            return value, []
+        results = []
+        for receiver in self._signal.receivers_for(sender):
+            retval = receiver(sender, **{**kwargs, chain_key: value})
+            results.append((receiver, retval))
+            if accept(retval):
+                value = retval
+        return value, results
 
     def has_receivers_for(self, sender: Any) -> bool:
         """Check if Blinker signal has receivers."""

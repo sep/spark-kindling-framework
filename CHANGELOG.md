@@ -92,6 +92,12 @@ All notable changes to spark-kindling are documented here.
 
 ### Fixed
 
+- **`persist.before_persist` and `read.after_read` receivers chain.** Each
+  receiver used to get the original DataFrame, and the last non-None return
+  won, so one receiver's transform could silently discard another's (a
+  `DataSignals` handler's dispatcher returns its input even when it changes
+  nothing). Each receiver now gets the DataFrame the previous receiver
+  returned.
 - **A Delta SCD2 snapshot no longer closes unchanged rows with null tracked
   columns.** With `scd.source_kind: snapshot` (or `scd.close_on_missing`), a
   key present in the batch whose tracked columns were unchanged but
