@@ -528,3 +528,14 @@ def test_null_safe_change_condition_is_never_null():
         == "(NOT (s.`a` <=> t.`a`)) OR (NOT (s.`b` <=> t.`b`))"
     )
     assert build_null_safe_change_condition("s", "t", []) == "false"
+
+
+def test_validate_scd_config_scd2_staging_prefix_in_schema_raises_value_error():
+    entity = make_entity(
+        merge_columns=["customer_id"],
+        tags={"scd.type": "2"},
+        schema=make_schema("customer_id", "__scd2_action"),
+    )
+
+    with pytest.raises(ValueError, match="__scd2_.*reserved"):
+        _validate_scd_config(entity)

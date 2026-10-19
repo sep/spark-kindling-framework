@@ -46,6 +46,16 @@ All notable changes to spark-kindling are documented here.
   sequence value with the current version's `scd.sequence_by` value instead
   of its `__effective_from`, so an older event never overwrites a newer
   in-place update.
+- **SCD2 merges add new columns to the table.** A batch carrying a column
+  the SCD2 table does not have used to fail the MERGE (Delta) or the change
+  comparison (memory). The table now gains the column, as with the default
+  keyed merge: a new untracked column lands on each current version in
+  place, and a new tracked column opens a new version for every key that now
+  carries a value. `schema.drift: warn` / `fail` still apply first.
+- **Column names starting with `__scd2_` are reserved on SCD2 entities**,
+  like `__merge_key`: registration rejects them in the declared schema and
+  both providers reject them in an incoming batch, because the merge uses
+  such columns for staging and would overwrite them.
 - **Kindling dependencies are pinned as PyPI versions.** `kindling package
   init` scaffolds `==` pins for `spark-kindling`, the SDK and the CLI in the
   package's `dev` group instead of release wheel URLs, unless the repo root

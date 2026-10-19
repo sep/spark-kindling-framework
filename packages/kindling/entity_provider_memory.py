@@ -18,6 +18,7 @@ from .data_entities import (
     SCDConfig,
     augment_schema_for_scd2,
     build_null_safe_change_condition,
+    quote_sql_identifier,
     scd_change_columns,
     scd_config_from_tags,
 )
@@ -31,8 +32,18 @@ from .injection import GlobalInjector
 from .spark_config import get_or_create_spark_session
 from .spark_log_provider import PythonLoggerProvider
 
+# Staging helper columns. Like the Delta provider, every incoming column
+# named __merge_key or starting with __scd2_ is refused, so the helpers can
+# never collide with a business column.
+_SCD2_MERGE_KEY_COLUMN = "__merge_key"
+_SCD2_RESERVED_PREFIX = "__scd2_"
 _SOURCE_PRESENT = "__scd2_source_present"
 _SOURCE_DELETE = "__scd2_source_delete"
+
+
+def _qcol(name: str, alias: Optional[str] = None):
+    """Column reference by literal name (``a.b`` is one column, not a path)."""
+    return col(quote_sql_identifier(name, alias))
 
 
 def _memory_scd1_merge(
@@ -63,7 +74,7 @@ def _memory_scd1_merge(
                 incoming_df.alias("new")
                 .join(current_df.alias("old"), on=business_keys, how="inner")
                 .where(f"NOT ({change_condition})")
-                .select(*business_keys)
+                .select(*[_qcol(key) for key in business_keys])
             )
             replacing_df = incoming_df.join(unchanged_keys, on=business_keys, how="left_anti")
     untouched = current_df.join(replacing_df, on=business_keys, how="left_anti")
@@ -108,15 +119,37 @@ def _memory_scd2_merge(
     current_df = current_df.toDF(*current_df.columns)
     incoming_df = incoming_df.toDF(*incoming_df.columns)
 
+    reserved = [
+        column
+        for column in incoming_df.columns
+        if column == _SCD2_MERGE_KEY_COLUMN or column.startswith(_SCD2_RESERVED_PREFIX)
+    ]
+    if reserved:
+        raise ValueError(
+            f"Incoming DataFrame contains reserved column(s) {reserved}: "
+            f"'{_SCD2_MERGE_KEY_COLUMN}' and '{_SCD2_RESERVED_PREFIX}*' names are "
+            "reserved for SCD2 merge staging. Rename them before writing to an "
+            "SCD2 entity."
+        )
+
     business_keys = entity_metadata.merge_columns
     temporal_columns = {cfg.effective_from_column, cfg.effective_to_column, cfg.is_current_column}
+
+    # Batch columns the table does not have yet (additive schema): give the
+    # current rows typed nulls so they compare (and project) like the Delta
+    # provider's evolved table.
+    for column in incoming_df.columns:
+        if column not in current_df.columns and column not in temporal_columns:
+            current_df = current_df.withColumn(
+                column, lit(None).cast(incoming_df.schema[column].dataType)
+            )
 
     if cfg.sequence_by and cfg.sequence_by not in incoming_df.columns:
         raise ValueError(
             f"Entity '{entity_metadata.entityid}': scd.sequence_by column "
             f"'{cfg.sequence_by}' is missing from the incoming DataFrame"
         )
-    if cfg.sequence_by and incoming_df.filter(col(cfg.sequence_by).isNull()).head(1):
+    if cfg.sequence_by and incoming_df.filter(_qcol(cfg.sequence_by).isNull()).head(1):
         raise ValueError(
             f"Entity '{entity_metadata.entityid}': scd.sequence_by column "
             f"'{cfg.sequence_by}' contains null values in the incoming batch; "
@@ -128,8 +161,8 @@ def _memory_scd2_merge(
     # current version in place.
     tracked_columns, untracked_columns = scd_change_columns(cfg, incoming_df.columns, business_keys)
 
-    historical_rows = current_df.filter(col(cfg.is_current_column) == lit(False))
-    current_rows = current_df.filter(col(cfg.is_current_column) == lit(True))
+    historical_rows = current_df.filter(_qcol(cfg.is_current_column) == lit(False))
+    current_rows = current_df.filter(_qcol(cfg.is_current_column) == lit(True))
 
     upserts_df = incoming_df
     deletes_df = None
@@ -160,12 +193,16 @@ def _memory_scd2_merge(
     joined = current_rows.alias("target").join(
         source_df.alias("source"), on=business_keys, how="left"
     )
-    present = col(f"source.{_SOURCE_PRESENT}").isNotNull()
-    is_delete = coalesce(col(f"source.{_SOURCE_DELETE}"), lit(False))
+    present = _qcol(_SOURCE_PRESENT, "source").isNotNull()
+    is_delete = coalesce(_qcol(_SOURCE_DELETE, "source"), lit(False))
 
     if cfg.optimize_unchanged:
-        hash_source = sha2(to_json(struct(*[col(f"source.{c}") for c in tracked_columns])), 256)
-        hash_target = sha2(to_json(struct(*[col(f"target.{c}") for c in tracked_columns])), 256)
+        hash_source = sha2(
+            to_json(struct(*[_qcol(c, "source").alias(c) for c in tracked_columns])), 256
+        )
+        hash_target = sha2(
+            to_json(struct(*[_qcol(c, "target").alias(c) for c in tracked_columns])), 256
+        )
         tracked_change = hash_source != hash_target
     else:
         tracked_change = expr(
@@ -179,8 +216,8 @@ def _memory_scd2_merge(
     applies = present
     if cfg.sequence_by:
         applies = present & (
-            col(f"target.{cfg.sequence_by}").isNull()
-            | (col(f"source.{cfg.sequence_by}") > col(f"target.{cfg.sequence_by}"))
+            _qcol(cfg.sequence_by, "target").isNull()
+            | (_qcol(cfg.sequence_by, "source") > _qcol(cfg.sequence_by, "target"))
         )
 
     # close: a tracked change (re-versioned) or a delete (closed only).
@@ -201,10 +238,11 @@ def _memory_scd2_merge(
     # missing (snapshot): the key is absent from the batch.
     missing_cond = ~present if cfg.close_on_missing else lit(False)
 
-    close_value = col(f"source.{cfg.sequence_by}") if cfg.sequence_by else lit(now_ts)
+    close_value = _qcol(cfg.sequence_by, "source") if cfg.sequence_by else lit(now_ts)
     current_projection = []
     for column in current_rows.columns:
-        target_value = col(column) if column in business_keys else col(f"target.{column}")
+        # Using-join keys resolve unqualified; everything else from target.
+        target_value = _qcol(column) if column in business_keys else _qcol(column, "target")
         if column == cfg.effective_to_column:
             value = (
                 when(close_cond, close_value)
@@ -214,24 +252,20 @@ def _memory_scd2_merge(
         elif column == cfg.is_current_column:
             value = when(close_cond | missing_cond, lit(False)).otherwise(target_value)
         elif column in untracked_columns:
-            value = when(touch_cond, col(f"source.{column}")).otherwise(target_value)
+            value = when(touch_cond, _qcol(column, "source")).otherwise(target_value)
         else:
             value = target_value
         current_projection.append(value.alias(column))
-    # An untracked column the table does not have yet lands on touched rows.
-    current_projection.extend(
-        when(touch_cond, col(f"source.{column}")).alias(column)
-        for column in untracked_columns
-        if column not in current_rows.columns
-    )
     current_versions = joined.select(*current_projection)
 
-    new_effective_from = col(f"source.{cfg.sequence_by}") if cfg.sequence_by else lit(now_ts)
+    new_effective_from = _qcol(cfg.sequence_by, "source") if cfg.sequence_by else lit(now_ts)
     new_versions_from_changes = (
         joined.where(close_cond & ~is_delete)
         .select(
             *[
-                col(column) if column in business_keys else col(f"source.{column}")
+                (_qcol(column) if column in business_keys else _qcol(column, "source")).alias(
+                    column
+                )
                 for column in upserts_df.columns
             ],
             new_effective_from.alias(cfg.effective_from_column),
@@ -244,7 +278,7 @@ def _memory_scd2_merge(
     new_versions_from_new_keys = (
         new_match.withColumn(
             cfg.effective_from_column,
-            col(cfg.sequence_by) if cfg.sequence_by else lit(now_ts),
+            _qcol(cfg.sequence_by) if cfg.sequence_by else lit(now_ts),
         )
         .withColumn(cfg.effective_to_column, lit(None).cast(TimestampType()))
         .withColumn(cfg.is_current_column, lit(True))

@@ -43,6 +43,9 @@ from .entity_provider import (
 
 _SCD2_NULL_SENTINEL = "__null__"
 _SCD2_MERGE_KEY_COLUMN = "__merge_key"
+# Every SCD2 staging helper column starts with this prefix; incoming
+# business columns may not (the merge would overwrite them).
+_SCD2_RESERVED_PREFIX = "__scd2_"
 # Staged-row action for the SCD2 MERGE: which clause a staged row takes.
 _SCD2_ACTION_COLUMN = "__scd2_action"
 _SCD2_ACTION_INSERT = "insert"
@@ -126,29 +129,36 @@ class SCD1MergeStrategy(DeltaMergeStrategy):
         """
         builder = delta_table.alias("old").merge(source=df.alias("new"), condition=merge_condition)
         update_condition = _scd1_change_condition(delta_table, df, entity)
+        _execute_with_schema_evolution(
+            builder,
+            df.sparkSession,
+            lambda b: _when_matched_update_all(b, update_condition).whenNotMatchedInsertAll(),
+        )
 
-        if hasattr(builder, "withSchemaEvolution"):
-            _when_matched_update_all(
-                builder.withSchemaEvolution(), update_condition
-            ).whenNotMatchedInsertAll().execute()
-            return
 
-        # Delta < 3.2 compatibility path.
-        spark = df.sparkSession
-        conf_key = "spark.databricks.delta.schema.autoMerge.enabled"
-        previous = spark.conf.get(conf_key, None)
-        spark.conf.set(conf_key, "true")
-        try:
-            (
-                _when_matched_update_all(builder, update_condition)
-                .whenNotMatchedInsertAll()
-                .execute()
-            )
-        finally:
-            if previous is None:
-                spark.conf.unset(conf_key)
-            else:
-                spark.conf.set(conf_key, previous)
+def _execute_with_schema_evolution(builder, spark, add_clauses) -> None:
+    """Execute a MERGE with additive schema evolution enabled.
+
+    ``add_clauses`` takes the merge builder and returns it with its clauses.
+    ``DeltaMergeBuilder.withSchemaEvolution()`` exists only from Delta 3.2;
+    on older builders the session-conf mechanism (``schema.autoMerge``) is
+    scoped to this merge and restored afterward.
+    """
+    if hasattr(builder, "withSchemaEvolution"):
+        add_clauses(builder.withSchemaEvolution()).execute()
+        return
+
+    # Delta < 3.2 compatibility path.
+    conf_key = "spark.databricks.delta.schema.autoMerge.enabled"
+    previous = spark.conf.get(conf_key, None)
+    spark.conf.set(conf_key, "true")
+    try:
+        add_clauses(builder).execute()
+    finally:
+        if previous is None:
+            spark.conf.unset(conf_key)
+        else:
+            spark.conf.set(conf_key, previous)
 
 
 def _scd1_change_condition(delta_table, df: DataFrame, entity) -> Optional[str]:
@@ -236,9 +246,12 @@ def _routing_key_column_expr(business_keys: list[str], method: str):
         # Coalesce to sentinel so (None, "x") and ("x", None) produce distinct keys.
         return concat_ws(
             "||",
-            *[coalesce(col(key).cast("string"), lit(_SCD2_NULL_SENTINEL)) for key in business_keys],
+            *[
+                coalesce(col(quote_sql_identifier(key)).cast("string"), lit(_SCD2_NULL_SENTINEL))
+                for key in business_keys
+            ],
         )
-    return sha2(to_json(struct(*[col(key) for key in business_keys])), 256)
+    return sha2(to_json(struct(*[col(quote_sql_identifier(key)) for key in business_keys])), 256)
 
 
 def _routing_key_target_sql(business_keys: list[str], method: str) -> str:
@@ -294,10 +307,17 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
       take a sequence value from. Present keys with nothing to apply are
       staged as KEEP sentinels so the missing-key close skips them.
     """
-    if _SCD2_MERGE_KEY_COLUMN in df.columns:
+    reserved = [
+        column
+        for column in df.columns
+        if column == _SCD2_MERGE_KEY_COLUMN or column.startswith(_SCD2_RESERVED_PREFIX)
+    ]
+    if reserved:
         raise ValueError(
-            f"Incoming DataFrame contains reserved column '{_SCD2_MERGE_KEY_COLUMN}'. "
-            "Rename this column before writing to an SCD2 entity."
+            f"Incoming DataFrame contains reserved column(s) {reserved}: "
+            f"'{_SCD2_MERGE_KEY_COLUMN}' and '{_SCD2_RESERVED_PREFIX}*' names are "
+            "reserved for SCD2 merge staging. Rename them before writing to an "
+            "SCD2 entity."
         )
     cfg = scd_config_from_tags(entity)
     if cfg.sequence_by and cfg.sequence_by not in df.columns:
@@ -308,7 +328,7 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
     # A null sequence value has no position in the ordering: it would stamp
     # null effective columns and make the strictly-later guard evaluate to
     # NULL, silently discarding the row's updates/deletes.
-    if cfg.sequence_by and df.filter(col(cfg.sequence_by).isNull()).head(1):
+    if cfg.sequence_by and df.filter(col(quote_sql_identifier(cfg.sequence_by)).isNull()).head(1):
         raise ValueError(
             f"Entity '{entity.entityid}': scd.sequence_by column "
             f"'{cfg.sequence_by}' contains null values in the incoming batch; "
@@ -323,9 +343,21 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
     # The sequence column is ordering authority, not content: a row whose
     # only difference is a newer sequence value is an in-place update.
     tracked_columns, untracked_columns = scd_change_columns(cfg, df.columns, business_keys)
-    current_target = (
-        delta_table.toDF().filter(col(cfg.is_current_column) == lit(True)).alias("target")
-    )
+    # Batch columns the table does not have yet (additive schema): compare
+    # them against typed nulls, and let the MERGE evolve the table to add
+    # them (a new untracked column lands on the current version in place, a
+    # new tracked column re-versions every key that now carries a value).
+    target_df = delta_table.toDF()
+    new_columns = [
+        column
+        for column in df.columns
+        if column not in target_df.columns and column not in temporal_columns
+    ]
+    for column in new_columns:
+        target_df = target_df.withColumn(column, lit(None).cast(df.schema[column].dataType))
+    current_target = target_df.filter(
+        col(quote_sql_identifier(cfg.is_current_column)) == lit(True)
+    ).alias("target")
 
     # Change-feed deletes are split out before change detection: they close
     # but never insert, and never count as new rows.
@@ -371,7 +403,9 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
 
     source_df = upserts_df
     if cfg.optimize_unchanged:
-        hash_expr = sha2(to_json(struct(*[col(c) for c in tracked_columns])), 256)
+        hash_expr = sha2(
+            to_json(struct(*[col(quote_sql_identifier(c)) for c in tracked_columns])), 256
+        )
         source_df = upserts_df.withColumn(_SCD2_SRC_HASH_COLUMN, hash_expr)
         # SQL mirror of hash_expr: struct field names (the unqualified column
         # names) must match on both sides or the JSON — and thus the hash —
@@ -466,21 +500,29 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
 
     # Every clause is conditional on the staged action (all conditioned
     # clauses, so the delta-spark 2.4 floor's clause-ordering rules hold).
+    def _add_clauses(builder):
+        builder = builder.whenMatchedUpdate(condition=_action_is(_SCD2_ACTION_CLOSE), set=close_set)
+        if touch_rows is not None:
+            builder = builder.whenMatchedUpdate(
+                condition=_action_is(_SCD2_ACTION_TOUCH), set=touch_set
+            )
+        builder = builder.whenNotMatchedInsert(
+            condition=_action_is(_SCD2_ACTION_INSERT), values=insert_values
+        )
+        if cfg.close_on_missing:
+            builder = builder.whenNotMatchedBySourceUpdate(
+                condition=f"{quote_sql_identifier(cfg.is_current_column, 'target')} = true",
+                set=close_set_missing,
+            )
+        return builder
+
     builder = delta_table.alias("target").merge(
         source=staged.alias("staged"), condition=merge_condition
     )
-    builder = builder.whenMatchedUpdate(condition=_action_is(_SCD2_ACTION_CLOSE), set=close_set)
-    if touch_rows is not None:
-        builder = builder.whenMatchedUpdate(condition=_action_is(_SCD2_ACTION_TOUCH), set=touch_set)
-    builder = builder.whenNotMatchedInsert(
-        condition=_action_is(_SCD2_ACTION_INSERT), values=insert_values
-    )
-    if cfg.close_on_missing:
-        builder = builder.whenNotMatchedBySourceUpdate(
-            condition=f"target.{cfg.is_current_column} = true",
-            set=close_set_missing,
-        )
-    builder.execute()
+    if new_columns:
+        _execute_with_schema_evolution(builder, df.sparkSession, _add_clauses)
+    else:
+        _add_clauses(builder).execute()
 
 
 class ReadOnlyEntityError(Exception):

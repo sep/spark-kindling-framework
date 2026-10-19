@@ -700,6 +700,13 @@ def _validate_scd_config(entity: EntityMetadata) -> None:
             f"Entity '{entity.entityid}': column '__merge_key' is reserved for SCD2 "
             "merge staging and must not appear in the entity schema."
         )
+    staging_names = sorted(name for name in schema_names if name.startswith("__scd2_"))
+    if staging_names:
+        raise ValueError(
+            f"Entity '{entity.entityid}': columns {staging_names} use the '__scd2_' "
+            "prefix, which is reserved for SCD2 merge staging, and must not appear "
+            "in the entity schema."
+        )
 
     current_id = cfg.current_entity_id.strip()
     if not current_id or current_id == entity.entityid:

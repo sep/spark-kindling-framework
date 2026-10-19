@@ -396,3 +396,108 @@ def test_scd1_tracked_column_new_to_table_materializes(spark, provider, request)
 
     rows = _scd1_rows(provider, entity)
     assert rows["c1"]["updated_at"] == TS(2), "a new tracked column must land on matched rows"
+
+
+# ── Review fixes: reserved staging columns, additive columns, literal names ──
+
+
+def _with_extra_column(name, data_type=StringType()):
+    return StructType(BUSINESS_SCHEMA + [StructField(name, data_type, True)])
+
+
+@pytest.mark.parametrize(
+    "column",
+    ["__scd2_action", "__scd2_source_present", "__scd2_source_delete", "__merge_key"],
+)
+def test_scd2_rejects_reserved_staging_columns(spark, provider, request, column):
+    """A business column named like a staging helper would be overwritten
+    by the merge (and stored on new versions); both providers refuse it."""
+    entity = _scd2_entity(request, "reserved", {})
+    schema = _with_extra_column(column, BooleanType())
+
+    with pytest.raises(ValueError, match="reserved"):
+        _merge(spark, provider, entity, [("c1", "bronze", "L1", TS(1), False)], schema=schema)
+
+
+NARROW_SCHEMA = StructType([f for f in BUSINESS_SCHEMA if f.name != "load_id"])
+
+
+@pytest.mark.parametrize("form", list(UNTRACKED_TAGS))
+def test_scd2_untracked_column_new_to_table_updates_in_place(spark, provider, request, form):
+    """An existing table on an older schema: the batch brings load_id,
+    which is untracked, so the current version takes it in place (the
+    table gains the column) instead of the merge failing analysis."""
+    entity = _scd2_entity(request, "untracked_evolve", UNTRACKED_TAGS[form])
+    entity.schema = StructType(list(NARROW_SCHEMA.fields) + TEMPORAL_SCHEMA)
+
+    _merge(spark, provider, entity, [("c1", "bronze", TS(1))], schema=NARROW_SCHEMA)
+    (opened,), _ = _versions(provider, entity)
+
+    _merge(spark, provider, entity, [("c1", "bronze", "L2", TS(1))])
+
+    current, closed = _versions(provider, entity)
+    assert closed == [], "a new untracked column must not open a new version"
+    assert current[0]["load_id"] == "L2"
+    assert current[0]["__effective_from"] == opened["__effective_from"]
+
+
+def test_scd2_tracked_column_new_to_table_opens_new_versions(spark, provider, request):
+    entity = _scd2_entity(request, "tracked_evolve", {})
+    entity.schema = StructType(list(NARROW_SCHEMA.fields) + TEMPORAL_SCHEMA)
+
+    _merge(spark, provider, entity, [("c1", "bronze", TS(1))], schema=NARROW_SCHEMA)
+    _merge(spark, provider, entity, [("c1", "bronze", "L2", TS(1))])
+
+    current, closed = _versions(provider, entity)
+    assert current[0]["load_id"] == "L2"
+    assert len(closed) == 1 and closed[0]["load_id"] is None
+
+
+DOTTED_SCHEMA = StructType(
+    [
+        StructField("customer_id", StringType(), False),
+        StructField("status", StringType(), True),
+        StructField("address.city", StringType(), True),
+    ]
+)
+
+
+@pytest.mark.parametrize(
+    "tags", [{}, {"scd.untracked": "address.city"}], ids=["no_tags", "untracked"]
+)
+def test_scd2_literal_dotted_column_name(spark, provider, request, tags):
+    """`address.city` is one column, not a field path into `address`."""
+    entity = _scd2_entity(request, "dotted", tags)
+    entity.schema = StructType(list(DOTTED_SCHEMA.fields) + TEMPORAL_SCHEMA)
+
+    _merge(spark, provider, entity, [("c1", "bronze", "Oslo")], schema=DOTTED_SCHEMA)
+    _merge(spark, provider, entity, [("c1", "bronze", "Bergen")], schema=DOTTED_SCHEMA)
+
+    current, closed = _versions(provider, entity)
+    assert current[0]["address.city"] == "Bergen"
+    if tags:
+        assert closed == [], "an untracked-only change updates in place"
+    else:
+        assert len(closed) == 1 and closed[0]["address.city"] == "Oslo"
+
+
+def test_scd1_untracked_literal_dotted_business_key(spark, provider, request):
+    """A business key named `source.id` is a literal column name."""
+    schema = StructType(
+        [
+            StructField("source.id", StringType(), False),
+            StructField("status", StringType(), True),
+            StructField("load_id", StringType(), True),
+        ]
+    )
+    entity = _scd1_entity(request, "scd1_dotted_key", {"scd.untracked": "load_id"})
+    entity.merge_columns = ["source.id"]
+    entity.schema = schema
+
+    _merge(spark, provider, entity, [("k1", "bronze", "L1")], schema=schema)
+    _merge(spark, provider, entity, [("k1", "bronze", "L2")], schema=schema)  # skipped
+    _merge(spark, provider, entity, [("k1", "silver", "L3")], schema=schema)  # updated
+
+    rows = provider.read_entity(entity).collect()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "silver" and rows[0]["load_id"] == "L3"

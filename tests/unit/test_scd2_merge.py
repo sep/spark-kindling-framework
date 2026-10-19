@@ -68,10 +68,17 @@ def _entity(tags=None):
     )
 
 
-def _mock_delta_table():
+TEMPORAL = ["__effective_from", "__effective_to", "__is_current"]
+
+
+def _mock_delta_table(target_columns=None):
     delta_table = MagicMock(name="delta_table")
     merge_builder = MagicMock(name="merge_builder")
+    delta_table.toDF.return_value.columns = (
+        list(COLUMNS) + TEMPORAL if target_columns is None else target_columns
+    )
     delta_table.alias.return_value = delta_table
+    merge_builder.withSchemaEvolution.return_value = merge_builder
     delta_table.merge.return_value = merge_builder
     merge_builder.whenMatchedUpdate.return_value = merge_builder
     merge_builder.whenNotMatchedInsert.return_value = merge_builder
@@ -88,8 +95,8 @@ def _mock_source_df():
     return df
 
 
-def _execute(tags=None):
-    delta_table, merge_builder = _mock_delta_table()
+def _execute(tags=None, target_columns=None):
+    delta_table, merge_builder = _mock_delta_table(target_columns)
     df = _mock_source_df()
     _execute_scd2_merge(delta_table, df, _entity(tags))
     return delta_table, merge_builder, df
@@ -361,4 +368,40 @@ def test_optimize_unchanged_with_untracked_touch_uses_hash_for_tracked_part():
 
     touch_where = _where_conditions(df)[1]
     assert touch_where.startswith("NOT (source.__scd2_src_hash != ")
+    assert _matched_update(merge_builder, "touch") == {"`updated_at`": "staged.`updated_at`"}
+
+
+# ── reserved staging columns and additive schema ─────────────────────────────
+
+
+@pytest.mark.parametrize("column", ["__merge_key", "__scd2_action", "__scd2_src_hash"])
+def test_incoming_reserved_staging_column_is_rejected(column):
+    delta_table, _ = _mock_delta_table()
+    df = _mock_source_df()
+    df.columns = list(COLUMNS) + [column]
+
+    with pytest.raises(ValueError, match="reserved"):
+        _execute_scd2_merge(delta_table, df, _entity())
+    delta_table.merge.assert_not_called()
+
+
+def test_without_new_columns_the_merge_does_not_evolve_the_schema():
+    _, merge_builder, _ = _execute()
+
+    merge_builder.withSchemaEvolution.assert_not_called()
+
+
+def test_column_new_to_the_table_evolves_the_schema_and_compares_to_typed_null():
+    target = ["customer_id", "name", "status"] + TEMPORAL  # no updated_at yet
+    delta_table, merge_builder = _mock_delta_table(target)
+    df = _mock_source_df()
+    df.schema = StructType([StructField(name, StringType(), True) for name in COLUMNS])
+
+    _execute_scd2_merge(delta_table, df, _entity({"scd.untracked": "updated_at"}))
+
+    merge_builder.withSchemaEvolution.assert_called_once_with()
+    target_df = delta_table.toDF.return_value
+    target_df.withColumn.assert_called_once()
+    name, value = target_df.withColumn.call_args.args
+    assert name == "updated_at" and str(value) == "CAST(lit(None) AS StringType())"
     assert _matched_update(merge_builder, "touch") == {"`updated_at`": "staged.`updated_at`"}
