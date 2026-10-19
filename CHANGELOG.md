@@ -70,7 +70,8 @@ All notable changes to spark-kindling are documented here.
   cache no longer reuses a frame across a write: an entity read both by its
   producer and by a downstream pipe (its own output, or its companion) is not
   cached, so the downstream pipe no longer gets the producer's pre-write
-  frame.
+  frame. SDP declaration still rejects a companion read, now with a reason
+  naming the base entity and the pipe producing it.
 - **`kindling env add` / `env update` pin an extension's Kindling extension
   dependencies** from the same release (e.g. SDP for the Databricks
   extension), before the extension itself. `kindling env add

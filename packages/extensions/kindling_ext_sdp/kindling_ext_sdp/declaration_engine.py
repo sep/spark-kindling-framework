@@ -536,6 +536,32 @@ class DeclarationEngine(ABC):
                 continue
 
             provider = _provider_type(entity)
+            companion_of = (entity.tags or {}).get("scd.companion_of")
+            if companion_of:
+                # The current-row companion is runner-only (a filtered read
+                # of its base); SDP has no dataset by that name, and lowering
+                # it to a declared view is not supported yet. Same code as
+                # any undeclarable read so adapter-level exemptions (temporal
+                # chain lowering) still apply.
+                produced_by = producers.get(companion_of)
+                base_note = (
+                    f"its base '{companion_of}' is produced by pipe '{produced_by}' "
+                    "in this pipeline"
+                    if produced_by is not None
+                    else f"its base is '{companion_of}'"
+                )
+                issues.append(
+                    DeclarationIssue(
+                        pipe_id=pipe.pipeid,
+                        code="external_input_not_declarable",
+                        reason=(
+                            f"input '{entity_id}' is an SCD2 current-row companion "
+                            f"({base_note}); companions are not declared as SDP "
+                            "datasets — read the base entity and filter to current rows"
+                        ),
+                    )
+                )
+                continue
             if entity.is_sql_entity or provider not in DECLARABLE_EXTERNAL_READ_PROVIDER_TYPES:
                 issues.append(
                     DeclarationIssue(
