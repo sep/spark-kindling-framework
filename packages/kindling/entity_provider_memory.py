@@ -21,6 +21,7 @@ from .data_entities import (
     quote_sql_identifier,
     scd_change_columns,
     scd_config_from_tags,
+    surrogate_key_columns,
 )
 from .entity_provider import (
     BaseEntityProvider,
@@ -61,9 +62,17 @@ def _memory_scd1_merge(
     matched row, as the Delta merge does when it drops the condition.
     """
     business_keys = entity_metadata.merge_columns
+    key_columns = surrogate_key_columns(entity_metadata)
+    case_sensitive = False
+    if key_columns:
+        from kindling.surrogate_keys import session_case_sensitive
+
+        case_sensitive = session_case_sensitive(incoming_df.sparkSession)
     replacing_df = incoming_df
     if cfg is not None and cfg.untracked_columns:
-        tracked_columns, _ = scd_change_columns(cfg, incoming_df.columns, business_keys)
+        tracked_columns, _ = scd_change_columns(
+            cfg, incoming_df.columns, business_keys, key_columns, case_sensitive
+        )
         if all(column in current_df.columns for column in tracked_columns):
             current_df = current_df.toDF(*current_df.columns)
             incoming_df = incoming_df.toDF(*incoming_df.columns)
@@ -78,7 +87,52 @@ def _memory_scd1_merge(
             )
             replacing_df = incoming_df.join(unchanged_keys, on=business_keys, how="left_anti")
     untouched = current_df.join(replacing_df, on=business_keys, how="left_anti")
+    if key_columns:
+        replacing_df = _keep_existing_keys(
+            current_df, replacing_df, business_keys, key_columns, case_sensitive
+        )
     return untouched.unionByName(replacing_df, allowMissingColumns=True)
+
+
+def _keep_existing_keys(
+    current_df: DataFrame,
+    replacing_df: DataFrame,
+    business_keys: List[str],
+    key_columns: List[str],
+    case_sensitive: bool,
+) -> DataFrame:
+    """Surrogate keys are insert-only: a replaced (matched) row keeps the key
+    it has; only rows for new business keys take the incoming key. Mirrors
+    the Delta SCD1 merge's explicit update set without key columns."""
+
+    def norm(name: str) -> str:
+        return name if case_sensitive else name.lower()
+
+    wanted = {norm(name) for name in key_columns}
+    current_keys = [column for column in current_df.columns if norm(column) in wanted]
+    if not current_keys:
+        return replacing_df
+    incoming_keys = {norm(c): c for c in replacing_df.columns if norm(c) in wanted}
+    existing = current_df.select(
+        *[_qcol(key) for key in business_keys],
+        *[
+            _qcol(column).alias(f"__sk_existing_{index}")
+            for index, column in enumerate(current_keys)
+        ],
+        lit(True).alias("__sk_existing_present"),
+    )
+    joined = replacing_df.join(existing, on=business_keys, how="left")
+    present = col("__sk_existing_present").isNotNull()
+    for index, column in enumerate(current_keys):
+        incoming = incoming_keys.get(norm(column))
+        incoming_value = _qcol(incoming) if incoming else lit(None)
+        joined = joined.withColumn(
+            incoming or column,
+            when(present, col(f"__sk_existing_{index}")).otherwise(incoming_value),
+        )
+    return joined.drop(
+        "__sk_existing_present", *[f"__sk_existing_{i}" for i in range(len(current_keys))]
+    )
 
 
 def _memory_insert_only_merge(
@@ -96,6 +150,7 @@ def _memory_scd2_merge(
     entity_metadata: EntityMetadata,
     cfg: SCDConfig,
     now_ts: Any,
+    key_plan: Any = None,
 ) -> DataFrame:
     """Execute an SCD Type 2 upsert as plain DataFrame joins/unions.
 
@@ -110,6 +165,11 @@ def _memory_scd2_merge(
     overwrite. ``now_ts`` is a single captured instant reused for every
     timestamp this call would otherwise stamp with current_timestamp(), so a
     closed row's effective_to and its replacement's effective_from agree.
+
+    Surrogate keys (``key_plan``, resolved from the entity when omitted) are
+    computed on the new versions only, from their final effective_from, and
+    never rewritten: current and closed versions keep the keys they have,
+    and incoming key columns are ignored — as in the Delta merge.
     """
     # A catalog/temp-view-backed DataFrame (current_df typically comes from
     # self.read_entity(), i.e. spark.table(...)) carries attribute lineage
@@ -131,6 +191,21 @@ def _memory_scd2_merge(
             "reserved for SCD2 merge staging. Rename them before writing to an "
             "SCD2 entity."
         )
+
+    from kindling.surrogate_keys import (
+        drop_surrogate_key_columns,
+        resolve_surrogate_keys,
+        session_case_sensitive,
+        with_scd2_surrogate_keys,
+    )
+
+    if key_plan is None:
+        key_plan = resolve_surrogate_keys(entity_metadata)
+    key_columns = key_plan.key_columns if key_plan is not None else []
+    case_sensitive = False
+    if key_plan is not None:
+        case_sensitive = session_case_sensitive(incoming_df.sparkSession)
+        incoming_df = drop_surrogate_key_columns(incoming_df, key_plan, case_sensitive)
 
     business_keys = entity_metadata.merge_columns
     temporal_columns = {cfg.effective_from_column, cfg.effective_to_column, cfg.is_current_column}
@@ -159,7 +234,9 @@ def _memory_scd2_merge(
     # tracked: a change closes the current version and opens a new one.
     # untracked (incl. sequence_by): a change only to these updates the
     # current version in place.
-    tracked_columns, untracked_columns = scd_change_columns(cfg, incoming_df.columns, business_keys)
+    tracked_columns, untracked_columns = scd_change_columns(
+        cfg, incoming_df.columns, business_keys, key_columns, case_sensitive
+    )
 
     historical_rows = current_df.filter(_qcol(cfg.is_current_column) == lit(False))
     current_rows = current_df.filter(_qcol(cfg.is_current_column) == lit(True))
@@ -283,6 +360,13 @@ def _memory_scd2_merge(
         .withColumn(cfg.effective_to_column, lit(None).cast(TimestampType()))
         .withColumn(cfg.is_current_column, lit(True))
     )
+    if key_plan is not None:
+        new_versions_from_changes = with_scd2_surrogate_keys(
+            new_versions_from_changes, key_plan, cfg.effective_from_column, case_sensitive
+        )
+        new_versions_from_new_keys = with_scd2_surrogate_keys(
+            new_versions_from_new_keys, key_plan, cfg.effective_from_column, case_sensitive
+        )
 
     result = historical_rows
     for frame in (current_versions, new_versions_from_changes, new_versions_from_new_keys):
@@ -630,8 +714,13 @@ class MemoryEntityProvider(
                         "schema defined. A schema is required to bootstrap the SCD2 "
                         "temporal columns for a not-yet-existing entity."
                     )
+                from kindling.surrogate_keys import augment_schema_for_surrogate_keys
+
                 current_df = self.spark.createDataFrame(
-                    [], augment_schema_for_scd2(entity_metadata.schema, cfg)
+                    [],
+                    augment_schema_for_surrogate_keys(
+                        augment_schema_for_scd2(entity_metadata.schema, cfg), entity_metadata
+                    ),
                 )
             now_ts = self.spark.sql("SELECT current_timestamp() AS ts").collect()[0]["ts"]
             result = _memory_scd2_merge(current_df, df, entity_metadata, cfg, now_ts)

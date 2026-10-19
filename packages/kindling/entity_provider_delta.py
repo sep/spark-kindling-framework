@@ -53,6 +53,12 @@ _SCD2_ACTION_CLOSE = "close"
 _SCD2_ACTION_TOUCH = "touch"
 _SCD2_ACTION_KEEP = "keep"
 _SCD2_SRC_HASH_COLUMN = "__scd2_src_hash"
+# The staged effective_from of a new version: the sequence_by value, or a
+# batch timestamp captured once on the driver. Insert, close and the
+# surrogate version key all read it.
+_SCD2_EFFECTIVE_FROM_COLUMN = "__scd2_effective_from"
+# Delta table property recording the surrogate key encoding.
+_SURROGATE_ENCODING_PROPERTY = "kindling.surrogate.encoding"
 
 
 class DeltaMergeStrategy(ABC):
@@ -66,7 +72,12 @@ class DeltaMergeStrategy(ABC):
         entity,
         merge_condition: str,
     ) -> None:
-        """Apply a merge strategy to a Delta table."""
+        """Apply a merge strategy to a Delta table.
+
+        Built-in strategies also accept ``key_plan`` (a driver-resolved
+        ``SurrogateKeyPlan``); callers pass it only for entities with
+        surrogate keys.
+        """
 
 
 class DeltaMergeStrategies:
@@ -128,7 +139,23 @@ class SCD1MergeStrategy(DeltaMergeStrategy):
         to this merge and restored afterward.
         """
         builder = delta_table.alias("old").merge(source=df.alias("new"), condition=merge_condition)
-        update_condition = _scd1_change_condition(delta_table, df, entity)
+        key_columns = surrogate_key_columns(entity)
+        case_sensitive = _session_case_sensitive(df) if key_columns else False
+        update_condition = _scd1_change_condition(
+            delta_table, df, entity, key_columns, case_sensitive
+        )
+        if key_columns:
+            # Surrogate keys are insert-only: the matched update is an
+            # explicit set without them, so an update never rewrites a key.
+            update_set = _scd1_update_set(df.columns, key_columns, case_sensitive)
+            _execute_with_schema_evolution(
+                builder,
+                df.sparkSession,
+                lambda b: _when_matched_update_set(
+                    b, update_condition, update_set
+                ).whenNotMatchedInsertAll(),
+            )
+            return
         _execute_with_schema_evolution(
             builder,
             df.sparkSession,
@@ -161,7 +188,33 @@ def _execute_with_schema_evolution(builder, spark, add_clauses) -> None:
             spark.conf.set(conf_key, previous)
 
 
-def _scd1_change_condition(delta_table, df: DataFrame, entity) -> Optional[str]:
+def _session_case_sensitive(df: DataFrame) -> bool:
+    """The batch session's ``spark.sql.caseSensitive`` (False by default)."""
+    from kindling.surrogate_keys import session_case_sensitive
+
+    return session_case_sensitive(df.sparkSession)
+
+
+def _scd1_update_set(columns, key_columns, case_sensitive: bool) -> Dict[str, str]:
+    """Explicit SCD1 update assignments for every batch column except keys."""
+    keys = {name if case_sensitive else name.lower() for name in key_columns}
+    return {
+        quote_sql_identifier(column): quote_sql_identifier(column, "new")
+        for column in columns
+        if (column if case_sensitive else column.lower()) not in keys
+    }
+
+
+def _when_matched_update_set(builder, condition: Optional[str], update_set: Dict[str, str]):
+    """``whenMatchedUpdate(set=...)``, conditional only when a condition applies."""
+    if condition is None:
+        return builder.whenMatchedUpdate(set=update_set)
+    return builder.whenMatchedUpdate(condition=condition, set=update_set)
+
+
+def _scd1_change_condition(
+    delta_table, df: DataFrame, entity, key_columns=None, case_sensitive: bool = False
+) -> Optional[str]:
     """Matched-row update condition for the SCD1 merge, or None (update all).
 
     Only entities declaring ``scd.untracked`` get change detection: a
@@ -174,7 +227,9 @@ def _scd1_change_condition(delta_table, df: DataFrame, entity) -> Optional[str]:
     cfg = scd_config_from_tags(entity)
     if not cfg.untracked_columns:
         return None
-    tracked_columns, _ = scd_change_columns(cfg, df.columns, entity.merge_columns)
+    tracked_columns, _ = scd_change_columns(
+        cfg, df.columns, entity.merge_columns, key_columns, case_sensitive
+    )
     target_columns = set(delta_table.toDF().columns)
     if any(column not in target_columns for column in tracked_columns):
         return None
@@ -236,9 +291,10 @@ class SCD2MergeStrategy(DeltaMergeStrategy):
         df: DataFrame,
         entity,
         merge_condition: str,
+        key_plan=None,
     ) -> None:
         """Run an SCD2 merge for changed/new business keys."""
-        _execute_scd2_merge(delta_table, df, entity)
+        _execute_scd2_merge(delta_table, df, entity, key_plan=key_plan)
 
 
 def _routing_key_column_expr(business_keys: list[str], method: str):
@@ -270,7 +326,16 @@ def _routing_key_target_sql(business_keys: list[str], method: str) -> str:
     return f"sha2(to_json(named_struct({', '.join(named_struct_args)})), 256)"
 
 
-def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
+def _capture_batch_micros(spark) -> int:
+    """One processing-time instant for a whole SCD2 merge, captured on the driver.
+
+    Integer microseconds keep the value exact and timezone-independent when
+    it is turned back into a timestamp (``timestamp_micros``).
+    """
+    return int(spark.sql("SELECT unix_micros(current_timestamp()) AS us").collect()[0]["us"])
+
+
+def _execute_scd2_merge(delta_table, df: DataFrame, entity, key_plan=None) -> None:
     """Execute an SCD Type 2 staged-updates merge for a Delta table.
 
     Each incoming row that matches a key's current version is classified:
@@ -306,6 +371,18 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
       close missing keys at processing time — there is no incoming row to
       take a sequence value from. Present keys with nothing to apply are
       staged as KEEP sentinels so the missing-key close skips them.
+
+    effective_from is staged explicitly (``__scd2_effective_from``): the
+    ``sequence_by`` value, or a batch timestamp captured once on the driver.
+    The insert clause, the close clause and the surrogate version key all
+    read that one staged value.
+
+    Surrogate keys (``surrogate.column`` / ``surrogate.durable_column``) are
+    computed on the inserted rows only, from the staged effective_from, and
+    are insert-only: excluded from change detection and from the in-place
+    (touch) update set, never touched by a close. Key columns in the
+    incoming batch are ignored. ``key_plan`` is the driver-resolved plan
+    (the streaming merge passes it); without it, the plan is resolved here.
     """
     reserved = [
         column
@@ -320,6 +397,17 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
             "SCD2 entity."
         )
     cfg = scd_config_from_tags(entity)
+    if key_plan is None:
+        from kindling.surrogate_keys import resolve_surrogate_keys
+
+        key_plan = resolve_surrogate_keys(entity)
+    key_columns = key_plan.key_columns if key_plan is not None else []
+    case_sensitive = False
+    if key_plan is not None:
+        from kindling.surrogate_keys import drop_surrogate_key_columns
+
+        case_sensitive = _session_case_sensitive(df)
+        df = drop_surrogate_key_columns(df, key_plan, case_sensitive)
     if cfg.sequence_by and cfg.sequence_by not in df.columns:
         raise ValueError(
             f"Entity '{entity.entityid}': scd.sequence_by column "
@@ -342,7 +430,9 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
     }
     # The sequence column is ordering authority, not content: a row whose
     # only difference is a newer sequence value is an in-place update.
-    tracked_columns, untracked_columns = scd_change_columns(cfg, df.columns, business_keys)
+    tracked_columns, untracked_columns = scd_change_columns(
+        cfg, df.columns, business_keys, key_columns, case_sensitive
+    )
     # Batch columns the table does not have yet (additive schema): compare
     # them against typed nulls, and let the MERGE evolve the table to add
     # them (a new untracked column lands on the current version in place, a
@@ -381,13 +471,16 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
     def _guarded(condition: str) -> str:
         return f"({condition}) AND {seq_guard}" if seq_guard else condition
 
-    close_expr = (
-        quote_sql_identifier(cfg.sequence_by, "staged")
-        if cfg.sequence_by
-        else "current_timestamp()"
-    )
+    # The staged effective_from of new versions (and effective_to of the
+    # versions they close): the sequence value, or one processing-time
+    # instant captured on the driver for the whole merge.
+    if cfg.sequence_by:
+        staged_effective_from = col(quote_sql_identifier(cfg.sequence_by))
+    else:
+        staged_effective_from = expr(f"timestamp_micros({_capture_batch_micros(df.sparkSession)})")
+    staged_effective_from_ref = quote_sql_identifier(_SCD2_EFFECTIVE_FROM_COLUMN, "staged")
     close_set = {
-        quote_sql_identifier(cfg.effective_to_column): close_expr,
+        quote_sql_identifier(cfg.effective_to_column): staged_effective_from_ref,
         quote_sql_identifier(cfg.is_current_column): "false",
     }
     # Missing-key closes (snapshot) have no staged row to read a sequence
@@ -452,6 +545,27 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
 
     routing_key_expr = _routing_key_column_expr(business_keys, cfg.routing_key_method)
 
+    def _with_effective_from(frame):
+        return frame.withColumn(_SCD2_EFFECTIVE_FROM_COLUMN, staged_effective_from)
+
+    changed_rows = _with_effective_from(changed_rows)
+    new_rows = _with_effective_from(new_rows)
+    if delete_close_rows is not None:
+        delete_close_rows = _with_effective_from(delete_close_rows)
+
+    # Surrogate keys are minted on the rows that are inserted, and only
+    # there: closes, touches and keep sentinels never carry a key value.
+    changed_inserts, new_inserts = changed_rows, new_rows
+    if key_plan is not None:
+        from kindling.surrogate_keys import with_scd2_surrogate_keys
+
+        changed_inserts = with_scd2_surrogate_keys(
+            changed_rows, key_plan, _SCD2_EFFECTIVE_FROM_COLUMN, case_sensitive
+        )
+        new_inserts = with_scd2_surrogate_keys(
+            new_rows, key_plan, _SCD2_EFFECTIVE_FROM_COLUMN, case_sensitive
+        )
+
     def _stage(frame, action: str, keyed: bool = True):
         merge_key = routing_key_expr if keyed else lit(None).cast("string")
         return frame.withColumn(_SCD2_MERGE_KEY_COLUMN, merge_key).withColumn(
@@ -460,11 +574,11 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
 
     staged_parts = [
         # A NULL merge key never matches: the changed key's new version.
-        _stage(changed_rows, _SCD2_ACTION_INSERT, keyed=False),
+        _stage(changed_inserts, _SCD2_ACTION_INSERT, keyed=False),
         # Keyed: matches and closes the changed key's current version.
         _stage(changed_rows, _SCD2_ACTION_CLOSE),
         # Keyed, matches nothing: the first version of a new key.
-        _stage(new_rows, _SCD2_ACTION_INSERT),
+        _stage(new_inserts, _SCD2_ACTION_INSERT),
     ]
     if touch_rows is not None:
         staged_parts.append(_stage(touch_rows, _SCD2_ACTION_TOUCH))
@@ -482,13 +596,11 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
         quote_sql_identifier(column): quote_sql_identifier(column, "staged")
         for column in source_columns
     }
-    insert_values[quote_sql_identifier(cfg.effective_from_column)] = (
-        quote_sql_identifier(cfg.sequence_by, "staged")
-        if cfg.sequence_by
-        else "current_timestamp()"
-    )
+    insert_values[quote_sql_identifier(cfg.effective_from_column)] = staged_effective_from_ref
     insert_values[quote_sql_identifier(cfg.effective_to_column)] = "NULL"
     insert_values[quote_sql_identifier(cfg.is_current_column)] = "true"
+    for key_column in key_columns:
+        insert_values[quote_sql_identifier(key_column)] = quote_sql_identifier(key_column, "staged")
     target_routing_key_sql = _routing_key_target_sql(business_keys, cfg.routing_key_method)
     merge_condition = (
         f"{target_routing_key_sql} = staged.__merge_key "
@@ -519,7 +631,15 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
     builder = delta_table.alias("target").merge(
         source=staged.alias("staged"), condition=merge_condition
     )
-    if new_columns:
+    # A key column the table does not have yet (keys declared on an existing
+    # table) is added by schema evolution, like any new batch column.
+    target_names = {name if case_sensitive else name.lower() for name in delta_table.toDF().columns}
+    missing_key_columns = [
+        name
+        for name in key_columns
+        if (name if case_sensitive else name.lower()) not in target_names
+    ]
+    if new_columns or missing_key_columns:
         _execute_with_schema_evolution(builder, df.sparkSession, _add_clauses)
     else:
         _add_clauses(builder).execute()
@@ -1134,8 +1254,7 @@ class DeltaEntityProvider(
         # catalog entry from the builder path, which later causes append/saveAsTable
         # to fail with DELTA_MISSING_DELTA_TABLE.
         if entity.schema:
-            scd_config = scd_config_from_tags(entity)
-            schema_struct = self._augment_schema_for_scd2(entity.schema, scd_config)
+            schema_struct = self._augment_entity_schema(entity)
 
             # Prefer Delta table builder for managed tables when clustering is requested.
             # Some engines require clustering to be enabled at create time and reject
@@ -1392,8 +1511,7 @@ class DeltaEntityProvider(
                     f"for entity '{entity.entityid}'. Provide entity.schema or skip ensure."
                 )
 
-            scd_config = scd_config_from_tags(entity)
-            schema = self._augment_schema_for_scd2(entity.schema, scd_config)
+            schema = self._augment_entity_schema(entity)
 
             # Prefer Delta's table builder API when clustering is requested. Some engines
             # (Synapse in particular) reject `ALTER TABLE ... CLUSTER BY` unless the table
@@ -1675,6 +1793,7 @@ class DeltaEntityProvider(
             return
 
         self._ensure_table_exists(entity, table_ref)
+        self._ensure_surrogate_encoding(entity, table_ref)
 
     def _merge_to_delta_table(self, df: DataFrame, entity, table_ref: DeltaTableReference):
         """Merge DataFrame to existing Delta table"""
@@ -1688,6 +1807,62 @@ class DeltaEntityProvider(
     def _augment_schema_for_scd2(self, schema: StructType, cfg: SCDConfig) -> StructType:
         """Add SCD2 temporal columns to a schema when SCD2 is enabled."""
         return augment_schema_for_scd2(schema, cfg)
+
+    def _augment_entity_schema(self, entity) -> StructType:
+        """The table schema to create: declared columns, SCD2 temporal columns,
+        then any surrogate key columns not declared."""
+        from kindling.surrogate_keys import augment_schema_for_surrogate_keys
+
+        schema = self._augment_schema_for_scd2(entity.schema, scd_config_from_tags(entity))
+        return augment_schema_for_surrogate_keys(schema, entity)
+
+    def _delta_sql_identifier(self, table_ref: DeltaTableReference) -> Optional[str]:
+        if self._is_for_name_mode(table_ref.access_mode) and table_ref.table_name:
+            return self._quote_table_identifier(table_ref.table_name)
+        if table_ref.table_path:
+            return f"delta.`{table_ref.table_path.replace('`', '``')}`"
+        if table_ref.table_name:
+            return self._quote_table_identifier(table_ref.table_name)
+        return None
+
+    def _ensure_surrogate_encoding(self, entity, table_ref: DeltaTableReference) -> None:
+        """Record the surrogate key encoding as the table property
+        ``kindling.surrogate.encoding``, so a future encoding is detected
+        rather than silently mixed into a table of ``v1`` keys. A table that
+        already records a different encoding fails."""
+        cfg = surrogate_config_from_tags(entity)
+        if not cfg.enabled or self._is_read_only(entity):
+            return
+        ident = self._delta_sql_identifier(table_ref)
+        if ident is None:
+            return
+        try:
+            rows = self.spark.sql(f"DESCRIBE DETAIL {ident}").select("properties").collect()
+            properties = (rows[0]["properties"] if rows else None) or {}
+        except Exception as e:
+            # Best-effort, like the other table properties: an engine that
+            # can't describe the table must not block the write.
+            self.logger.warning(
+                f"Unable to read table properties of {ident} to record the surrogate "
+                f"key encoding: {e}"
+            )
+            return
+        recorded = properties.get(_SURROGATE_ENCODING_PROPERTY)
+        if recorded == cfg.encoding:
+            return
+        if recorded is not None:
+            raise ValueError(
+                f"Entity '{entity.entityid}': table {ident} records surrogate key "
+                f"encoding '{recorded}' ({_SURROGATE_ENCODING_PROPERTY}), but the entity "
+                f"declares '{cfg.encoding}'; one table must not mix key encodings"
+            )
+        try:
+            self.spark.sql(
+                f"ALTER TABLE {ident} SET TBLPROPERTIES "
+                f"('{_SURROGATE_ENCODING_PROPERTY}' = '{cfg.encoding}')"
+            )
+        except Exception as e:
+            self.logger.warning(f"Unable to set {_SURROGATE_ENCODING_PROPERTY} on {ident}: {e}")
 
     def _append_to_delta_table(self, df: DataFrame, entity, table_ref: DeltaTableReference):
         """Append DataFrame to existing Delta table"""
@@ -1828,6 +2003,7 @@ class DeltaEntityProvider(
         try:
             table_ref = self._get_table_reference(entity)
             self._ensure_table_exists(entity, table_ref)
+            self._ensure_surrogate_encoding(entity, table_ref)
             duration = time.time() - start_time
 
             self.emit(
@@ -1853,6 +2029,12 @@ class DeltaEntityProvider(
             raise
 
     def ensure_destination(self, entity_metadata: EntityMetadata) -> None:
+        # Surrogate key generator names resolve here: after bootstrap has
+        # imported every module, before any data moves (a typo fails fast,
+        # listing the registered generators).
+        from kindling.surrogate_keys import resolve_surrogate_keys
+
+        resolve_surrogate_keys(entity_metadata)
         # Delta destinations are tables/paths; reuse the existing ensure hook.
         # Schema-less writable entities skip here for the same reason as
         # _ensure_destination_for_write: there is nothing to pre-create with,
@@ -2001,6 +2183,19 @@ class DeltaEntityProvider(
 
         strategy_name = _resolve_merge_strategy_name(cfg, entity)
         merge_condition = self._build_merge_condition("old", "new", entity.merge_columns)
+        # SCD2 surrogate keys are minted inside the per-batch merge. Resolve
+        # the plan here, on the driver: a custom generator's *function
+        # object* travels in the plan, so its name is never looked up in the
+        # isolated worker (whose registry is empty unless the generator's
+        # module happens to be imported there).
+        strategy_kwargs = {}
+        key_plan = None
+        if cfg.enabled:
+            from kindling.surrogate_keys import resolve_surrogate_keys
+
+            key_plan = resolve_surrogate_keys(entity)
+            if key_plan is not None:
+                strategy_kwargs["key_plan"] = key_plan
         drift_policy = (
             str((entity.tags or {}).get("schema.drift") or "").strip().lower() or "evolve"
         )
@@ -2024,7 +2219,9 @@ class DeltaEntityProvider(
             # Everything referenced here is either a plain picklable value
             # captured from the enclosing scope (table_name, table_path,
             # access_mode, entity, cfg, strategy_name, merge_condition,
-            # drift_policy -- all plain dataclasses/strings/enums with no
+            # drift_policy, strategy_kwargs -- the surrogate key plan is a
+            # plain frozen dataclass holding the generator function object --
+            # all plain dataclasses/strings/enums with no
             # live session or service reference) or is looked up fresh from
             # the micro-batch's own bound session (batch_df.sparkSession)
             # once this function actually runs.
@@ -2069,13 +2266,18 @@ class DeltaEntityProvider(
             # themselves stateless, so calling it directly here needs
             # nothing this isolated worker process doesn't already have.
             strategy = DeltaMergeStrategies.get(strategy_name)
-            strategy.apply(delta_table, batch_df, entity, merge_condition)
+            strategy.apply(delta_table, batch_df, entity, merge_condition, **strategy_kwargs)
 
-        writer = (
-            df.writeStream.outputMode("update")
-            .option("checkpointLocation", checkpoint_location)
-            .foreachBatch(_merge_batch)
-        )
+        from kindling.surrogate_keys import generator_pickled_by_value
+
+        # Spark Connect serializes the callback here; a custom generator must
+        # travel by value (its module may not be importable in the worker).
+        with generator_pickled_by_value(key_plan):
+            writer = (
+                df.writeStream.outputMode("update")
+                .option("checkpointLocation", checkpoint_location)
+                .foreachBatch(_merge_batch)
+            )
         trigger = options.get("trigger")
         if trigger:
             writer = writer.trigger(**trigger)

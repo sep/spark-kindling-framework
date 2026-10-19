@@ -49,6 +49,8 @@ def patch_spark_sql_functions(monkeypatch):
         "kindling.entity_provider_delta.sha2",
         lambda expr, bits: Expr(f"sha2({expr}, {bits})"),
     )
+    monkeypatch.setattr("kindling.entity_provider_delta.expr", lambda value: Expr(f"expr({value})"))
+    monkeypatch.setattr("kindling.entity_provider_delta._capture_batch_micros", lambda spark: 1234)
     monkeypatch.setattr(
         "kindling.entity_provider_delta.coalesce",
         lambda *cols: Expr(f"COALESCE({', '.join(str(c) for c in cols)})"),
@@ -140,7 +142,7 @@ def test_close_clause_closes_current_row_on_close_action():
     _, merge_builder, _ = _execute()
 
     assert _matched_update(merge_builder, "close") == {
-        "`__effective_to`": "current_timestamp()",
+        "`__effective_to`": "staged.`__scd2_effective_from`",
         "`__is_current`": "false",
     }
 
@@ -159,11 +161,15 @@ def test_insert_sets_is_current_true():
     assert values["`__is_current`"] == "true"
 
 
-def test_insert_sets_effective_from_to_current_timestamp():
-    _, merge_builder, _ = _execute()
+def test_insert_sets_effective_from_to_the_staged_batch_timestamp():
+    """Without sequence_by, effective_from is one processing-time instant
+    captured on the driver and staged as a column, so insert, close and a
+    surrogate version key all read the same value."""
+    _, merge_builder, df = _execute()
 
     values = merge_builder.whenNotMatchedInsert.call_args.kwargs["values"]
-    assert values["`__effective_from`"] == "current_timestamp()"
+    assert values["`__effective_from`"] == "staged.`__scd2_effective_from`"
+    assert "expr(timestamp_micros(1234))" in _with_column_values(df, "__scd2_effective_from")
 
 
 def test_insert_sets_effective_to_null():
@@ -271,9 +277,13 @@ def test_sequence_guard_compares_against_target_sequence_column():
 
 
 def test_sequence_close_stamps_effective_to_from_staged_sequence():
-    _, merge_builder, _ = _execute({"scd.sequence_by": "updated_at"})
+    _, merge_builder, df = _execute({"scd.sequence_by": "updated_at"})
 
-    assert _matched_update(merge_builder, "close")["`__effective_to`"] == "staged.`updated_at`"
+    assert (
+        _matched_update(merge_builder, "close")["`__effective_to`"]
+        == "staged.`__scd2_effective_from`"
+    )
+    assert "col(`updated_at`)" in _with_column_values(df, "__scd2_effective_from")
 
 
 # ── close_on_missing (snapshot) ───────────────────────────────────────────────
