@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from injector import inject
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, expr, lit, sha2, struct, to_json
+from pyspark.sql.functions import coalesce, col, expr, lit, sha2, struct, to_json, when
 from pyspark.sql.streaming import StreamingQuery
 from pyspark.sql.types import TimestampType
 
@@ -18,6 +18,7 @@ from .data_entities import (
     SCDConfig,
     augment_schema_for_scd2,
     build_null_safe_change_condition,
+    scd_change_columns,
     scd_config_from_tags,
 )
 from .entity_provider import (
@@ -29,6 +30,9 @@ from .entity_provider import (
 from .injection import GlobalInjector
 from .spark_config import get_or_create_spark_session
 from .spark_log_provider import PythonLoggerProvider
+
+_SOURCE_PRESENT = "__scd2_source_present"
+_SOURCE_DELETE = "__scd2_source_delete"
 
 
 def _memory_scd1_merge(
@@ -59,10 +63,13 @@ def _memory_scd2_merge(
     """Execute an SCD Type 2 upsert as plain DataFrame joins/unions.
 
     Mirrors DeltaEntityProvider._execute_scd2_merge's declared-flow semantics
-    (sequence_by ordering, delete_when, close_on_missing) without Delta's
-    single-MERGE-statement staging trick: Memory does a full read-modify-write,
-    assembling historical rows, untouched current rows, closed (old) versions,
-    and new/changed versions, then returns the union for one write_to_entity
+    (tracked changes close and re-version, untracked-only changes update the
+    current version in place, sequence_by ordering guarded against the
+    current row's own sequence value, delete_when, close_on_missing) without
+    Delta's single-MERGE-statement staging trick: Memory does a full
+    read-modify-write, assembling historical rows, untouched current rows,
+    closed (old) versions, current versions updated in place, and
+    new/changed versions, then returns the union for one write_to_entity
     overwrite. ``now_ts`` is a single captured instant reused for every
     timestamp this call would otherwise stamp with current_timestamp(), so a
     closed row's effective_to and its replacement's effective_from agree.
@@ -90,13 +97,10 @@ def _memory_scd2_merge(
             "every row must carry a sequence value"
         )
 
-    tracked_columns = cfg.tracked_columns or [
-        column
-        for column in incoming_df.columns
-        if column not in business_keys
-        and column not in temporal_columns
-        and column != cfg.sequence_by
-    ]
+    # tracked: a change closes the current version and opens a new one.
+    # untracked (incl. sequence_by): a change only to these updates the
+    # current version in place.
+    tracked_columns, untracked_columns = scd_change_columns(cfg, incoming_df.columns, business_keys)
 
     historical_rows = current_df.filter(col(cfg.is_current_column) == lit(False))
     current_rows = current_df.filter(col(cfg.is_current_column) == lit(True))
@@ -109,42 +113,105 @@ def _memory_scd2_merge(
         upserts_df = incoming_df.filter(~delete_predicate)
     upserts_df = upserts_df.drop(*[c for c in temporal_columns if c in upserts_df.columns])
 
-    match = upserts_df.alias("source").join(
-        current_rows.alias("target"), on=business_keys, how="inner"
+    # One source row per key (upserts and change-feed deletes), flagged so a
+    # single left join from the current rows classifies every current row.
+    # Each extra reference to current_df multiplies the lazily chained plan
+    # of the next merge, so the current rows are joined exactly once.
+    source_df = upserts_df.withColumn(_SOURCE_PRESENT, lit(True)).withColumn(
+        _SOURCE_DELETE, lit(False)
     )
+    if deletes_df is not None and not cfg.close_on_missing:
+        # Mirrors DeltaEntityProvider._execute_scd2_merge: deletes are only
+        # staged for change feeds. Under close_on_missing a deleted key is
+        # simply absent from the snapshot and closes as missing.
+        source_df = source_df.unionByName(
+            deletes_df.drop(*[c for c in temporal_columns if c in deletes_df.columns])
+            .withColumn(_SOURCE_PRESENT, lit(True))
+            .withColumn(_SOURCE_DELETE, lit(True)),
+            allowMissingColumns=True,
+        )
+
+    joined = current_rows.alias("target").join(
+        source_df.alias("source"), on=business_keys, how="left"
+    )
+    present = col(f"source.{_SOURCE_PRESENT}").isNotNull()
+    is_delete = coalesce(col(f"source.{_SOURCE_DELETE}"), lit(False))
+
     if cfg.optimize_unchanged:
         hash_source = sha2(to_json(struct(*[col(f"source.{c}") for c in tracked_columns])), 256)
         hash_target = sha2(to_json(struct(*[col(f"target.{c}") for c in tracked_columns])), 256)
-        change_where = hash_source != hash_target
+        tracked_change = hash_source != hash_target
     else:
-        change_where = expr(
+        tracked_change = expr(
             build_null_safe_change_condition(
                 "source", "target", tracked_columns, schema=upserts_df.schema
             )
         )
+    # Sequence guard: strictly later than the current row's own sequence
+    # value (not its effective_from — an in-place update advances the
+    # former), so an older event never overwrites a newer in-place value.
+    applies = present
     if cfg.sequence_by:
-        change_where = change_where & (
-            col(f"source.{cfg.sequence_by}") > col(f"target.{cfg.effective_from_column}")
+        applies = present & (
+            col(f"target.{cfg.sequence_by}").isNull()
+            | (col(f"source.{cfg.sequence_by}") > col(f"target.{cfg.sequence_by}"))
         )
-    changed_match = match.where(change_where)
+
+    # close: a tracked change (re-versioned) or a delete (closed only).
+    close_cond = applies & (is_delete | tracked_change)
+    # touch: only untracked columns changed — update the current row in place.
+    touch_cond = lit(False)
+    if untracked_columns:
+        touch_cond = (
+            applies
+            & ~is_delete
+            & ~tracked_change
+            & expr(
+                build_null_safe_change_condition(
+                    "source", "target", untracked_columns, schema=upserts_df.schema
+                )
+            )
+        )
+    # missing (snapshot): the key is absent from the batch.
+    missing_cond = ~present if cfg.close_on_missing else lit(False)
+
+    close_value = col(f"source.{cfg.sequence_by}") if cfg.sequence_by else lit(now_ts)
+    current_projection = []
+    for column in current_rows.columns:
+        target_value = col(column) if column in business_keys else col(f"target.{column}")
+        if column == cfg.effective_to_column:
+            value = (
+                when(close_cond, close_value)
+                .when(missing_cond, lit(now_ts))
+                .otherwise(target_value)
+            )
+        elif column == cfg.is_current_column:
+            value = when(close_cond | missing_cond, lit(False)).otherwise(target_value)
+        elif column in untracked_columns:
+            value = when(touch_cond, col(f"source.{column}")).otherwise(target_value)
+        else:
+            value = target_value
+        current_projection.append(value.alias(column))
+    # An untracked column the table does not have yet lands on touched rows.
+    current_projection.extend(
+        when(touch_cond, col(f"source.{column}")).alias(column)
+        for column in untracked_columns
+        if column not in current_rows.columns
+    )
+    current_versions = joined.select(*current_projection)
 
     new_effective_from = col(f"source.{cfg.sequence_by}") if cfg.sequence_by else lit(now_ts)
     new_versions_from_changes = (
-        changed_match.withColumn("__new_effective_from", new_effective_from)
-        .select("source.*", "__new_effective_from")
-        .withColumn(cfg.effective_from_column, col("__new_effective_from"))
+        joined.where(close_cond & ~is_delete)
+        .select(
+            *[
+                col(column) if column in business_keys else col(f"source.{column}")
+                for column in upserts_df.columns
+            ],
+            new_effective_from.alias(cfg.effective_from_column),
+        )
         .withColumn(cfg.effective_to_column, lit(None).cast(TimestampType()))
         .withColumn(cfg.is_current_column, lit(True))
-        .drop("__new_effective_from")
-    )
-
-    close_value = col(f"source.{cfg.sequence_by}") if cfg.sequence_by else lit(now_ts)
-    closed_versions_from_changes = (
-        changed_match.withColumn("__close_value", close_value)
-        .select("target.*", "__close_value")
-        .withColumn(cfg.effective_to_column, col("__close_value"))
-        .withColumn(cfg.is_current_column, lit(False))
-        .drop("__close_value")
     )
 
     new_match = upserts_df.join(current_rows, on=business_keys, how="left_anti")
@@ -157,62 +224,8 @@ def _memory_scd2_merge(
         .withColumn(cfg.is_current_column, lit(True))
     )
 
-    closed_versions_from_missing = None
-    if cfg.close_on_missing:
-        missing_match = current_rows.join(upserts_df, on=business_keys, how="left_anti")
-        closed_versions_from_missing = missing_match.withColumn(
-            cfg.effective_to_column, lit(now_ts)
-        ).withColumn(cfg.is_current_column, lit(False))
-
-    closed_versions_from_deletes = None
-    if deletes_df is not None and not cfg.close_on_missing:
-        # Mirrors DeltaEntityProvider._execute_scd2_merge: delete_close_rows is
-        # computed but only staged in the non-close_on_missing branch. When
-        # close_on_missing is enabled, a deleted key is simply absent from the
-        # incoming snapshot and gets closed via closed_versions_from_missing;
-        # staging it again here would double-close the same current row.
-        delete_match = deletes_df.alias("source").join(
-            current_rows.alias("target"), on=business_keys, how="inner"
-        )
-        if cfg.sequence_by:
-            delete_match = delete_match.where(
-                col(f"source.{cfg.sequence_by}") > col(f"target.{cfg.effective_from_column}")
-            )
-        delete_close_value = col(f"source.{cfg.sequence_by}") if cfg.sequence_by else lit(now_ts)
-        closed_versions_from_deletes = (
-            delete_match.withColumn("__close_value", delete_close_value)
-            .select("target.*", "__close_value")
-            .withColumn(cfg.effective_to_column, col("__close_value"))
-            .withColumn(cfg.is_current_column, lit(False))
-            .drop("__close_value")
-        )
-
-    closed_frames = [
-        frame
-        for frame in (
-            closed_versions_from_changes,
-            closed_versions_from_missing,
-            closed_versions_from_deletes,
-        )
-        if frame is not None
-    ]
-
-    if closed_frames:
-        touched_keys = closed_frames[0].select(*business_keys)
-        for frame in closed_frames[1:]:
-            touched_keys = touched_keys.unionByName(frame.select(*business_keys))
-        current_rows_not_touched = current_rows.join(
-            touched_keys, on=business_keys, how="left_anti"
-        )
-    else:
-        current_rows_not_touched = current_rows
-
     result = historical_rows
-    for frame in (
-        [current_rows_not_touched]
-        + closed_frames
-        + [new_versions_from_changes, new_versions_from_new_keys]
-    ):
+    for frame in (current_versions, new_versions_from_changes, new_versions_from_new_keys):
         result = result.unionByName(frame, allowMissingColumns=True)
     return result
 

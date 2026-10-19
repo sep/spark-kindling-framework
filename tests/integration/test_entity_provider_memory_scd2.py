@@ -426,21 +426,25 @@ class TestMemoryProviderMergeSCD2:
         assert len(current) == 1 and current[0]["status"] == "silver"
         assert len(closed) == 1 and closed[0]["status"] == "bronze"
 
-    def test_explicit_tracked_columns_ignore_untracked_changes(self, spark_session):
+    def test_explicit_tracked_columns_update_untracked_changes_in_place(self, spark_session):
         provider = _make_provider(spark_session)
         entity = self._entity("silver.scd2_tracked_explicit", **{"scd.tracked": "status"})
         provider.merge_to_entity(
             _make_df(spark_session, [("a", "bronze", "x", TS(1))], SCD2_SCHEMA), entity
         )
+        before = provider.read_entity(entity).collect()[0]
 
-        # "category" changes but is not in scd.tracked -> must not open a new version.
+        # "category" changes but is not in scd.tracked -> no new version; the
+        # current version takes the new value in place.
         provider.merge_to_entity(
             _make_df(spark_session, [("a", "bronze", "y", TS(1))], SCD2_SCHEMA), entity
         )
 
         rows = provider.read_entity(entity).collect()
-        assert len(rows) == 1
-        assert rows[0]["category"] == "x", "untracked column change must not be picked up"
+        assert len(rows) == 1, "an untracked-only change must not open a new version"
+        assert rows[0]["category"] == "y", "untracked column change must update in place"
+        assert rows[0]["__is_current"] is True
+        assert rows[0]["__effective_from"] == before["__effective_from"]
 
     def test_auto_derived_tracked_columns_excludes_business_and_sequence_columns(
         self, spark_session
