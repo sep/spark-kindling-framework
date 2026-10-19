@@ -367,11 +367,8 @@ expressions before the MERGE.
     without the key columns), so a tracked SCD1 change doesn't rewrite a `uuid4` key.
     A deterministic key would be rewritten with the same value, but one rule for all
     strategies keeps it simple.
-  Provenance stamping's created stamp (`__provenance`, `provenance_stamping.md`) is
-  insert-only too and joins this set. Unlike a key it is supplied by the incoming batch,
-  not minted in the merge, so the SCD2 merge must not drop it the way it drops incoming
-  key columns. Its optional last-changed stamp is not insert-only: it is written with
-  the untracked columns but never compared.
+  The provenance column (`provenance_stamping.md`) is not insert-only: it is untracked
+  and rewritten whenever its row is written.
 - Closing a version (setting effective_to / is_current) never touches keys.
 
 The internal routing key keeps its current expression. It is never stored, so it can

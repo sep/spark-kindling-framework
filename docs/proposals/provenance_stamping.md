@@ -1,17 +1,17 @@
 # Provenance Stamping
 
 **Status:** Proposed (revised 2026-10-19: an optional `kindling.provenance.*`
-settings block with per-entity tag overrides; a created stamp and an optional
-last-changed stamp, mapped onto the insert-only and untracked column classes).
-Design findings against the current write paths; no code changes yet.
+settings block with per-entity tag overrides; one untracked column, written
+with every row write). Design findings against the current write paths; no
+code changes yet.
 **Created:** 2026-10-16
 **Related:** `governed_artifact_platform.md` (names provenance stamping as the
 small Kindling write-path feature its whole story leans on, and asks for it to
 be specced against the current write path: this is that spec),
-`scd_untracked_columns.md` (tracked and untracked columns; the last-changed
-stamp is written like an untracked column), `surrogate_keys.md` (insert-only
-columns; the created stamp is one), `runtime_manifest.md` (rows link to a run
-record by `run_id`), `fan_in_upsert_pipes.md` (several writers per entity).
+`scd_untracked_columns.md` (the provenance column is untracked),
+`runtime_manifest.md` (rows link to a run record by `run_id`),
+`surrogate_keys.md` (also adds a column at persist time),
+`fan_in_upsert_pipes.md` (several writers per entity).
 
 Not to be confused with:
 
@@ -26,9 +26,8 @@ Not to be confused with:
 ## What this is, and what it is not
 
 This is **operational traceability**: each output row records which pipe, in
-which run, created it (and, optionally, last changed it), from which inputs.
-The record is data. It lives in the row, is queried with SQL, and is kept as
-long as the row is.
+which run, wrote it, from which inputs. The record is data. It lives in the
+row, is queried with SQL, and is kept as long as the row is.
 
 It is **not observability**. Traces, spans, metrics and logs
 (`kindling.telemetry.*`, `unified_otlp_telemetry_provider.md`) stay where they
@@ -45,21 +44,17 @@ That is why its settings live under `kindling.provenance.*`, not under
 An output row does not say which pipe, run or inputs produced it. Two
 questions need that:
 
-- **Operations:** which pipe and run created this row, or last changed it,
-  under which app, environment and Kindling version?
+- **Operations:** which pipe and run wrote this row, under which app,
+  environment and Kindling version?
 - **Recovery** (the governed-artifact case): which outputs were built from
   version 12 of a reference entity, so exactly those can be reprocessed?
 
 ## Proposal
 
-### Two stamps
+### The column
 
-| Column (default name) | Answers | Column class | Default |
-|---|---|---|---|
-| `__provenance` | What created this row (for SCD2: this version)? | **Insert-only** (`surrogate_keys.md`): set once, when the row is inserted; never written by any other merge clause | On when provenance is enabled |
-| `__provenance_changed` | What last changed this row? | **Written like an untracked column, never compared** (below) | Off; opt in with `provenance.changed` |
-
-Both columns have the same struct type, so a reader handles one shape:
+One nullable struct column per stamped entity, default name `__provenance`
+(matching the `__effective_from` bookkeeping style), renameable:
 
 ```
 struct<
@@ -68,7 +63,7 @@ struct<
   mode            -- 'batch' | 'streaming' | 'sdp'
   app_name, environment, platform, kindling_version,
   input_entity_ids array<string>,
-  input_versions   map<string,string>,   -- phase 3: entity id -> version read
+  input_versions   map<string,string>,   -- phase 2: entity id -> version read
   tags             map<string,string>,   -- selected pipe tags
   schema_version int
 >
@@ -82,14 +77,11 @@ struct<
 - `persist_id` is the id of one batch persist call
   (`simple_read_persist_strategy.py:221`); it is null for streaming and SDP.
 
-**Why two columns, not one struct with `created` and `changed` sub-structs.**
-The merges sort *top-level* columns into classes (tracked, untracked,
-insert-only). With two columns, each column has exactly one class and the
-existing machinery handles it: the insert-only list, the in-place ("touch") set
-and the SCD1 update set. One struct would need nested-field assignments in
-every MERGE clause (`set={"__provenance.changed": ...}`) and the matching
-memory-provider logic, and nested schema evolution, none of which Kindling does
-today. Two columns also keep the default case (created only) to one column.
+**The rule is "overwrite overwrites".** The column is written with every row
+write and names the pipe and run that wrote the row as it is stored now. When a
+write replaces a row, its provenance is replaced with it. Kindling keeps no
+separate history of provenance: to track provenance over time, use SCD2, where
+each version carries the provenance of the write that stored it.
 
 ### Configuration
 
@@ -101,8 +93,6 @@ kindling:
   provenance:
     enabled: false                       # default
     column: __provenance
-    changed: false                       # also keep the last-changed stamp
-    changed_column: __provenance_changed
     pipe_tags: []                        # allow-list; literal names and fnmatch globs
 ```
 
@@ -110,8 +100,6 @@ kindling:
 # on one entity (tags=, dataentities:, dataentities-bytag: or entity_tags)
 provenance.enabled: "false"              # opt out (or "true" to opt in)
 provenance.column: "_lineage"
-provenance.changed: "true"
-provenance.changed_column: "_last_changed"
 provenance.pipe_tags: "domain,owner,layer.*"
 ```
 
@@ -137,28 +125,22 @@ and the `provenance.*` tag keys are literals inside that module only: no
 exported key constants, and extensions never read the keys themselves (the
 maintainer rule).
 
-**Which entities the defaults reach.** The settings block never produces a
-combination that registration would reject; it skips entities it does not fit.
-Explicit tags are validated as declared.
+**Which entities the default reaches.** The settings block skips entities it
+does not fit; explicit tags are validated as declared.
 
-| Entity | `enabled` default | `changed` default |
-|---|---|---|
-| Provider `delta` (the default, `entity_provider_registry.py:180`) or `memory` | applied | applied only to keyed merges (SCD1, SCD2) |
-| Any other provider (CSV and Event Hub cannot hold a struct column) | skipped; an explicit tag opts in | skipped |
-| `read_only`, an SQL entity, an SCD2 current companion (`provider_type: view`), a `system.*` entity | skipped | skipped |
-| Append, `write.mode: insert`, derived dataset | applied | skipped (a row never changes after insert, so it would equal the created stamp) |
+| Entity | Settings default |
+|---|---|
+| Provider `delta` (the default, `entity_provider_registry.py:180`) or `memory` | applied |
+| Any other provider (CSV and Event Hub cannot hold a struct column) | skipped; an explicit tag opts in |
+| `read_only`, an SQL entity, an SCD2 current companion (`provider_type: view`), a `system.*` entity | skipped |
 
-An explicit `provenance.changed: "true"` on an append, insert-only or derived
-entity is rejected at registration, as `scd.untracked` is rejected with
-`write.mode: insert` today (`_validate_write_mode_tag`).
-
-Other registration checks, for both columns: not in `merge_columns`,
-`partition_columns`, `cluster_columns`, `scd.tracked`, `scd.untracked`,
-`scd.sequence_by`, `surrogate.from` or `derived.replace_keys`; the two names
-differ; neither starts with `__scd2_` (reserved for the merge's staging
-columns). `provenance.pipe_tags` is an allow-list only (`*` is rejected), and
-tags that held resolved secrets are always excluded (pipe tags may hold
-resolved secrets; see `data_pipes.py:632-683`).
+Registration rejects the column in `merge_columns`, `partition_columns`,
+`cluster_columns`, `scd.tracked`, `scd.untracked`, `scd.sequence_by`,
+`surrogate.from` or `derived.replace_keys`, and a name starting with `__scd2_`
+(reserved for the merge's staging columns). `provenance.pipe_tags` is an
+allow-list only (`*` is rejected), and tags that held resolved secrets are
+always excluded (pipe tags may hold resolved secrets; see
+`data_pipes.py:632-683`).
 
 **Alternatives considered.**
 
@@ -176,79 +158,54 @@ resolved secrets; see `data_pipes.py:632-683`).
   baking, but about eight sites would each apply the same precedence: the
   persist step, the stream starter, the SDP builder, the Databricks AUTO CDC
   lowering, the Delta and memory merges, schema augmentation, drop-on-read and
-  validation. A site that read only the tags would let a merge overwrite the
-  created stamp. Baking the defaults into tags keeps one contract.
+  validation. A site that read only the tags would treat the column as data
+  and, under SCD2, version every row. Baking the defaults into tags keeps one
+  contract.
 
-### How the merges treat the stamps
+### How each write strategy treats it
 
-Both stamps are built before the write (below), so every incoming row carries
-them. The provider's merge decides which target rows they reach:
+The stamp is built before the write (below), so every incoming row carries it.
 
-- **`__provenance` is insert-only.** It joins the surrogate keys in the
-  insert-only set: `scd_change_columns(..., insert_only_columns=...)`, the
-  explicit SCD1 update set (`_scd1_update_set`), and the memory merge's
-  keep-on-match, all already built for surrogate keys on `feat/surrogate-keys`
-  (`entity_provider_delta.py`, `data_entities.py`). The one difference: a
-  surrogate key is minted inside the SCD2 merge and incoming key columns are
-  dropped, whereas the created stamp is *supplied by the batch* and must reach
-  the insert clause unchanged. The SCD2 insert values already take every staged
-  column, so the change is only to not drop it.
-- **`__provenance_changed` is written whenever its row is written, but never
-  compared.** It goes into the SCD2 touch set and the SCD1 update set like an
-  untracked column, but it is left out of *both* change tests (tracked and
-  untracked). Its value differs on every run, so if it were compared every
-  current row would be touched, or rewritten, on every load, and "last changed"
-  would degrade to "last seen". This is a small addition to the column classes
-  in `scd_untracked_columns.md`: an untracked column that never counts as a
-  change by itself.
-- **Neither is touched by a close.** The SCD2 close sets only effective_to and
-  is_current, so a closed version keeps both stamps.
+| Strategy | Provenance on the stored row |
+|---|---|
+| Append, batch or streaming (the common fact-table case) | The pipe and run that appended the row |
+| `write.mode: insert` | The pipe and run that inserted the row; an existing key is not written, so it keeps its provenance |
+| SCD1 keyed merge | The last write that updated the row: an update overwrites provenance along with the other columns |
+| Derived dataset (replace) | The write that replaced the rows |
+| SCD2 | Each version records the write that stored it; history over time comes from the versions themselves |
 
-Per write strategy, for one incoming row:
+**The one rule: the provenance column is untracked** (the untracked class of
+`scd_untracked_columns.md`). A difference only in provenance never counts as a
+change: it never opens an SCD2 version, never triggers an SCD1 update, and
+never triggers an SCD2 in-place update. Otherwise, because the stamp differs on
+every run, every load would re-version or rewrite every matched row. When the
+row *is* written for another reason, provenance is written with it:
 
-| Strategy | Situation | `__provenance` (created) | `__provenance_changed` |
-|---|---|---|---|
-| Append (batch or streaming) | every row | this write | n/a (skipped or rejected) |
-| `write.mode: insert` | new key | this write | n/a |
-| | existing key | untouched (row not written) | n/a |
-| SCD1 keyed merge | new key | this write | this write |
-| | tracked change | **kept** | this write |
-| | nothing changed | kept | kept (row skipped, see below) |
-| | untracked-only change (`scd.untracked`) | kept | kept (row skipped, as today) |
-| SCD2 | new key | this write (new version) | this write |
-| | tracked change | closed version keeps its stamps; new version: this write | closed version keeps it; new version: this write |
-| | untracked-only change, or sequence-only bump (touch) | kept | this write |
-| | nothing changed | kept | kept |
-| | delete (`delete_when`) or `close_on_missing` | closed version keeps it | closed version keeps it |
-| Derived dataset (replace) | every row | this write (contents are replaced) | n/a |
+- **SCD2, tracked change:** the current version is closed and keeps its
+  provenance (the close sets only effective_to and is_current); the new version
+  carries this write's.
+- **SCD2, untracked-only change** (another untracked column, or a sequence-only
+  bump): the current version is updated in place, and its provenance is
+  overwritten in place with it. Overwrite overwrites.
+- **SCD1 with change detection** (`scd.untracked` declared): a row whose only
+  difference is provenance, or another untracked column, is skipped, so its
+  provenance names the last writer that made a real change.
+- **SCD1 without change detection** (today's default unconditional
+  `whenMatchedUpdateAll()`): every matched row is rewritten and restamped.
+  That is fine as is; provenance does not turn change detection on.
 
-**SCD1 needs change detection when the changed stamp is on.** Without
-`scd.untracked`, the Delta SCD1 merge runs an unconditional
-`whenMatchedUpdateAll()`, so every matched row would be restamped on every
-load. With `provenance.changed` on, the SCD1 merge uses the same change
-condition `scd.untracked` turns on: tracked is every column except the keys,
-insert-only columns and the changed stamp, and an unchanged row is skipped.
-For the data columns this changes nothing (an unchanged row is rewritten with
-the same values today); it only stops no-op rewrites. Entities without
-`provenance.changed` keep today's unconditional update; the created stamp alone
-needs only the explicit update set.
+In the merge code this means one thing: the provenance column is left out of
+the change tests (tracked, and the untracked comparison that selects SCD2
+touches) and stays in every write set (the SCD2 insert values and touch set,
+the SCD1 update set). It is not an insert-only column. The same rules apply to
+`merge_as_stream`, which runs the same merges per micro-batch.
 
-Under SCD2 without any untracked columns, `scd.sequence_by` or `scd.tracked`,
-there are no touches, so the changed stamp always equals the created stamp of
-its version. That is correct, just not informative; the stamp earns its keep
-on entities with untracked columns, and on SCD1.
-
-The same rules apply to `merge_as_stream`, which runs the same merges per
-micro-batch.
-
-### Where the stamps are built
+### Where the stamp is built
 
 One pure function, in a new `packages/kindling/provenance.py` (beside
 `surrogate_keys.py`), builds the column from literals, `create_map` and
 `current_timestamp()`, and raises if the DataFrame already has a column of that
-name. When both stamps are on, the same struct value is written to both
-columns; the merge decides which target rows each one reaches. It is applied in
-three places:
+name. It is applied in three places:
 
 1. **Batch:** in the persist step, after the `persist.before_persist`
    receivers (`simple_read_persist_strategy.py:300-308`) and before the write
@@ -294,73 +251,64 @@ Neither reaches the persist step today. Phase 1 gets them two ways:
 ### Schema
 
 An `augment_schema_for_provenance`, like `augment_schema_for_scd2` and the
-surrogate-key augmentation, so new tables get the columns at creation and
-`schema.drift: fail` and SDP schemas accept them.
+surrogate-key augmentation, so new tables get the column at creation and
+`schema.drift: fail` and SDP schemas accept it.
 
-Existing tables gain the columns through schema evolution on the next write.
+Existing tables gain the column through schema evolution on the next write.
 Append and SCD1 merges already evolve; the SCD2 merge now does too, for any
 batch column the table lacks (`_execute_scd2_merge` on `feat/scd-untracked`,
 PR #361), which removes the migration step the first revision expected.
-Existing rows keep a null stamp, which means "written before provenance was
-enabled". Because neither stamp is compared, adding them never re-versions an
-SCD2 table.
+Existing rows keep a null stamp until they are next written; null means
+"written before provenance was enabled". Because the column never counts as a
+change, adding it never re-versions an SCD2 table.
 
 ### Reads downstream
 
-Both stamp columns are **dropped by default** when a downstream pipe reads the
-entity (the persist strategy's read step, the streaming read and the SDP
+The provenance column is **dropped by default** when a downstream pipe reads
+the entity (the persist strategy's read step, the streaming read and the SDP
 builder's internal reads, `oss_engine.py:246-249`), with a per-input opt-out.
-Otherwise a downstream table can inherit a stamp naming the wrong pipe, and map
-fields break `distinct` and `groupBy` in downstream pipes. The SCD2 current
-companion is read the same way.
+Otherwise a downstream table can inherit provenance naming the wrong pipe, and
+map fields break `distinct` and `groupBy` in downstream pipes. The SCD2
+current companion is read the same way.
 
 ## Phases
 
-1. **Created stamp:** settings block and tags, the parser and validation, the
-   column builder in batch, streaming and SDP, drop-on-read, schema
-   augmentation, and `__provenance` in the insert-only set of both providers'
-   merges. Depends on the insert-only machinery from surrogate keys phase 1 and
-   on the untracked-columns work (PR #361).
-2. **Changed stamp:** `provenance.changed`, the "written but never compared"
-   handling in the SCD2 touch set and the SCD1 update set, and SCD1 change
-   detection when it is on.
-3. **Input versions:** the version of each input read (Delta table version, or
+1. **Pipe and run provenance:** settings block and tags, the parser and
+   validation, the column builder in batch, streaming and SDP, drop-on-read,
+   schema augmentation, and the column's place in the untracked class in both
+   providers' merges and the AUTO CDC lists. Builds on the untracked-columns
+   work (PR #361).
+2. **Input versions:** the version of each input read (Delta table version, or
    the watermark aspect's captured cursor). This is the recovery capability
    `governed_artifact_platform.md` needs, and the reason to keep the field in
    the contract from phase 1.
 
-Phases 2 and 3 are independent of each other.
-
 ## Interactions
 
-- **SCD and AUTO CDC.** Lakeflow AUTO CDC has no insert-only column, and it
-  updates every column outside the tracked set in place on the current
-  version. On an AUTO CDC target, both stamps therefore mean "the update that
-  last applied a change to this version"; a new version still carries the stamp
-  of the update that opened it. This is a documented divergence (with the SCD1
-  skip, `auto_cdc.py:12-27`), and declaration warns once per entity. Tracking
-  lists: when the entity has an allow-list (`scd.tracked`, lowered to
+- **AUTO CDC.** When the entity has an allow-list (`scd.tracked`, lowered to
   `track_history_column_list`, `engine.py:391-394`), keep it as is, since the
-  stamps are already outside it. Only without an allow-list, add both stamp
-  columns to `track_history_except_column_list` (which becomes
+  provenance column is already outside it. Only without an allow-list, add the
+  column to `track_history_except_column_list` (which becomes
   `untracked + [sequence_by]` with PR #361). Passing both lists would fail
-  declaration, as AUTO CDC accepts only one. Append flows and materialized
-  views have no such gap; a materialized view's rows carry the refresh that
-  computed them.
-- **Surrogate keys.** The created stamp shares their insert-only class and
-  invariants, but surrogate keys are rejected in SDP/Lakeflow declarations
-  (`surrogate_keys_not_lowered`, commit `d80f9dc`) while provenance is not: a
-  stamp with the divergence above is still useful, a missing key is not.
+  declaration, as AUTO CDC accepts only one. On Lakeflow the column then means
+  "the update that last applied a change to this version": AUTO CDC updates
+  except-listed columns in place, and also does so when only provenance
+  differs, where the runner skips the row. Either way the row's data is the
+  same and the stamp names a write that stored it, so under "overwrite
+  overwrites" this is not treated as a divergence and needs no warning.
+  Append flows and materialized views have no such difference; a materialized
+  view's rows carry the refresh that computed them.
+- **Surrogate keys.** Independent: keys are insert-only, provenance is
+  untracked and rewritten with its row. Surrogate keys are rejected in
+  SDP/Lakeflow declarations (`surrogate_keys_not_lowered`, commit `d80f9dc`);
+  provenance is not.
 - **Several writers to one entity:** batch planning assumes one producer per
   entity and SDP rejects duplicates. Under fan-in (`fan_in_upsert_pipes.md`)
-  the created stamp names the writer that inserted the key and the changed
-  stamp the last writer that changed it.
+  the value is the last writer per row.
 - **Writes outside the persist step** (file ingestion, the watermark entity)
   are not stamped in phase 1. With the settings default on, an ingestion
   target that no pipe writes gets an always-null column at creation.
-- **Performance:** constant per write, so encoding makes it nearly free; the
-  changed stamp doubles that. SCD1 change detection adds a comparison and
-  removes no-op rewrites.
+- **Performance:** constant per write, so encoding makes it nearly free.
 
 ## Decisions
 
@@ -369,47 +317,43 @@ Proposed in this revision, for confirmation:
 1. **Config model:** the `kindling.provenance.*` block, baked in as the
    lowest-precedence tag defaults, with per-entity tags overriding (above).
    Alternatives: overlays only; resolving the settings at each use site.
-2. **Two columns**, `__provenance` (created, insert-only) and
-   `__provenance_changed` (last changed, written but never compared), with the
-   changed stamp off by default.
-3. **SCD1 change detection is turned on by the changed stamp** (rather than
-   restamping every matched row on every load).
-4. **AUTO CDC:** allowed with a documented divergence and a declaration
-   warning. The alternative is to reject it, as surrogate keys are rejected.
-5. **Eligibility of the settings default:** Delta and memory providers; not
+2. **One untracked column, overwrite overwrites.** Provenance over time comes
+   from SCD2 versions, not from extra columns.
+3. **A provenance-only difference also never triggers an SCD2 in-place
+   update** (it is excluded from the untracked comparison, not only from the
+   tracked one), so an unchanged current row is not rewritten on every load.
+4. **Eligibility of the settings default:** Delta and memory providers; not
    read-only, SQL, companion or `system.*` entities.
 
 Still needed:
 
-6. Names: `provenance.*`, `__provenance` and `__provenance_changed` (keeping
-   `lineage.*` free for issue #8), given the ontology's different use of
-   "Provenance".
-7. Run-id capture: signal-keyed (recommended for phase 1), an activator
+5. Name: `provenance.*` and `__provenance` (keeping `lineage.*` free for
+   issue #8), given the ontology's different use of "Provenance".
+6. Run-id capture: signal-keyed (recommended for phase 1), an activator
    signature change, or the execution-scoped token the watermark aspect
    anticipates.
-8. Tags as a map (recommended) or typed fields.
-9. Drop on read by default (recommended).
-10. Later, not now: a "closed by" stamp written by the SCD2 close clause, and
-    stamping writes outside the persist step.
+7. Tags as a map (recommended) or typed fields.
+8. Drop on read by default (recommended).
+9. Later, not now: stamping writes outside the persist step.
 
 Resolved since the first revision: the `before_persist` chaining issue (fixed
 by `emit_chained`, commit `c2a218a`); the migration step for existing SCD2
 tables (the SCD2 merge now evolves the schema); and the in-place vs frozen
-question, now answered per stamp (created is frozen, changed is in place).
+question (in place: the column is untracked and rewritten with its row).
 
 ## Size and risks
 
-**M** for phases 1 and 2 together, less than the first estimate because the
-insert-only and untracked classes already exist: the parser, defaults layer and
-validation, the column builder, the persist step and stream starter,
-drop-on-read, schema augmentation, the merge-class wiring in both providers and
-the AUTO CDC lists, with tests on the memory and Delta providers and on SDP.
-Tests must show: a created stamp survives SCD1 updates, SCD2 touches and
-closes; a changed stamp moves on a tracked SCD1 change and an SCD2 touch, and
-never on an unchanged row; a new stamp column on an existing SCD2 table opens
-no versions; an entity opts out against the settings default.
+**M** for phase 1, less than the first estimate because the untracked class
+already exists: the parser, defaults layer and validation, the column builder,
+the persist step and stream starter, drop-on-read, schema augmentation, and
+the merge and AUTO CDC wiring, with tests on the memory and Delta providers
+and on SDP. Tests must show: a provenance-only difference opens no SCD2
+version, triggers no SCD1 update with `scd.untracked` and no SCD2 in-place
+update; an SCD2 close keeps the closed version's provenance; an SCD1 update
+and an SCD2 in-place update overwrite it; a new provenance column on an
+existing SCD2 table opens no versions; an entity opts out against the settings
+default.
 
 Risks: unclear stable sources for app name and environment; whether Lakeflow
 incremental refresh treats the stamp as non-deterministic (a declaration-time
-literal should avoid it); explicit MERGE update sets on the delta-spark 2.4
-floor (already exercised by the surrogate-key SCD1 path).
+literal should avoid it).

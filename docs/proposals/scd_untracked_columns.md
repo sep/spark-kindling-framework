@@ -5,9 +5,7 @@
 **Related:** `docs/guide/data_entities.md` (SCD2 tags, including
 `scd.tracked`), `fan_in_upsert_pipes.md` (plans explicit-column merges in the
 same SCD1 code; sequence the two together), `provenance_stamping.md` (its
-created stamp is insert-only; its optional last-changed stamp is written like
-an untracked column but never compared), `kindling_ext_databricks` AUTO CDC
-lowering.
+column is untracked), `kindling_ext_databricks` AUTO CDC lowering.
 
 ## Problem
 
@@ -98,8 +96,8 @@ documented divergence if SCD1 is ever lowered.
 - **Untracked column missing from the incoming data:** skipped.
 - **Nested types:** `build_null_safe_change_condition` handles top-level maps
   only; a struct containing a map needs nested handling or the hash path if it
-  were ever compared. The provenance stamps are such structs, but they are
-  never compared (`provenance_stamping.md`).
+  were ever compared. The provenance column is such a struct, but it is left
+  out of the change tests (`provenance_stamping.md`).
 
 ## Decisions (2026-10-19)
 
@@ -115,12 +113,12 @@ documented divergence if SCD1 is ever lowered.
    providers, plus the AUTO CDC mapping and the snapshot-lowering fix, in one
    PR.
 
-Provenance columns (resolved in `provenance_stamping.md`, "How the merges
-treat the stamps"): the created stamp is frozen, an insert-only column as in
-`surrogate_keys.md`. The optional last-changed stamp is updated in place: it is
-in the SCD2 touch set and the SCD1 update set, but left out of both change
-tests, so it moves only when the row is written for another reason, and never
-opens an SCD2 version or triggers an SCD1 update by itself.
+Provenance column (resolved in `provenance_stamping.md`, "How each write
+strategy treats it"): it is simply an untracked column, and overwrite
+overwrites. A provenance-only difference never counts as a change (no new SCD2
+version, no SCD1 update, no in-place update on its own); whenever the row is
+written for another reason, its provenance is written with it, including an
+SCD2 in-place update.
 
 ## Size and risks
 
