@@ -110,36 +110,52 @@ def _keep_existing_keys(
 ) -> DataFrame:
     """Surrogate keys are insert-only: a replaced (matched) row keeps the key
     it has; only rows for new business keys take the incoming key. Mirrors
-    the Delta SCD1 merge's explicit update set without key columns."""
+    the Delta SCD1 merge's explicit update set without key columns, also
+    when the table predates the key column: its existing rows keep NULL.
 
-    def norm(name: str) -> str:
-        return name if case_sensitive else name.lower()
+    Helper columns get names no batch or table column uses (compared the
+    way the session resolves names), so any accepted column survives.
+    """
+    name_key = column_name_key(case_sensitive)
+    current_by_key = {name_key(column): column for column in current_df.columns}
+    incoming_by_key = {name_key(column): column for column in replacing_df.columns}
+    taken = set(current_by_key) | set(incoming_by_key)
 
-    wanted = {norm(name) for name in key_columns}
-    current_keys = [column for column in current_df.columns if norm(column) in wanted]
-    if not current_keys:
+    def fresh(base: str) -> str:
+        name = base
+        while name_key(name) in taken:
+            name += "_"
+        taken.add(name_key(name))
+        return name
+
+    present_column = fresh("__sk_existing_present")
+    projection = [_qcol(key) for key in business_keys]
+    assignments = []  # (output column, helper column, value for a new key)
+    for key_column in key_columns:
+        current_name = current_by_key.get(name_key(key_column))
+        incoming_name = incoming_by_key.get(name_key(key_column))
+        if current_name is None and incoming_name is None:
+            continue
+        helper = fresh("__sk_existing")
+        if current_name is not None:
+            projection.append(_qcol(current_name).alias(helper))
+        else:
+            data_type = replacing_df.schema[incoming_name].dataType
+            projection.append(lit(None).cast(data_type).alias(helper))
+        if incoming_name is not None:
+            new_key_value = _qcol(incoming_name)
+        else:
+            new_key_value = lit(None).cast(current_df.schema[current_name].dataType)
+        assignments.append((incoming_name or current_name, helper, new_key_value))
+    if not assignments:
         return replacing_df
-    incoming_keys = {norm(c): c for c in replacing_df.columns if norm(c) in wanted}
-    existing = current_df.select(
-        *[_qcol(key) for key in business_keys],
-        *[
-            _qcol(column).alias(f"__sk_existing_{index}")
-            for index, column in enumerate(current_keys)
-        ],
-        lit(True).alias("__sk_existing_present"),
-    )
+    projection.append(lit(True).alias(present_column))
+    existing = current_df.select(*projection)
     joined = replacing_df.join(existing, on=business_keys, how="left")
-    present = col("__sk_existing_present").isNotNull()
-    for index, column in enumerate(current_keys):
-        incoming = incoming_keys.get(norm(column))
-        incoming_value = _qcol(incoming) if incoming else lit(None)
-        joined = joined.withColumn(
-            incoming or column,
-            when(present, col(f"__sk_existing_{index}")).otherwise(incoming_value),
-        )
-    return joined.drop(
-        "__sk_existing_present", *[f"__sk_existing_{i}" for i in range(len(current_keys))]
-    )
+    matched = _qcol(present_column).isNotNull()
+    for output, helper, new_key_value in assignments:
+        joined = joined.withColumn(output, when(matched, _qcol(helper)).otherwise(new_key_value))
+    return joined.drop(present_column, *[helper for _, helper, _ in assignments])
 
 
 def _memory_insert_only_merge(

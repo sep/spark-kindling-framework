@@ -681,3 +681,58 @@ def test_scd2_first_write_through_persist_runs_the_merge(
     if keys:
         _assert_keys_match_stored_values(current)
         assert closed["customer_version_sk"] == first["customer_version_sk"]
+
+
+def test_scd1_keys_declared_on_an_existing_table_never_backfill_matched_rows(
+    spark, provider, request
+):
+    """A keyed (SCD1) table written before the key was declared: matched rows
+    keep NULL (keys are insert-only), only new business keys get a key."""
+    base_schema = StructType(BUSINESS_SCHEMA.fields[:4])
+    entity = _entity(request, "scd1_late_keys", {}, scd2=False, schema=base_schema)
+    _merge(spark, provider, entity, [("c1", "crm", "bronze", "L1")], base_schema)
+
+    entity.tags["surrogate.column"] = "product_sk"
+    batch = spark.createDataFrame(
+        [("c1", "crm", "silver", "L2"), ("c2", "crm", "gold", "L1")], base_schema
+    )
+    provider.merge_to_entity(apply_surrogate_keys(batch, entity), entity)
+
+    rows = {r["customer_id"]: r for r in provider.read_entity(entity).collect()}
+    assert rows["c1"]["status"] == "silver"
+    assert rows["c1"]["product_sk"] is None, "an update must not backfill a key"
+    assert rows["c2"]["product_sk"] == sha256("S2:c2S3:crm")
+
+
+def test_scd1_key_preservation_keeps_columns_named_like_its_helpers(spark, provider, request):
+    """Columns that look like the memory merge's helper names are ordinary
+    accepted columns: they keep their values and are never dropped."""
+    schema = StructType(
+        BUSINESS_SCHEMA.fields[:4]
+        + [
+            StructField("__sk_existing_present", StringType()),
+            StructField("__SK_EXISTING", StringType()),
+            StructField("__sk_existing_0", StringType()),
+            StructField("product_sk", StringType()),
+        ]
+    )
+    entity = _entity(
+        request, "scd1_helper_names", {"surrogate.column": "product_sk"}, scd2=False, schema=schema
+    )
+    _merge(spark, provider, entity, [("c1", "crm", "bronze", "L1", "p1", "e1", "z1", "k1")], schema)
+    _merge(
+        spark,
+        provider,
+        entity,
+        [
+            ("c1", "crm", "silver", "L2", "p2", "e2", "z2", "k2"),
+            ("c2", "crm", "gold", "L1", "p3", "e3", "z3", "k3"),
+        ],
+        schema,
+    )
+    rows = {r["customer_id"]: r.asDict() for r in provider.read_entity(entity).collect()}
+    assert set(rows["c1"]) == {field.name for field in schema.fields}
+    assert (rows["c1"]["__sk_existing_present"], rows["c1"]["__SK_EXISTING"]) == ("p2", "e2")
+    assert rows["c1"]["__sk_existing_0"] == "z2"
+    assert rows["c1"]["product_sk"] == "k1", "the matched row keeps its key"
+    assert rows["c2"]["product_sk"] == "k3"
