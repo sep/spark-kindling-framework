@@ -61,6 +61,12 @@ class CacheOptimizer:
             )
             if len(scoped_consumers) < 2:
                 continue
+            if self._producer_of(graph, entity_id) in scoped_consumers:
+                # The producer reads the entity (its own output, or that
+                # output's SCD2 current-row companion) as prior state before
+                # it writes; every other consumer runs after the write. One
+                # shared frame would hand them the pre-write data.
+                continue
 
             recommendations[entity_id] = CacheRecommendation(
                 entity_id=entity_id,
@@ -69,6 +75,13 @@ class CacheOptimizer:
             )
 
         return recommendations
+
+    @staticmethod
+    def _producer_of(graph: PipeGraph, entity_id: str) -> Optional[str]:
+        try:
+            return graph.get_producer(entity_id)
+        except Exception:
+            return None
 
     @staticmethod
     def as_level_map(

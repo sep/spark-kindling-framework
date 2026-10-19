@@ -468,3 +468,125 @@ class TestResultSummary:
         assert summary["all_succeeded"] is True
         assert summary["failed_pipes"] == []
         assert summary["duration_seconds"] >= 0
+
+
+# ---- SCD2 Current-Row Companion Tests ----
+
+
+class TestScd2CurrentCompanionExecution:
+    """Readers of `<scd2 entity>.current` run after the base entity is written."""
+
+    @pytest.fixture
+    def entities(self):
+        from kindling.data_entities import DataEntityManager
+
+        manager = DataEntityManager()
+        for entity_id in ("bronze.customer", "gold.customer"):
+            manager.register_entity(
+                entity_id, name=entity_id, merge_columns=["id"], tags={}, schema=None
+            )
+        manager.register_entity(
+            "silver.customer",
+            name="Customer",
+            merge_columns=["id"],
+            tags={"scd.type": "2"},
+            schema=None,
+        )
+        return manager
+
+    @pytest.fixture
+    def events(self):
+        return []
+
+    @pytest.fixture
+    def recording_persist_strategy(self, events):
+        """Log every read (pipe, entity) and write (pipe, entity), in order.
+
+        Each read returns a fresh frame, so a frame shared across pipes
+        shows up as a missing read event.
+        """
+        strategy = Mock()
+
+        def reader_for(pipe):
+            def read(entity, use_watermark=False):
+                events.append(("read", pipe.pipeid, entity.entityid))
+                return Mock(name=f"{pipe.pipeid}:{entity.entityid}")
+
+            return read
+
+        def activator_for(pipe):
+            def persist(df):
+                events.append(("write", pipe.pipeid, pipe.output_entity_id))
+
+            return persist
+
+        strategy.create_pipe_entity_reader.side_effect = reader_for
+        strategy.create_pipe_persist_activator.side_effect = activator_for
+        return strategy
+
+    @pytest.fixture
+    def companion_executor(
+        self,
+        pipes_manager,
+        entities,
+        recording_persist_strategy,
+        config_service,
+        trace_provider,
+        logger_provider,
+        signal_provider,
+    ):
+        return GenerationExecutor(
+            pipes_registry=pipes_manager,
+            entity_registry=entities,
+            pipe_stream_starter=Mock(),
+            config_service=config_service,
+            persist_strategy=recording_persist_strategy,
+            trace_provider=trace_provider,
+            logger_provider=logger_provider,
+            signal_provider=signal_provider,
+        )
+
+    @pytest.fixture
+    def companion_plan_generator(self, pipes_manager, entities, logger_provider):
+        builder = PipeGraphBuilder(pipes_manager, logger_provider, entity_registry=entities)
+        return ExecutionPlanGenerator(pipes_manager, builder, logger_provider)
+
+    def test_companion_reader_runs_after_base_writer(
+        self, companion_executor, companion_plan_generator, pipes_manager, events
+    ):
+        register_pipe(pipes_manager, "load_silver", ["bronze.customer"], "silver.customer")
+        register_pipe(pipes_manager, "build_gold", ["silver.customer.current"], "gold.customer")
+
+        # Listed reader-first: only a dependency edge can put the writer first.
+        plan = companion_plan_generator.generate_batch_plan(["build_gold", "load_silver"])
+        result = companion_executor.execute_batch(plan, parallel=False)
+
+        assert result.all_succeeded is True
+        write_silver = events.index(("write", "load_silver", "silver.customer"))
+        read_current = events.index(("read", "build_gold", "silver.customer.current"))
+        assert write_silver < read_current
+
+    def test_change_detection_frame_is_not_reused_downstream(
+        self, companion_executor, companion_plan_generator, pipes_manager, events
+    ):
+        """The writer's pre-write read of current rows must not be served
+        (cached) to a downstream reader that runs after the write."""
+        register_pipe(
+            pipes_manager,
+            "detect_changes",
+            ["bronze.customer", "silver.customer.current"],
+            "silver.customer",
+        )
+        register_pipe(pipes_manager, "build_gold", ["silver.customer.current"], "gold.customer")
+
+        plan = companion_plan_generator.generate_batch_plan(["detect_changes", "build_gold"])
+        result = companion_executor.execute_batch(plan, auto_cache=True)
+
+        assert result.all_succeeded is True
+        assert events == [
+            ("read", "detect_changes", "bronze.customer"),
+            ("read", "detect_changes", "silver.customer.current"),
+            ("write", "detect_changes", "silver.customer"),
+            ("read", "build_gold", "silver.customer.current"),
+            ("write", "build_gold", "gold.customer"),
+        ]
