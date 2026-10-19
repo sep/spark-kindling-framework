@@ -1,7 +1,8 @@
 # Surrogate Key Synthesis
 
-**Status:** Proposed (revised 2026-10-19: SCD2 version and durable keys, UUID strategies,
-custom generators, a canonical stored-key encoding, and the decisions recorded below)
+**Status:** Accepted (2026-10-19); phase 1 implemented for 0.14.0rc3. Revised
+2026-10-19: SCD2 version and durable keys, UUID strategies, custom generators, a canonical
+stored-key encoding, and the decisions recorded below.
 **Created:** 2026-07-23
 **Related:** [SCD2 support](obsolete/scd_type2_support.md) (explicitly deferred
 surrogate keys — "a separate design decision"; this is it),
