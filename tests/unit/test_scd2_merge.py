@@ -51,6 +51,11 @@ def patch_spark_sql_functions(monkeypatch):
     )
     monkeypatch.setattr("kindling.entity_provider_delta.expr", lambda value: Expr(f"expr({value})"))
     monkeypatch.setattr("kindling.entity_provider_delta._capture_batch_micros", lambda spark: 1234)
+    # One-row-per-key normalization runs real Spark functions; the mocked
+    # source batch is already one row per key (covered in tests/integration).
+    monkeypatch.setattr(
+        "kindling.entity_provider_delta.normalize_scd2_batch", lambda df, entity, cfg: df
+    )
     monkeypatch.setattr(
         "kindling.entity_provider_delta.coalesce",
         lambda *cols: Expr(f"COALESCE({', '.join(str(c) for c in cols)})"),

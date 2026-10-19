@@ -421,6 +421,8 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity, key_plan=None) -> No
             f"'{cfg.sequence_by}' contains null values in the incoming batch; "
             "every row must carry a sequence value"
         )
+    # One row per business key: the latest by sequence, or reject duplicates.
+    df = normalize_scd2_batch(df, entity, cfg)
     business_keys = entity.merge_columns
     temporal_columns = {
         cfg.effective_from_column,

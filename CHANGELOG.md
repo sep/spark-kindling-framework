@@ -76,6 +76,15 @@ All notable changes to spark-kindling are documented here.
 
 ### Changed
 
+- **SCD2 merges take one row per business key per batch.** With
+  `scd.sequence_by`, a batch carrying several rows for one key is collapsed
+  to the latest row by sequence (the convention streaming merges already
+  apply per micro-batch), on both providers; the Delta merge used to fail
+  with `DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE` when two of
+  them were newer than the current version, and the memory merge copied the
+  current version once per row (so two stale events left two identical
+  current versions). Without `scd.sequence_by` nothing orders such rows, and
+  the batch is rejected with an error naming the key.
 - **SCD2 effective_from is staged once per merge.** Without
   `scd.sequence_by`, the Delta SCD2 merge now captures one processing-time
   instant on the driver (as the memory provider already did) and stages it as

@@ -19,6 +19,7 @@ from .data_entities import (
     augment_schema_for_scd2,
     build_null_safe_change_condition,
     column_name_key,
+    normalize_scd2_batch,
     quote_sql_identifier,
     scd2_batch_schema,
     scd_change_columns,
@@ -261,6 +262,8 @@ def _memory_scd2_merge(
             f"'{cfg.sequence_by}' contains null values in the incoming batch; "
             "every row must carry a sequence value"
         )
+    # One row per business key: the latest by sequence, or reject duplicates.
+    incoming_df = normalize_scd2_batch(incoming_df, entity_metadata, cfg)
 
     # tracked: a change closes the current version and opens a new one.
     # untracked (incl. sequence_by): a change only to these updates the

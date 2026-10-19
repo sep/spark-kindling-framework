@@ -469,6 +469,50 @@ def scd_change_columns(
     return tracked, untracked
 
 
+def normalize_scd2_batch(df: DataFrame, entity: EntityMetadata, cfg: SCDConfig) -> DataFrame:
+    """One row per business key, as the SCD2 merges require.
+
+    With ``scd.sequence_by`` the batch is collapsed to the latest row per key
+    by sequence (the latest-change-per-key convention the streaming merge
+    applies per micro-batch and the incremental read applies to change
+    feeds); change-feed deletes take part like any other event. Without it
+    nothing orders two rows for one key, so such a batch is rejected.
+    Both SCD2 providers call this, so they agree: duplicate rows used to make
+    the Delta MERGE fail (several source rows matching one target row) and
+    the memory merge copy the current version once per source row.
+    """
+    from pyspark.sql import Window
+    from pyspark.sql.functions import col as _col
+    from pyspark.sql.functions import count as _count
+    from pyspark.sql.functions import lit as _lit
+    from pyspark.sql.functions import row_number
+
+    keys = [_col(quote_sql_identifier(key)) for key in entity.merge_columns]
+    if cfg.sequence_by:
+        rank = "__scd2_batch_rank"
+        latest_first = Window.partitionBy(*keys).orderBy(
+            _col(quote_sql_identifier(cfg.sequence_by)).desc()
+        )
+        return (
+            df.withColumn(rank, row_number().over(latest_first)).filter(_col(rank) == 1).drop(rank)
+        )
+    duplicate = (
+        df.groupBy(*keys)
+        .agg(_count(_lit(1)).alias("__scd2_batch_rows"))
+        .filter(_col("__scd2_batch_rows") > 1)
+        .limit(1)
+        .collect()
+    )
+    if duplicate:
+        values = {key: duplicate[0][index] for index, key in enumerate(entity.merge_columns)}
+        raise ValueError(
+            f"Entity '{entity.entityid}': the batch has more than one row for business key "
+            f"{values}; without scd.sequence_by an SCD2 merge needs one row per key per "
+            "batch (declare scd.sequence_by to apply the latest row per key)"
+        )
+    return df
+
+
 def scd2_batch_schema(entity: EntityMetadata, batch_schema: StructType) -> StructType:
     """The declared schema of an SCD2 entity, or, when it declares none, the
     batch's business columns (without temporal, staging or surrogate key

@@ -545,3 +545,48 @@ def test_scd1_case_only_column_difference_is_the_same_column(spark, provider, re
     assert len(rows) == 1
     assert rows[0]["status"] == "bronze"
     assert rows[0]["load_id"] == "L1", "an untracked-only change is skipped"
+
+
+# ── several rows for one business key in one batch ────────────────────────────
+
+
+def test_scd2_several_stale_events_for_one_key_are_a_no_op(spark, provider, request):
+    """Current version at sequence 5; the batch carries two older events for
+    the key. Both fail the strictly-later guard: nothing changes (the current
+    row must not be copied once per source row)."""
+    entity = _scd2_entity(request, "dup_stale", {"scd.sequence_by": "updated_at"})
+    _merge(spark, provider, entity, [("c1", "bronze", "L1", TS(5))])
+    before = sorted(provider.read_entity(entity).collect())
+
+    _merge(spark, provider, entity, [("c1", "silver", "L3", TS(3)), ("c1", "gold", "L4", TS(4))])
+
+    assert sorted(provider.read_entity(entity).collect()) == before
+
+
+def test_scd2_several_newer_events_for_one_key_apply_the_latest(spark, provider, request):
+    """With scd.sequence_by, a batch is collapsed to the latest row per key
+    (the convention merge_as_stream applies per micro-batch): one new version
+    from the latest event, closing the current version at its sequence."""
+    entity = _scd2_entity(request, "dup_newer", {"scd.sequence_by": "updated_at"})
+    _merge(spark, provider, entity, [("c1", "bronze", "L1", TS(1))])
+
+    _merge(spark, provider, entity, [("c1", "silver", "L3", TS(3)), ("c1", "gold", "L4", TS(4))])
+
+    current, closed = _versions(provider, entity)
+    assert len(current) == 1 and len(closed) == 1
+    assert current[0]["status"] == "gold" and current[0]["__effective_from"] == TS(4)
+    assert closed[0]["status"] == "bronze" and closed[0]["__effective_to"] == TS(4)
+
+
+def test_scd2_duplicate_keys_without_sequence_by_are_rejected(spark, provider, request):
+    """Without scd.sequence_by nothing orders two rows for one key, so the
+    batch is rejected (one row per key per batch) on both providers."""
+    entity = _scd2_entity(request, "dup_noseq", {})
+    _merge(spark, provider, entity, [("c1", "bronze", "L1", TS(1))])
+    before = sorted(provider.read_entity(entity).collect())
+
+    with pytest.raises(ValueError, match="more than one row"):
+        _merge(
+            spark, provider, entity, [("c1", "bronze", "L1", TS(1)), ("c1", "bronze", "L1", TS(1))]
+        )
+    assert sorted(provider.read_entity(entity).collect()) == before
