@@ -1,7 +1,6 @@
 # Untracked Columns for SCD1 and SCD2
 
-**Status:** Proposed. Design findings against the current code; no code
-changes yet.
+**Status:** Accepted (2026-10-19); implementation in progress.
 **Created:** 2026-10-16
 **Related:** `docs/guide/data_entities.md` (SCD2 tags, including
 `scd.tracked`), `fan_in_upsert_pipes.md` (plans explicit-column merges in the
@@ -99,21 +98,22 @@ documented divergence if SCD1 is ever lowered.
   only; a struct containing a map (e.g. a provenance struct) needs nested
   handling or the hash path if it were ever compared.
 
-## Decisions needed
+## Decisions (2026-10-19)
 
-1. **Should `scd.tracked` also switch to in-place updates**, so the two tags
-   differ only in form? Recommended. It changes existing behaviour (the
-   Temporal `generation` column would start updating in place, which looks
-   like the original intent) and flips one test.
-2. **Tag name for SCD1:** the same `scd.untracked` on an entity without
-   `scd.type`, or a separate `write.untracked`.
-3. **In-place vs frozen per column:** a provenance column under SCD2 could
-   record the last pipe that touched the current version (in place) or the
-   pipe that opened it (frozen, today's `scd.tracked` behaviour). This may
-   need a per-column mode, or a framework-reserved column that is always
-   untracked.
-4. **Sequence-only bump:** update the current version in place (as AUTO CDC
-   does) or do nothing (today)?
+1. **`scd.tracked` switches to in-place updates**, like `scd.untracked`, so
+   the two tags differ only in form and the runner matches AUTO CDC. This is a
+   behaviour change: the Temporal `generation` column starts updating in place,
+   and the test pinning the old behaviour is updated.
+2. **SCD1 uses the same tag**, `scd.untracked`, on an entity without
+   `scd.type`. Entities without the tag keep today's unconditional update.
+3. **A sequence-only bump updates the current version in place**, as AUTO CDC
+   does.
+4. **Scope of the first implementation:** SCD2 and SCD1 on the Delta and memory
+   providers, plus the AUTO CDC mapping and the snapshot-lowering fix, in one
+   PR.
+
+Still open: in-place vs frozen per column for a provenance column (see
+`provenance_stamping.md`), to settle with that proposal.
 
 ## Size and risks
 
