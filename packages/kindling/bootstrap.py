@@ -2692,9 +2692,11 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             )
             # Continue without platform/workspace-specific configs
 
+    # Config downloads (the initial one here and any hot-reload later) stage
+    # here; only the bootstrap parameters are known at this point.
+    initial_temp_path = _resolve_initial_download_temp_path(config, platform)
     if discover_config_files and artifacts_storage_path:
         with _bootstrap_phase("config_download"):
-            initial_temp_path = _resolve_initial_download_temp_path(config, platform)
             if not strict_config_discovery and _get_storage_utils() is None:
                 _BOOTSTRAP_LOGGER.warning(
                     "Configuration discovery was enabled by artifacts_storage_path, "
@@ -2762,6 +2764,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                     platform=platform,
                     workspace_id=_overlay_workspace_id(workspace_id, platform),
                     app_name=app_name,
+                    temp_path=initial_temp_path,
                 )
                 config_service = get_kindling_service(ConfigService)
         except Exception:
@@ -2774,6 +2777,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                 platform=platform,
                 workspace_id=_overlay_workspace_id(workspace_id, platform),
                 app_name=app_name,
+                temp_path=initial_temp_path,
             )
             config_service = get_kindling_service(ConfigService)
 

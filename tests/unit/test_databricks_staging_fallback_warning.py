@@ -11,9 +11,11 @@ import ast
 import logging
 from pathlib import Path
 from typing import Optional
+from unittest.mock import MagicMock, patch
 
 import pytest
 from kindling.bootstrap import _resolve_bootstrap_temp_path, download_config_files
+from kindling.spark_config import DynaconfConfig, configure_injector_with_config
 
 _SHIM_PATH = Path(__file__).resolve().parents[2] / "runtime" / "scripts" / "kindling_bootstrap.py"
 _SHIM_FUNCTIONS = ("_is_volume_path", "_is_dbfs_path", "_databricks_wheel_staging_target")
@@ -312,3 +314,61 @@ def test_settings_temp_path_on_other_platforms_does_not_warn(caplog, platform):
         assert _resolve_bootstrap_temp_path(config, bootstrap_config) == "/tmp/k"
 
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+# --------------------------------------------------------------------------- #
+# Hot reload stages where the initial download staged
+# --------------------------------------------------------------------------- #
+
+
+def _configured_service_for_reload(temp_path):
+    config_service = DynaconfConfig()
+    with (
+        patch("kindling.spark_config.GlobalInjector.get", return_value=config_service),
+        patch("kindling.spark_config.Dynaconf", return_value=MagicMock()),
+        patch("kindling.spark_config.get_or_create_spark_session", return_value=MagicMock()),
+    ):
+        configure_injector_with_config(
+            config_files=[],
+            environment="dev",
+            artifacts_storage_path=_ARTIFACTS,
+            platform="databricks",
+            temp_path=temp_path,
+        )
+    return config_service
+
+
+def _reload(config_service, monkeypatch, caplog):
+    storage = DBUtils()
+    monkeypatch.setattr("kindling.bootstrap._get_storage_utils", lambda: storage)
+    monkeypatch.setattr("kindling.bootstrap.get_temp_path", lambda: "/tmp/kindling_abc123")
+    with (
+        patch("kindling.spark_config.Dynaconf", return_value=MagicMock()),
+        caplog.at_level(logging.INFO, logger="kindling.bootstrap"),
+    ):
+        result = config_service.reload()
+    assert result["status"] == "success"
+    return storage
+
+
+@pytest.mark.parametrize(
+    "temp_path", ["/Volumes/main/sales/kindling/tmp", "dbfs:/kindling/staging"]
+)
+def test_reload_stages_on_initial_temp_path_without_warning(monkeypatch, caplog, temp_path):
+    config_service = _configured_service_for_reload(temp_path)
+
+    storage = _reload(config_service, monkeypatch, caplog)
+
+    assert len(storage.fs.puts) == 1
+    assert storage.fs.puts[0].startswith(f"{temp_path}/.kindling-bootstrap/")
+    assert _dbfs_root_warnings(caplog) == []
+
+
+def test_reload_without_temp_path_warns_and_falls_back_like_initial_download(monkeypatch, caplog):
+    config_service = _configured_service_for_reload(None)
+
+    storage = _reload(config_service, monkeypatch, caplog)
+
+    assert storage.fs.puts == ["/tmp/kindling_abc123/0_settings.yaml"]
+    (message,) = _dbfs_root_warnings(caplog)
+    assert message.startswith("No kindling.temp_path in the job parameters; staging")
