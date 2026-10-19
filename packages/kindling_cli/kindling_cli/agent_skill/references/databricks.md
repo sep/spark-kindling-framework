@@ -149,7 +149,10 @@ kindling runner register --app daily_orders --platform databricks --config envir
   takes the same options. Serverless jobs are not supported.
 - Pass `kindling.temp_path` as a run parameter (`CONFIG__` export or
   `--param`). The framework install and config download run before settings
-  files are read, and otherwise stage on `dbfs:/tmp`.
+  files are read, and otherwise stage on `dbfs:/tmp` with a warning
+  (`No kindling.temp_path in the job parameters`). In settings files,
+  `kindling.temp_path` affects only later staging such as extension wheels,
+  and the bootstrap warns when only settings name it.
 - `runner register` creates a persistent Job for Workflows. It ignores
   `CONFIG__` vars, so pass overrides with `--config`, keyed `environment`
   (not `env`).

@@ -279,6 +279,39 @@ def _dbfs_uri_to_local_path(path: str) -> str:
     return normalized
 
 
+def _databricks_wheel_staging_target(temp_path: Optional[str], filename: str) -> str:
+    """Choose where the Kindling wheel is staged on Databricks.
+
+    Settings files are read only after this step, so only the bootstrap (job)
+    parameters can name the staging path. Falling back to the DBFS root is
+    printed as a warning.
+    """
+    if temp_path and _is_volume_path(temp_path):
+        print(f"   Using Unity Catalog Volume: {temp_path}")
+        return f"{temp_path.rstrip('/')}/{filename}"
+    if _is_dbfs_path(temp_path):
+        print(f"   Using configured DBFS staging path: {temp_path}")
+        return f"{temp_path.rstrip('/')}/{filename}"
+
+    if temp_path:
+        reason = (
+            f"kindling.temp_path={temp_path!r} is neither a Unity Catalog volume "
+            "(/Volumes/...) nor a dbfs:/ path"
+        )
+    else:
+        reason = "No kindling.temp_path in the job parameters"
+    print(
+        f"   ⚠️  WARNING: {reason}; staging the Kindling wheel under dbfs:/tmp (DBFS root).\n"
+        "      Settings files are read after this step, so a temp_path there does not "
+        "apply here.\n"
+        "      Pass it as a job parameter "
+        "(--param kindling.temp_path=/Volumes/<catalog>/<schema>/<volume>/...) or set "
+        "CONFIG__platform_databricks__kindling__temp_path.\n"
+        "      Workspaces that restrict DBFS root access will fail at this step."
+    )
+    return f"dbfs:/tmp/{filename}"
+
+
 def load_config(
     config_or_filename: Union[Dict, str], artifacts_path: str, storage_utils
 ) -> Dict[str, Any]:
@@ -656,10 +689,10 @@ def _install_wheel(
                         "temp_path"
                     )
 
+                staging_target = _databricks_wheel_staging_target(temp_path, filename)
                 if temp_path and _is_volume_path(temp_path):
                     # Use configured UC volume staging path.
-                    print(f"   Using Unity Catalog Volume: {temp_path}")
-                    volume_file = f"{temp_path.rstrip('/')}/{filename}"
+                    volume_file = staging_target
 
                     print(f"   Source: {remote_path}")
                     print(f"   Volume target: {volume_file}")
@@ -671,14 +704,7 @@ def _install_wheel(
 
                 else:
                     # Classic mode can provide an explicit DBFS temp path; otherwise use /tmp.
-                    if _is_dbfs_path(temp_path):
-                        dbfs_target = f"{temp_path.rstrip('/')}/{filename}"
-                        print(f"   Using configured DBFS staging path: {temp_path}")
-                    else:
-                        print(
-                            f"   Using DBFS (set kindling.temp_path to a UC volume to use volumes)"
-                        )
-                        dbfs_target = f"dbfs:/tmp/{filename}"
+                    dbfs_target = staging_target
 
                     print(f"   Source: {remote_path}")
                     print(f"   DBFS target: {dbfs_target}")

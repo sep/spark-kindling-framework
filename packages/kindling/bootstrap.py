@@ -506,6 +506,59 @@ def _resolve_databricks_staging_path(config_like) -> Optional[str]:
     return None
 
 
+# Logged when Databricks staging that runs before settings are loaded has no
+# staging path and falls back to the DBFS root. The first argument names what
+# is staged, the second the fallback location.
+_DBFS_ROOT_STAGING_WARNING = (
+    "No kindling.temp_path in the job parameters; staging %s under dbfs:/tmp "
+    "(DBFS root: %s). Settings files are read after this step, so a temp_path there "
+    "does not apply here. Pass it as a job parameter "
+    "(--param kindling.temp_path=/Volumes/<catalog>/<schema>/<volume>/...) or set "
+    "CONFIG__platform_databricks__kindling__temp_path. Workspaces that restrict "
+    "DBFS root access will fail at this step."
+)
+
+
+def _warn_if_settings_temp_path_missed_early_staging(
+    config_service, bootstrap_config: Dict[str, Any]
+) -> None:
+    """Warn when settings name a staging path the early Databricks steps never saw.
+
+    The bootstrap script stages the framework wheel, and
+    :func:`download_config_files` stages the settings files, before any settings
+    file is read. Both see only the bootstrap (job) parameters, so a
+    ``kindling.temp_path`` that comes from settings files reaches only later
+    staging such as extension wheels.
+    """
+    if not bootstrap_config.get("artifacts_storage_path"):
+        return  # Nothing was staged from artifacts storage.
+    if _normalize_path_value(
+        bootstrap_config.get("kindling.temp_path") or bootstrap_config.get("temp_path")
+    ):
+        return  # Early staging used the job parameter.
+    settings_temp_path = _normalize_path_value(config_service.get("kindling.temp_path"))
+    if not settings_temp_path:
+        return
+    # Config files may still have gone to a volume root derived from the
+    # bootstrap parameters; the framework wheel never uses a derived root.
+    early_staged = (
+        "the framework wheel"
+        if _resolve_databricks_staging_path(bootstrap_config)
+        else "the framework wheel and configuration files"
+    )
+    _BOOTSTRAP_LOGGER.warning(
+        "kindling.temp_path=%s comes from settings files, which are read after early "
+        "bootstrap staging; it applies only to later staging (such as extension "
+        "wheels). No kindling.temp_path was in the job parameters, so early staging "
+        "of %s used dbfs:/tmp (DBFS root). Pass it as a job parameter "
+        "(--param kindling.temp_path=%s) or set "
+        "CONFIG__platform_databricks__kindling__temp_path to stage everything there.",
+        settings_temp_path,
+        early_staged,
+        settings_temp_path,
+    )
+
+
 def _resolve_bootstrap_temp_path(config_service, bootstrap_config: Dict[str, Any]) -> Optional[str]:
     if config_service is None:
         return _normalize_path_value(
@@ -520,6 +573,7 @@ def _resolve_bootstrap_temp_path(config_service, bootstrap_config: Dict[str, Any
     )
 
     if str(platform_name).strip().lower() == "databricks":
+        _warn_if_settings_temp_path_missed_early_staging(config_service, bootstrap_config)
         resolved = _resolve_databricks_staging_path(config_service)
         if resolved and not _normalize_path_value(config_service.get("kindling.temp_path")):
             config_service.set("kindling.temp_path", resolved)
@@ -699,7 +753,7 @@ def download_config_files(
             scoped_volume_path = _build_run_scoped_staging_path(volume_path, "config")
             _BOOTSTRAP_LOGGER.info("Using Volume path for configs: %s", scoped_volume_path)
         else:
-            _BOOTSTRAP_LOGGER.info("Using DBFS temp path: %s", temp_dir)
+            _BOOTSTRAP_LOGGER.warning(_DBFS_ROOT_STAGING_WARNING, "configuration files", temp_dir)
             dbfs_temp_path = temp_dir
     else:
         _BOOTSTRAP_LOGGER.info("Using local temp path: %s", temp_dir)

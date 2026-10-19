@@ -55,6 +55,15 @@ All notable changes to spark-kindling are documented here.
   PyPI, and release wheel URLs otherwise.
 - Package metadata on PyPI: project URLs, classifiers and keywords; README
   links are absolute so they work on pypi.org.
+- **Databricks bootstrap warns when early staging falls back to the DBFS
+  root.** With no `kindling.temp_path` in the job parameters, the bootstrap
+  script stages the Kindling wheel, and the bootstrap stages the settings
+  files, under `dbfs:/tmp`; both now warn, naming the job parameter and the
+  `CONFIG__platform_databricks__kindling__temp_path` variable, because
+  workspaces that restrict DBFS root access fail at that step. When a
+  `kindling.temp_path` comes only from settings files, the bootstrap warns
+  that it applies only to later staging such as extension wheels. Where
+  staging goes is unchanged.
 
 ### Fixed
 
