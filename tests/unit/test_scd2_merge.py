@@ -405,3 +405,21 @@ def test_column_new_to_the_table_evolves_the_schema_and_compares_to_typed_null()
     name, value = target_df.withColumn.call_args.args
     assert name == "updated_at" and str(value) == "CAST(lit(None) AS StringType())"
     assert _matched_update(merge_builder, "touch") == {"`updated_at`": "staged.`updated_at`"}
+
+
+@pytest.mark.parametrize("case_sensitive, evolves", [("false", False), ("true", True)])
+def test_case_only_name_difference_follows_session_case_sensitivity(case_sensitive, evolves):
+    """`STATUS` in the batch is the table's `status` unless the session is
+    case-sensitive, in which case it is a genuinely new column."""
+    target = ["customer_id", "name", "status", "updated_at"] + TEMPORAL
+    delta_table, merge_builder = _mock_delta_table(target)
+    df = _mock_source_df()
+    df.columns = ["customer_id", "name", "STATUS", "updated_at"]
+    df.schema = StructType([StructField(name, StringType(), True) for name in df.columns])
+    df.sparkSession.conf.get.return_value = case_sensitive
+
+    _execute_scd2_merge(delta_table, df, _entity())
+
+    target_df = delta_table.toDF.return_value
+    assert target_df.withColumn.called is evolves
+    assert merge_builder.withSchemaEvolution.called is evolves

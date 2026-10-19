@@ -174,9 +174,13 @@ def _scd1_change_condition(delta_table, df: DataFrame, entity) -> Optional[str]:
     cfg = scd_config_from_tags(entity)
     if not cfg.untracked_columns:
         return None
-    tracked_columns, _ = scd_change_columns(cfg, df.columns, entity.merge_columns)
-    target_columns = set(delta_table.toDF().columns)
-    if any(column not in target_columns for column in tracked_columns):
+    case_sensitive = spark_case_sensitive(df.sparkSession)
+    name_key = column_name_key(case_sensitive)
+    tracked_columns, _ = scd_change_columns(
+        cfg, df.columns, entity.merge_columns, case_sensitive=case_sensitive
+    )
+    target_columns = {name_key(column) for column in delta_table.toDF().columns}
+    if any(name_key(column) not in target_columns for column in tracked_columns):
         return None
     return build_null_safe_change_condition("new", "old", tracked_columns, schema=df.schema)
 
@@ -307,10 +311,16 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
       take a sequence value from. Present keys with nothing to apply are
       staged as KEEP sentinels so the missing-key close skips them.
     """
+    # Column names compare the way the session resolves them: by default
+    # (spark.sql.caseSensitive=false) `STATUS` in the batch is the table's
+    # `status`, not a new column.
+    case_sensitive = spark_case_sensitive(df.sparkSession)
+    name_key = column_name_key(case_sensitive)
     reserved = [
         column
         for column in df.columns
-        if column == _SCD2_MERGE_KEY_COLUMN or column.startswith(_SCD2_RESERVED_PREFIX)
+        if name_key(column) == _SCD2_MERGE_KEY_COLUMN
+        or name_key(column).startswith(_SCD2_RESERVED_PREFIX)
     ]
     if reserved:
         raise ValueError(
@@ -320,7 +330,7 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
             "SCD2 entity."
         )
     cfg = scd_config_from_tags(entity)
-    if cfg.sequence_by and cfg.sequence_by not in df.columns:
+    if cfg.sequence_by and name_key(cfg.sequence_by) not in {name_key(c) for c in df.columns}:
         raise ValueError(
             f"Entity '{entity.entityid}': scd.sequence_by column "
             f"'{cfg.sequence_by}' is missing from the incoming DataFrame"
@@ -342,16 +352,20 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
     }
     # The sequence column is ordering authority, not content: a row whose
     # only difference is a newer sequence value is an in-place update.
-    tracked_columns, untracked_columns = scd_change_columns(cfg, df.columns, business_keys)
+    temporal_keys = {name_key(column) for column in temporal_columns}
+    tracked_columns, untracked_columns = scd_change_columns(
+        cfg, df.columns, business_keys, case_sensitive=case_sensitive
+    )
     # Batch columns the table does not have yet (additive schema): compare
     # them against typed nulls, and let the MERGE evolve the table to add
     # them (a new untracked column lands on the current version in place, a
     # new tracked column re-versions every key that now carries a value).
     target_df = delta_table.toDF()
+    target_keys = {name_key(column) for column in target_df.columns}
     new_columns = [
         column
         for column in df.columns
-        if column not in target_df.columns and column not in temporal_columns
+        if name_key(column) not in target_keys and name_key(column) not in temporal_keys
     ]
     for column in new_columns:
         target_df = target_df.withColumn(column, lit(None).cast(df.schema[column].dataType))
@@ -477,7 +491,7 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity) -> None:
         lambda left, right: left.unionByName(right, allowMissingColumns=True), staged_parts
     )
 
-    source_columns = [column for column in df.columns if column not in temporal_columns]
+    source_columns = [column for column in df.columns if name_key(column) not in temporal_keys]
     insert_values = {
         quote_sql_identifier(column): quote_sql_identifier(column, "staged")
         for column in source_columns

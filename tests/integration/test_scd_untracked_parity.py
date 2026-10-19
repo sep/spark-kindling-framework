@@ -501,3 +501,47 @@ def test_scd1_untracked_literal_dotted_business_key(spark, provider, request):
     rows = provider.read_entity(entity).collect()
     assert len(rows) == 1
     assert rows[0]["status"] == "silver" and rows[0]["load_id"] == "L3"
+
+
+# ── Case-only column-name differences (spark.sql.caseSensitive=false) ────────
+
+UPPER_SCHEMA = StructType(
+    [
+        StructField("customer_id", StringType(), False),
+        StructField("STATUS", StringType(), True),
+        StructField("LOAD_ID", StringType(), True),
+        StructField("updated_at", TimestampType(), True),
+    ]
+)
+
+
+@pytest.mark.parametrize("tags", [{}, {"scd.untracked": "load_id"}], ids=["no_tags", "untracked"])
+def test_scd2_case_only_column_difference_is_the_same_column(spark, provider, request, tags):
+    """`STATUS` in the batch is the table's `status` under Spark's default
+    case-insensitive resolution: an unchanged value opens no version and
+    the existing history keeps its values."""
+    entity = _scd2_entity(request, "case_scd2", tags)
+    _merge(spark, provider, entity, [("c1", "bronze", "L1", TS(1))])
+    _merge(spark, provider, entity, [("c1", "silver", "L1", TS(1))])
+
+    load_id = "L2" if tags else "L1"
+    _merge(spark, provider, entity, [("c1", "silver", load_id, TS(1))], schema=UPPER_SCHEMA)
+
+    current, closed = _versions(provider, entity)
+    assert len(current) == 1 and len(closed) == 1, "an unchanged value opens no version"
+    assert current[0]["status"] == "silver"
+    assert current[0]["load_id"] == load_id
+    assert closed[0]["status"] == "bronze", "history keeps its values"
+    assert closed[0]["load_id"] == "L1"
+
+
+def test_scd1_case_only_column_difference_is_the_same_column(spark, provider, request):
+    entity = _scd1_entity(request, "case_scd1", {"scd.untracked": "load_id"})
+    _merge(spark, provider, entity, [("c1", "bronze", "L1", TS(1))])
+
+    _merge(spark, provider, entity, [("c1", "bronze", "L2", TS(1))], schema=UPPER_SCHEMA)
+
+    rows = provider.read_entity(entity).collect()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "bronze"
+    assert rows[0]["load_id"] == "L1", "an untracked-only change is skipped"
