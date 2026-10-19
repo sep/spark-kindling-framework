@@ -679,6 +679,8 @@ def gold_active_customers(silver_dim_customer_current):
 
 Writing to a companion entity raises `NotImplementedError`.
 
+In DAG mode (`run_datapipes_dag` / `use_dag=True`), a pipe that reads the companion runs after the pipe that writes the base entity, as if it read the base entity. A pipe can write the SCD2 entity and read its own companion (for example to detect changes against the current rows); it reads the rows from before its write and is not a cycle. SDP/Lakeflow declaration does not lower the companion: a declared pipe that reads it fails validation (`external_input_not_declarable`).
+
 ### Tag reference
 
 | Tag | Default | Description |

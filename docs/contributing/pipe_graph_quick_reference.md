@@ -69,6 +69,20 @@ shared = graph.get_shared_inputs()
 # {"silver.customers": ["analytics1", "analytics2", "report1"]}
 # These entities are good candidates for caching
 ```
+An entity whose producer also reads it (its own output, or that output's
+SCD2 current-row companion) is never recommended: the producer reads the
+pre-write state and its downstream consumers read the post-write state.
+
+### ✅ Self-Reads and SCD2 Current-Row Companions
+- A pipe that reads its own output entity reads the previous run's persisted
+  state; no self-edge is created, so this is not a cycle.
+- An SCD2 entity's current-row companion (`<entity>.current`, or
+  `scd.current_entity_id`) is written by no pipe. Built with an entity
+  registry (DI supplies one), the graph resolves the companion through its
+  `scd.companion_of` tag, so its readers depend on the pipe that writes the
+  base entity. A pipe that writes the SCD2 entity and reads its companion
+  (change detection) is a self-read. `graph.get_producer(entity_id)` applies
+  the resolution; `graph.entity_aliases` records it.
 
 ### ✅ Graph Validation
 - Detects missing pipes

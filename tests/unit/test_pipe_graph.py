@@ -545,3 +545,149 @@ class TestPipeGraphBuilder:
         stats = builder.get_graph_stats(graph)
         assert stats["max_parallelism"] == 2
         assert stats["generation_count"] == 4
+
+
+class TestScd2CurrentCompanionDependencies:
+    """Reads of an SCD2 current-row companion depend on the base entity's producer.
+
+    The companion (``<entity>.current`` by default) is registered
+    automatically and written by no pipe; the graph must order its readers
+    after the pipe that writes the base SCD2 entity.
+    """
+
+    @pytest.fixture
+    def logger_provider(self):
+        provider = Mock()
+        provider.get_logger = Mock(return_value=Mock())
+        return provider
+
+    @pytest.fixture
+    def entities(self):
+        from kindling.data_entities import DataEntityManager
+
+        manager = DataEntityManager()
+        for entity_id in ("bronze.customer", "gold.customer", "gold.region"):
+            manager.register_entity(
+                entity_id, name=entity_id, merge_columns=["id"], tags={}, schema=None
+            )
+        manager.register_entity(
+            "silver.customer",
+            name="Customer",
+            merge_columns=["id"],
+            tags={"scd.type": "2"},
+            schema=None,
+        )
+        return manager
+
+    @pytest.fixture
+    def pipes(self, logger_provider):
+        from kindling.data_pipes import DataPipesManager
+
+        return DataPipesManager(logger_provider)
+
+    @pytest.fixture
+    def builder(self, pipes, logger_provider, entities):
+        return PipeGraphBuilder(pipes, logger_provider, entity_registry=entities)
+
+    @staticmethod
+    def register(pipes, pipe_id, inputs, output):
+        pipes.register_pipe(
+            pipe_id,
+            name=pipe_id,
+            execute=lambda **kwargs: None,
+            tags={},
+            input_entity_ids=inputs,
+            output_entity_id=output,
+            output_type="delta",
+        )
+
+    def test_companion_reader_depends_on_base_producer(self, builder, pipes):
+        self.register(pipes, "load_silver", ["bronze.customer"], "silver.customer")
+        self.register(pipes, "build_gold", ["silver.customer.current"], "gold.customer")
+
+        graph = builder.build_graph(["build_gold", "load_silver"])
+
+        assert graph.get_dependencies("build_gold") == ["load_silver"]
+        assert {(e.from_pipe, e.to_pipe, e.entity) for e in graph.edges} == {
+            ("load_silver", "build_gold", "silver.customer.current")
+        }
+        assert graph.get_producer("silver.customer.current") == "load_silver"
+        assert builder.get_generations(graph) == [["load_silver"], ["build_gold"]]
+
+    def test_custom_current_entity_id_resolves_to_base(self, builder, pipes, entities):
+        entities.register_entity(
+            "silver.account",
+            name="Account",
+            merge_columns=["id"],
+            tags={"scd.type": "2", "scd.current_entity_id": "serving.account_now"},
+            schema=None,
+        )
+        self.register(pipes, "load_account", ["bronze.customer"], "silver.account")
+        self.register(pipes, "serve_account", ["serving.account_now"], "gold.customer")
+
+        graph = builder.build_graph(["serve_account", "load_account"])
+
+        assert graph.get_dependencies("serve_account") == ["load_account"]
+
+    def test_writer_reading_its_own_companion_is_not_a_cycle(self, builder, pipes):
+        """SCD2 change detection: read current rows, write the history entity."""
+        self.register(
+            pipes,
+            "detect_changes",
+            ["bronze.customer", "silver.customer.current"],
+            "silver.customer",
+        )
+        self.register(pipes, "build_gold", ["silver.customer.current"], "gold.customer")
+
+        graph = builder.build_graph(["detect_changes", "build_gold"])
+
+        assert all(edge.from_pipe != edge.to_pipe for edge in graph.edges)
+        assert graph.get_dependencies("detect_changes") == []
+        assert graph.get_dependencies("build_gold") == ["detect_changes"]
+
+    def test_cycle_through_companion_is_detected(self, builder, pipes):
+        self.register(pipes, "load_silver", ["gold.region"], "silver.customer")
+        self.register(pipes, "build_region", ["silver.customer.current"], "gold.region")
+
+        with pytest.raises(GraphCycleError):
+            builder.build_graph(["load_silver", "build_region"])
+
+    def test_user_declared_entity_named_like_companion_is_not_aliased(
+        self, builder, pipes, entities
+    ):
+        """Only the auto-registered companion (scd.companion_of) is resolved."""
+        entities.register_entity(
+            "silver.product.current",
+            name="Declared",
+            merge_columns=["id"],
+            tags={"provider_type": "delta"},
+            schema=None,
+        )
+        entities.register_entity(
+            "silver.product",
+            name="Product",
+            merge_columns=["id"],
+            tags={"scd.type": "2"},
+            schema=None,
+        )
+        self.register(pipes, "load_product", ["bronze.customer"], "silver.product")
+        self.register(pipes, "read_declared", ["silver.product.current"], "gold.customer")
+
+        graph = builder.build_graph(["load_product", "read_declared"])
+
+        assert graph.entity_aliases == {}
+        assert graph.get_dependencies("read_declared") == []
+
+    def test_injector_supplies_entity_registry(self, pipes, logger_provider, entities):
+        """DAG mode builds the graph through DI; the entity registry must be wired."""
+        from injector import Injector
+        from kindling.data_entities import DataEntityRegistry
+        from kindling.data_pipes import DataPipesRegistry
+        from kindling.spark_log_provider import PythonLoggerProvider
+
+        def configure(binder):
+            binder.bind(DataEntityRegistry, to=entities)
+            binder.bind(DataPipesRegistry, to=pipes)
+            binder.bind(PythonLoggerProvider, to=logger_provider)
+
+        assert Injector([configure]).get(PipeGraphBuilder).entity_registry is entities

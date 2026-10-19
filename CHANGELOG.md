@@ -58,6 +58,19 @@ All notable changes to spark-kindling are documented here.
 
 ### Fixed
 
+- **DAG mode orders readers of an SCD2 entity's current-row companion after
+  the entity's writer.** The pipe graph only matched an input to a pipe
+  writing that exact id, and nothing writes the auto-registered
+  `<entity>.current` companion, so a pipe reading it got no dependency on the
+  pipe writing the SCD2 entity: both landed in the same generation and the
+  reader could see the previous run's rows, or none on a first run. The
+  graph now resolves the companion to its base entity (its
+  `scd.companion_of` tag); a pipe that writes the SCD2 entity and reads its
+  own companion stays a prior-state self-read, not a cycle. The shared-input
+  cache no longer reuses a frame across a write: an entity read both by its
+  producer and by a downstream pipe (its own output, or its companion) is not
+  cached, so the downstream pipe no longer gets the producer's pre-write
+  frame.
 - **`kindling env add` / `env update` pin an extension's Kindling extension
   dependencies** from the same release (e.g. SDP for the Databricks
   extension), before the extension itself. `kindling env add

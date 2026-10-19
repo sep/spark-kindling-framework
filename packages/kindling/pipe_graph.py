@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 from injector import inject
+from kindling.data_entities import DataEntityRegistry
 from kindling.data_pipes import DataPipesRegistry, PipeMetadata
 from kindling.spark_log_provider import PythonLoggerProvider
 
@@ -80,6 +81,9 @@ class PipeGraph:
         reverse_adjacency: Map of pipe_id to list of pipes it depends on
         entity_producers: Map of entity_id to pipe_id that produces it
         entity_consumers: Map of entity_id to list of pipe_ids that consume it
+        entity_aliases: Map of a read-only input entity_id to the entity it is
+            derived from (an SCD2 current-row companion to its base entity).
+            Reading the alias depends on the base entity's producer.
     """
 
     nodes: Dict[str, PipeNode] = field(default_factory=dict)
@@ -88,6 +92,7 @@ class PipeGraph:
     reverse_adjacency: Dict[str, List[str]] = field(default_factory=lambda: defaultdict(list))
     entity_producers: Dict[str, str] = field(default_factory=dict)
     entity_consumers: Dict[str, List[str]] = field(default_factory=lambda: defaultdict(list))
+    entity_aliases: Dict[str, str] = field(default_factory=dict)
 
     def add_node(self, node: PipeNode):
         """Add a pipe node to the graph."""
@@ -112,6 +117,15 @@ class PipeGraph:
             self.reverse_adjacency[edge.to_pipe] = []
         if edge.from_pipe not in self.reverse_adjacency[edge.to_pipe]:
             self.reverse_adjacency[edge.to_pipe].append(edge.from_pipe)
+
+    def get_producer(self, entity_id: str) -> Optional[str]:
+        """Get the pipe whose write a read of ``entity_id`` depends on.
+
+        A derived read-only entity (an SCD2 current-row companion) has no
+        producer of its own: it is produced by whichever pipe writes its
+        base entity.
+        """
+        return self.entity_producers.get(self.entity_aliases.get(entity_id, entity_id))
 
     def get_dependencies(self, pipe_id: str) -> List[str]:
         """Get list of pipes that must execute before this pipe."""
@@ -178,15 +192,43 @@ class PipeGraphBuilder:
     """
 
     @inject
-    def __init__(self, registry: DataPipesRegistry, logger_provider: PythonLoggerProvider):
+    def __init__(
+        self,
+        registry: DataPipesRegistry,
+        logger_provider: PythonLoggerProvider,
+        entity_registry: DataEntityRegistry = None,
+    ):
         """Initialize the graph builder.
 
         Args:
             registry: Registry containing pipe definitions
             logger_provider: Logger provider for diagnostics
+            entity_registry: Entity registry used to resolve SCD2 current-row
+                companions to their base entity. Without it, every input is
+                taken at face value.
         """
         self.registry = registry
         self.logger = logger_provider.get_logger("pipe_graph_builder")
+        self.entity_registry = entity_registry
+
+    def _companion_base(self, entity_id: str) -> Optional[str]:
+        """Return the base entity of an SCD2 current-row companion, else None.
+
+        The companion is registered automatically and carries
+        ``scd.companion_of``; no pipe writes it, so a read of it must wait
+        for the pipe that writes the base entity.
+        """
+        if self.entity_registry is None:
+            return None
+        try:
+            entity = self.entity_registry.get_entity_definition(entity_id)
+        except Exception:  # noqa: BLE001 - unresolved entities stay plain inputs
+            return None
+        tags = getattr(entity, "tags", None)
+        base = tags.get("scd.companion_of") if isinstance(tags, dict) else None
+        if isinstance(base, str) and base and base != entity_id:
+            return base
+        return None
 
     def build_graph(self, pipe_ids: List[str]) -> PipeGraph:
         """Build dependency graph from pipe definitions.
@@ -218,17 +260,26 @@ class PipeGraphBuilder:
             )
             graph.add_node(node)
 
+        # Step 1b: Resolve SCD2 current-row companions to their base entity
+        for node in graph.nodes.values():
+            for input_entity in node.input_entities:
+                base = self._companion_base(input_entity)
+                if base is not None:
+                    graph.entity_aliases[input_entity] = base
+
         # Step 2: Create edges based on entity dependencies
         for pipe_id, node in graph.nodes.items():
             for input_entity in node.input_entities:
-                # Find which pipe produces this input entity
-                producer_id = graph.entity_producers.get(input_entity)
+                # Find which pipe produces this input entity (for a companion,
+                # the pipe that writes its base entity)
+                producer_id = graph.get_producer(input_entity)
                 if producer_id == pipe_id:
-                    # A pipe reading its own output entity consumes the
-                    # previous run's persisted state (e.g. temporal episode
-                    # revision), not an ordering dependency — a self-edge
-                    # could never be satisfied by scheduling and would be
-                    # reported as a cycle.
+                    # A pipe reading its own output entity (or that entity's
+                    # current-row companion) consumes the previous run's
+                    # persisted state (e.g. temporal episode revision, SCD2
+                    # change detection), not an ordering dependency — a
+                    # self-edge could never be satisfied by scheduling and
+                    # would be reported as a cycle.
                     self.logger.debug(
                         f"Skipping self-edge: {pipe_id} reads its own output "
                         f"entity '{input_entity}' (prior-state feedback)"
@@ -283,7 +334,7 @@ class PipeGraphBuilder:
 
             # Check for missing input entities (not produced by any pipe in graph)
             for input_entity in node.input_entities:
-                producer = graph.entity_producers.get(input_entity)
+                producer = graph.get_producer(input_entity)
                 if producer is None or producer not in graph.nodes:
                     # This is OK - entity might be external (source table)
                     warnings.append(
