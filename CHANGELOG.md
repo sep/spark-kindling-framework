@@ -19,9 +19,33 @@ All notable changes to spark-kindling are documented here.
   published version (bump the extension's version when its code changes).
 - `kindling env update` / `env add` / `env bootstrap` take `--source
   auto|pypi|github`.
+- **`scd.untracked` entity tag: columns that never count as a change.** A
+  comma-separated list of column names, the exclude-list counterpart of
+  `scd.tracked` (an entity may declare one or the other, not both). On an
+  SCD2 entity (`scd.type: "2"`) a change only to untracked columns, or only
+  to the `scd.sequence_by` column, updates the current version in place
+  (`__effective_from` and `__is_current` stay as they are); a tracked change
+  still closes the current version, which keeps the untracked values it
+  had, and opens a new one. On an entity without `scd.type`, the keyed merge
+  rewrites a matched row only when a non-key, non-untracked column differs
+  (compared null-safely); without the tag every matched row is rewritten, as
+  before. Delta and memory providers, batch and streaming merges.
+  Registration rejects a business key, an SCD2 temporal or reserved column,
+  a column missing from the declared schema, or a list that leaves no
+  tracked column.
 
 ### Changed
 
+- **SCD2 updates untracked columns in place.** Columns outside an
+  `scd.tracked` list used to be ignored when they were the only change, so
+  the current version kept the values it opened with; they are now updated
+  on the current version in place, as with `scd.untracked`. The same applies
+  to a newer `scd.sequence_by` value with no tracked change (it was
+  ignored). The Temporal extension's conditions entity now keeps
+  `generation` current this way. The out-of-order guard compares an incoming
+  sequence value with the current version's `scd.sequence_by` value instead
+  of its `__effective_from`, so an older event never overwrites a newer
+  in-place update.
 - **Kindling dependencies are pinned as PyPI versions.** `kindling package
   init` scaffolds `==` pins for `spark-kindling`, the SDK and the CLI in the
   package's `dev` group instead of release wheel URLs, unless the repo root
@@ -58,6 +82,11 @@ All notable changes to spark-kindling are documented here.
 
 ### Fixed
 
+- **A Delta SCD2 snapshot no longer closes unchanged rows with null tracked
+  columns.** With `scd.source_kind: snapshot` (or `scd.close_on_missing`), a
+  key present in the batch whose tracked columns were unchanged but
+  included a null was treated as missing and closed. Change detection now
+  compares null-safely in both directions.
 - **`kindling env add` / `env update` pin an extension's Kindling extension
   dependencies** from the same release (e.g. SDP for the Databricks
   extension), before the extension itself. `kindling env add
