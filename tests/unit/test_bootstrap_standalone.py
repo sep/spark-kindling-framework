@@ -3,7 +3,6 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
-import pytest
 from kindling.injection import GlobalInjector
 
 
@@ -261,12 +260,3 @@ def test_import_local_package_registrations_merges_explicit_and_env_roots(tmp_pa
             None,
         )
     ]
-
-
-@pytest.fixture(autouse=True)
-def _skip_surrogate_key_aspect_registration():
-    """These tests bootstrap against a bare injector (no signal provider or
-    logger bindings). Registering the surrogate key aspect fails loudly by
-    design, so it is stubbed here; it is covered in test_surrogate_key_config."""
-    with patch("kindling.bootstrap._register_surrogate_key_aspect"):
-        yield

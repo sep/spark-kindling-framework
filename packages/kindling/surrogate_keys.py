@@ -8,9 +8,9 @@ expressions; every placement calls it:
 - SCD2 version and durable keys are minted inside the SCD2 merges of the
   Delta and memory providers, on the inserted rows only, from the staged
   effective_from value (``with_scd2_surrogate_keys``);
-- non-SCD2 keys are a DataFrame column added before persist
-  (``SurrogateKeyAspect`` on ``persist.before_persist``) or before a
-  streaming sink starts (``apply_surrogate_keys``).
+- non-SCD2 keys are a DataFrame column (``apply_surrogate_keys``) added by
+  the batch persist step after every ``persist.before_persist`` transform,
+  and by the streaming start before the sink starts.
 
 All deterministic strategies hash one canonical string, the ``v1``
 encoding (``canonical_v1``): the input values in declared order, an
@@ -32,9 +32,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
-from injector import inject
 from kindling.data_entities import (
-    DataEntityRegistry,
     EntityMetadata,
     SurrogateKeyConfig,
     quote_sql_identifier,
@@ -42,9 +40,6 @@ from kindling.data_entities import (
     spark_case_sensitive,
     surrogate_config_from_tags,
 )
-from kindling.injection import GlobalInjector
-from kindling.signaling import SignalProvider
-from kindling.spark_log_provider import PythonLoggerProvider
 from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
@@ -884,53 +879,3 @@ def assert_generator_deterministic(
             "Surrogate key generator is not deterministic: evaluating it twice gave "
             f"different keys for the same rows, e.g. {[row.asDict() for row in sample]}"
         )
-
-
-# ── Batch aspect ─────────────────────────────────────────────────────────────
-
-
-@GlobalInjector.singleton_autobind()
-class SurrogateKeyAspect:
-    """Adds non-SCD2 surrogate keys to pipe output before it is persisted.
-
-    Listens to ``persist.before_persist`` (receivers chain, so a user
-    transform and this aspect both apply, in either order) and returns the
-    DataFrame with the key column(s), or None for outputs without keys and
-    for SCD2 outputs, whose keys are minted inside the merge. Registered at
-    bootstrap on every platform. The streaming start path never emits the
-    signal; ``SimplePipeStreamStarter`` calls ``apply_surrogate_keys``
-    itself.
-    """
-
-    @inject
-    def __init__(self, lp: PythonLoggerProvider, signal_provider: SignalProvider):
-        # The entity registry is resolved when a persist happens, not at
-        # registration (bootstrap registers the aspect early).
-        self.der = None
-        self.logger = lp.get_logger("SurrogateKeyAspect")
-        self._signals = signal_provider
-        self._registered = False
-
-    def register(self) -> None:
-        """Connect the aspect's handler. Idempotent."""
-        if self._registered:
-            return
-        signal = self._signals.get_signal("persist.before_persist") or self._signals.create_signal(
-            "persist.before_persist"
-        )
-        signal.connect(self._on_before_persist, weak=False)
-        self._registered = True
-        self.logger.debug("SurrogateKeyAspect registered")
-
-    def _on_before_persist(self, sender, df=None, output_entity_id=None, **kwargs):
-        if df is None or not output_entity_id:
-            return None
-        if self.der is None:
-            self.der = GlobalInjector.get(DataEntityRegistry)
-        entity = self.der.get_entity_definition(output_entity_id)
-        if entity is None:
-            return None
-        plan = resolve_surrogate_keys(entity)
-        if plan is None or plan.scd2:
-            return None
-        return apply_surrogate_keys(df, entity, plan)

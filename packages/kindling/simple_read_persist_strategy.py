@@ -17,6 +17,7 @@ from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log import *
+from kindling.surrogate_keys import apply_surrogate_keys
 from kindling.trace_ops import COMPONENT_PIPES, tracing_gates
 from kindling.watermarking import *
 from pyspark.sql.functions import col
@@ -298,9 +299,7 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
             # persist.persist_failed, so observers like
             # WatermarkAspect treat it as a failed persist (pending
             # watermark discarded, retry re-reads the same slice).
-            # Receivers chain: each sees the previous receiver's DataFrame,
-            # so a user transform and the surrogate key aspect both apply,
-            # whichever runs first.
+            # Receivers chain: each sees the previous receiver's DataFrame.
             df, _ = self.emit_chained(
                 "persist.before_persist",
                 "df",
@@ -311,6 +310,11 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                 output_entity_id=pipe.output_entity_id,
                 persist_id=persist_id,
             )
+            # Non-SCD2 surrogate keys: a framework-owned final step after
+            # every before_persist transform, so the key is computed from
+            # the values that are stored (signal receivers have no
+            # guaranteed order). SCD2 keys are minted inside the merge.
+            df = apply_surrogate_keys(df, output_entity)
 
             # SQL entities are read-only views, whatever provider their tags
             # name; reject before any write branch (derived replace included).

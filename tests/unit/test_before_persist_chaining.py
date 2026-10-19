@@ -4,9 +4,8 @@ receiver's DataFrame (persist.before_persist and read.after_read).
 Before the fix every receiver got the original DataFrame and the last
 non-None return won, so one transform (e.g. a user's before_persist handler,
 or a DataSignals dispatcher returning its unchanged input) silently
-discarded another's (e.g. the surrogate key aspect's key column). The
-end-to-end check with real DataFrames and the key aspect is in
-tests/integration/test_surrogate_keys_merge.py.
+discarded another's. (Surrogate keys are not a receiver: the persist step
+adds them after every receiver; see tests/integration/test_surrogate_keys_merge.py.)
 """
 
 from unittest.mock import MagicMock, Mock
@@ -139,8 +138,8 @@ def _persist(signal_provider):
     return strategy.create_pipe_persist_activator(pipe), out_provider
 
 
-def _key_aspect(sender, df, **kwargs):
-    return df.with_step("key")
+def _other_transform(sender, df, **kwargs):
+    return df.with_step("other")
 
 
 def _user_transform(sender, df, **kwargs):
@@ -148,7 +147,7 @@ def _user_transform(sender, df, **kwargs):
 
 
 @pytest.mark.parametrize(
-    "receivers", [(_key_aspect, _user_transform), (_user_transform, _key_aspect)]
+    "receivers", [(_other_transform, _user_transform), (_user_transform, _other_transform)]
 )
 def test_both_before_persist_transforms_apply_in_either_order(receivers):
     provider = BlinkerSignalProvider()
@@ -160,7 +159,7 @@ def test_both_before_persist_transforms_apply_in_either_order(receivers):
     persist(FakeFrame())
 
     written = out_provider.merge_to_entity.call_args.args[0]
-    assert sorted(written.steps) == ["key", "user"]
+    assert sorted(written.steps) == ["other", "user"]
 
 
 def test_a_datasignals_dispatcher_no_longer_discards_an_earlier_transform():
@@ -170,7 +169,7 @@ def test_a_datasignals_dispatcher_no_longer_discards_an_earlier_transform():
     DataSignals.reset()
     DataSignals._signal_provider = provider
     try:
-        provider.create_signal("persist.before_persist").connect(_key_aspect, weak=False)
+        provider.create_signal("persist.before_persist").connect(_other_transform, weak=False)
 
         @DataSignals.handler("persist.before_persist")
         def observe_only(sender, df, **kwargs):
@@ -178,6 +177,6 @@ def test_a_datasignals_dispatcher_no_longer_discards_an_earlier_transform():
 
         persist, out_provider = _persist(provider)
         persist(FakeFrame())
-        assert out_provider.merge_to_entity.call_args.args[0].steps == ("key",)
+        assert out_provider.merge_to_entity.call_args.args[0].steps == ("other",)
     finally:
         DataSignals.reset()

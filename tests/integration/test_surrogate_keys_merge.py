@@ -14,8 +14,8 @@ MemoryEntityProvider (DataFrame joins/unions):
   value; the streaming merge uses the driver-captured generator function.
 - Delta ensure_destination: generator resolution, schema augmentation and
   the ``kindling.surrogate.encoding`` table property.
-- Batch placement: SurrogateKeyAspect and a user before_persist transform
-  both apply (receivers chain).
+- Batch placement: the key is computed in the persist step after every
+  before_persist transform, from the stored values.
 
 Local Spark + local Delta only; fixtures mirror test_scd_untracked_parity.py.
 """
@@ -38,7 +38,6 @@ from kindling.simple_read_persist_strategy import SimpleReadPersistStrategy
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.surrogate_keys import (
-    SurrogateKeyAspect,
     SurrogateKeyGenerators,
     apply_surrogate_keys,
     resolve_surrogate_keys,
@@ -561,7 +560,7 @@ def test_keys_declared_on_an_existing_table_evolve_it(spark, delta_provider, req
     assert closed["customer_version_sk"] is None, "keys are never backfilled by a close"
 
 
-# ── batch placement: the aspect chains with user transforms ──────────────────
+# ── batch placement: keys are computed after every before_persist transform ─
 
 
 class _NamedEntityRegistry:
@@ -572,11 +571,15 @@ class _NamedEntityRegistry:
         return self.entities[entity_id]
 
 
-@pytest.mark.parametrize("aspect_first", [True, False], ids=["aspect_first", "user_first"])
-def test_before_persist_aspect_and_user_transform_both_apply(
-    spark, memory_provider, request, aspect_first
+@pytest.mark.parametrize("trim_first", [True, False], ids=["trim_first", "audit_first"])
+def test_key_is_computed_from_the_stored_values_after_before_persist_handlers(
+    spark, provider, request, trim_first
 ):
-    output = _entity(request, "aspect_out", {"surrogate.column": "product_sk"}, scd2=False)
+    """A before_persist handler that normalizes a surrogate.from column (here
+    it trims customer_id): the key is computed from the stored, trimmed
+    value, whatever order the handlers were connected in. The key is a
+    framework step after every handler, not a signal receiver racing them."""
+    output = _entity(request, "persist_keys", {"surrogate.column": "product_sk"}, scd2=False)
     output.schema = None
     entities = {
         "bronze.src": SimpleNamespace(entityid="bronze.src", tags={}),
@@ -585,22 +588,19 @@ def test_before_persist_aspect_and_user_transform_both_apply(
     signals = BlinkerSignalProvider()
     lp = MagicMock(spec=PythonLoggerProvider)
     lp.get_logger.return_value = MagicMock()
-    aspect = SurrogateKeyAspect(lp=lp, signal_provider=signals)
-    aspect.der = _NamedEntityRegistry(entities)
 
-    def user_transform(sender, df, **kwargs):
+    def trim_ids(sender, df, **kwargs):
+        return df.withColumn("customer_id", F.trim(F.col("customer_id")))
+
+    def audit(sender, df, **kwargs):
         return df.withColumn("audit", F.lit("x"))
 
     signal = signals.create_signal("persist.before_persist")
-    if aspect_first:
-        aspect.register()
-        signal.connect(user_transform, weak=False)
-    else:
-        signal.connect(user_transform, weak=False)
-        aspect.register()
+    for handler in (trim_ids, audit) if trim_first else (audit, trim_ids):
+        signal.connect(handler, weak=False)
 
     registry = Mock()
-    registry.get_provider_for_entity.return_value = memory_provider
+    registry.get_provider_for_entity.return_value = provider
     strategy = SimpleReadPersistStrategy(
         ep=Mock(),
         der=_NamedEntityRegistry(entities),
@@ -611,15 +611,17 @@ def test_before_persist_aspect_and_user_transform_both_apply(
     )
     pipe = Mock(pipeid="p", input_entity_ids=["bronze.src"], output_entity_id=output.entityid)
     persist = strategy.create_pipe_persist_activator(pipe)
-    persist(
-        spark.createDataFrame(
-            [("c1", "crm", "bronze", "L1")], StructType(BUSINESS_SCHEMA.fields[:4])
+    for status in ("bronze", "silver"):  # first write, then a merge
+        persist(
+            spark.createDataFrame(
+                [("  c1 ", "crm", status, "L1")], StructType(BUSINESS_SCHEMA.fields[:4])
+            )
         )
-    )
 
-    (row,) = memory_provider.read_entity(output).collect()
+    (row,) = provider.read_entity(output).collect()
+    assert row["customer_id"] == "c1" and row["status"] == "silver"
     assert row["audit"] == "x"
-    assert row["product_sk"] == sha256("S2:c1S3:crm")
+    assert row["product_sk"] == sha256("S2:c1S3:crm"), "key of the stored (trimmed) value"
 
 
 # ── first write through the persist path (no prior ensure_destination) ──────

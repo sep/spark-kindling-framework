@@ -632,33 +632,3 @@ def test_generator_module_is_pickled_by_value_only_inside_the_context(tmp_path):
     loaded = load_elsewhere(by_value)
     assert loaded.returncode == 0, loaded.stderr
     assert loaded.stdout.strip() == "_gen"
-
-
-# ── bootstrap registration ───────────────────────────────────────────────────
-
-
-def test_bootstrap_registration_fails_loudly(monkeypatch):
-    """Like the watermark aspect: a run that silently skipped keys would write
-    rows without them, so a registration failure is an error."""
-    from unittest.mock import patch
-
-    from kindling import bootstrap
-
-    with patch("kindling.injection.GlobalInjector.get", side_effect=RuntimeError("unwired")):
-        with pytest.raises(RuntimeError, match="unwired"):
-            bootstrap._register_surrogate_key_aspect()
-
-
-def test_bootstrap_registration_connects_the_aspect():
-    from unittest.mock import MagicMock, patch
-
-    from kindling import bootstrap
-    from kindling.signaling import BlinkerSignalProvider
-    from kindling.surrogate_keys import SurrogateKeyAspect
-
-    signals = BlinkerSignalProvider()
-    lp = MagicMock()
-    aspect = SurrogateKeyAspect(lp=lp, signal_provider=signals)
-    with patch("kindling.injection.GlobalInjector.get", return_value=aspect):
-        bootstrap._register_surrogate_key_aspect()
-    assert signals.get_signal("persist.before_persist").has_receivers_for(object())

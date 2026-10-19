@@ -25,8 +25,9 @@ All notable changes to spark-kindling are documented here.
   merges on inserted rows, from the stored effective_from, and are never
   tracked, never updated in place (also under `scd.tracked`) and never touched
   by a close; a keyed (SCD1) merge's update leaves them alone. Other entities
-  get keys before persist (a new `SurrogateKeyAspect`) and when a streaming
-  pipe starts. An SCD2 version key without `scd.sequence_by` logs a warning
+  get keys in the persist step, after every `persist.before_persist` handler
+  (so a handler that normalizes an input changes the key too), and when a
+  streaming pipe starts. An SCD2 version key without `scd.sequence_by` logs a warning
   (keys are not reproducible on a rebuild);
   `surrogate.require_reproducible: "true"` makes it an error. Registration
   validates the tags, input types and key placement; `uuid4`, `identity`,

@@ -9,7 +9,6 @@ import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 from kindling.bootstrap import (
     download_config_files,
     resolve_settings_files,
@@ -350,12 +349,3 @@ def test_bundle_generator_sources_match_runtime_resolution(tmp_path):
     assert [str(source.path) for source in sources if source.exists] == resolve_settings_files(
         config_dir, app_dir, "dev", "databricks", "ws1"
     )
-
-
-@pytest.fixture(autouse=True)
-def _skip_surrogate_key_aspect_registration():
-    """These tests bootstrap against a bare injector (no signal provider or
-    logger bindings). Registering the surrogate key aspect fails loudly by
-    design, so it is stubbed here; it is covered in test_surrogate_key_config."""
-    with patch("kindling.bootstrap._register_surrogate_key_aspect"):
-        yield

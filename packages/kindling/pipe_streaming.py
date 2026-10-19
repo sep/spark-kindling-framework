@@ -201,10 +201,11 @@ class SimplePipeStreamStarter(PipeStreamStarter):
             if callable(ensure_output_table):
                 ensure_output_table(output_entity)
 
-        # Non-SCD2 surrogate keys: this path never emits
-        # persist.before_persist (where SurrogateKeyAspect adds them in
-        # batch), so add the key column(s) here, on the driver, before the
-        # sink starts. SCD2 keys are minted inside the per-batch merge.
+        # Non-SCD2 surrogate keys: the streaming counterpart of the batch
+        # persist step, which adds them after every persist.before_persist
+        # transform (this path never emits that signal). Added here, on the
+        # driver, after the pipe's transform and before the sink starts;
+        # SCD2 keys are minted inside the per-batch merge.
         from kindling.surrogate_keys import apply_surrogate_keys
 
         transformed_stream = apply_surrogate_keys(transformed_stream, output_entity)

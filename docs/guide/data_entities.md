@@ -895,14 +895,16 @@ another type fails validation.
 - **SCD2** version and durable keys are minted inside the merge (Delta and
   memory), on the inserted rows only, from the effective_from value that is
   stored with the row. Streaming merges use the same merge per micro-batch.
-- **Other entities** get the key as a column before the write: in batch runs
-  through `persist.before_persist` (the `SurrogateKeyAspect`, registered at
-  bootstrap on every platform), in streaming pipes just before the sink
-  starts.
+- **Other entities** get the key as a column just before the write: in batch
+  runs the persist step adds it after every `persist.before_persist` handler
+  has run, and in streaming pipes it is added after the pipe's transform,
+  just before the sink starts. A handler that normalizes an input column (for
+  example trims an id) therefore changes the key too: the key is always
+  computed from the values that are stored.
 
 `before_persist` and `read.after_read` receivers chain: each receiver gets the
-DataFrame the previous one returned, so the key aspect and your own
-transforms all apply, in whatever order they run.
+DataFrame the previous one returned, so all your transforms apply, in
+whatever order they run.
 
 ### Keys are insert-only
 

@@ -1,6 +1,5 @@
 from unittest.mock import ANY, MagicMock, call, patch
 
-import pytest
 from kindling.injection import GlobalInjector
 
 
@@ -227,12 +226,3 @@ def test_without_declaration_only_app_name_still_runs_app():
         initialize_framework({"platform": "standalone", "app_name": "orders"})
 
     runner.run_app.assert_called_once_with("orders")
-
-
-@pytest.fixture(autouse=True)
-def _skip_surrogate_key_aspect_registration():
-    """These tests bootstrap against a bare injector (no signal provider or
-    logger bindings). Registering the surrogate key aspect fails loudly by
-    design, so it is stubbed here; it is covered in test_surrogate_key_config."""
-    with patch("kindling.bootstrap._register_surrogate_key_aspect"):
-        yield
