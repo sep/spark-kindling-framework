@@ -706,3 +706,29 @@ def test_write_mode_insert_requires_merge_capable_provider():
     starter, _ = _make_starter(dst_entity, out_provider)
     with pytest.raises(TypeError, match="streaming merges"):
         starter.start_pipe_stream("pipe1")
+
+
+@pytest.mark.parametrize("write_mode", ["merge", "append"])
+def test_surrogate_keys_are_added_before_the_sink_starts(write_mode):
+    """The streaming start path never emits persist.before_persist, so the
+    starter adds non-SCD2 keys itself, before append_as_stream / merge_as_stream."""
+    dst_entity = Mock(
+        entityid="entity.dst",
+        tags={
+            "provider_type": "delta",
+            "provider.access_mode": "storage",
+            "write.mode": write_mode,
+            "surrogate.column": "order_sk",
+        },
+        merge_columns=["order_id"],
+    )
+    out_provider = Mock(spec=_MergeCapableProvider)
+    keyed = Mock(name="keyed_stream")
+    starter, pipe = _make_starter(dst_entity, out_provider)
+
+    with patch("kindling.surrogate_keys.apply_surrogate_keys", return_value=keyed) as apply_keys:
+        starter.start_pipe_stream("pipe1")
+
+    apply_keys.assert_called_once_with(pipe.execute.return_value, dst_entity)
+    sink = out_provider.merge_as_stream if write_mode == "merge" else out_provider.append_as_stream
+    assert sink.call_args.args[0] is keyed

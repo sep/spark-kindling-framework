@@ -2890,6 +2890,24 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                 GlobalInjector.get(WatermarkAspect).register()
                 logger.info("Watermark aspect registered")
 
+            # Surrogate keys for non-SCD2 outputs are a before-persist
+            # column expression on every platform, standalone included (SCD2
+            # keys are minted inside the merge instead).
+            if not declaration_only:
+                try:
+                    from kindling.injection import GlobalInjector
+                    from kindling.surrogate_keys import SurrogateKeyAspect
+
+                    GlobalInjector.get(SurrogateKeyAspect).register()
+                    logger.info("Surrogate key aspect registered")
+                except Exception as aspect_error:
+                    # Only reachable with a partially wired injector (the
+                    # signal provider and logger are core bindings).
+                    logger.warning(
+                        "Surrogate key aspect could not be registered; non-SCD2 "
+                        f"surrogate keys will not be added in batch runs: {aspect_error}"
+                    )
+
             # Registration-gated tracing wiring (WatermarkAspect pattern):
             # read kindling.telemetry.tracing.* once and enable provider-op
             # tracing at the registry chokepoint. Runs on every platform —
