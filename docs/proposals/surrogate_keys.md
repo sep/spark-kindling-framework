@@ -184,7 +184,12 @@ functions only: no UDFs and no JVM access.
    for an SCD2 version key. Order is significant and documented. **Column names are not
    part of the input**, so renaming a column keeps its keys and conformed entities with
    differently named key columns still agree.
-2. **Namespace**: if `surrogate.namespace` is set, it is encoded as the first value.
+2. **Namespace**: if `surrogate.namespace` is set, it comes first as its own token,
+   `@<char_length>:<namespace>`. Input values always start with `N` or `S`, so the
+   namespace can't be mistaken for an input: namespace `a` over `("b")` encodes as
+   `@1:aS1:b`, while no namespace over `("a", "b")` encodes as `S1:aS1:b`. (Encoding the
+   namespace as an ordinary first value would make those two equal.) The golden vectors
+   include this case.
 3. **Normalization** (`surrogate.normalize`) applies to string inputs before encoding.
 4. **Per-value encoding**: `NULL` becomes `N`; any other value becomes
    `S<char_length>:<canonical value>`. The values are concatenated with no separator.
@@ -263,9 +268,12 @@ exactly once**:
 
 - `write.mode: insert`;
 - the insert branch of SCD1;
-- SCD2 version keys (a version row is inserted once and never rewritten);
-- append, with the existing retry warning extended to say that retried appends mint new
-  keys.
+- SCD2 version keys (a version row is inserted once and never rewritten).
+
+Append and initial writes (`append_to_entity`, `write_to_entity`, `append_as_stream`) have
+no merge insert clause. Phase 2 either defines a placement for them (with the existing
+retry warning extended to say that retried appends mint new keys) or rejects `uuid4` on
+those write modes; until then `uuid4` is rejected at registration.
 
 It is never placed as a DataFrame column. A `uuid()` column would be re-evaluated by
 each union branch of the staged SCD2 plan, and again by `after_persist` observers. It
@@ -329,16 +337,15 @@ the Column / SQL expression from the entity's resolved config.
 | Entity kind | Where | Why |
 | --- | --- | --- |
 | SCD2 (version and durable keys) | Inside `_execute_scd2_merge` (Delta) and `_memory_scd2_merge` (memory). effective_from becomes an explicit staged column first, and the key is computed on the insert rows from that column. The insert clause, the close clause and the key all read the same staged value. | The only point where effective_from is known with its final value, type and precision. Streaming is covered automatically, because `merge_as_stream` runs the same merge per micro-batch. |
-| Non-SCD2, deterministic (`hash`, `uuid5`, deterministic `custom`) | `SurrogateKeyAspect` on `persist.before_persist` for batch; an explicit call in `SimplePipeStreamStarter` before `append_as_stream` / `merge_as_stream` for streaming. | Works with every provider; a pure column expression. The streaming call closes the gap where that signal never fires. |
-| `uuid4`, non-deterministic `custom` | Merge insert clause only; removed from the SCD1 update set. | Evaluated exactly once per inserted row. |
+| Non-SCD2, deterministic (`hash`, `uuid5`, deterministic `custom`) | The batch persist step, after every `persist.before_persist` receiver, for every write mode (merge, append, initial write); an explicit call in `SimplePipeStreamStarter` before `append_as_stream` / `merge_as_stream` for streaming. | Works with every provider and write mode; a pure column expression. Running after the receivers means no user transform can drop or overwrite the key. The streaming call closes the gap where `before_persist` never fires. |
+| `uuid4`, non-deterministic `custom` | Phase 2. Merge insert clause for merge writes, removed from the SCD1 update set; append and initial writes are defined or rejected then (see [`uuid4`](#uuid4)). | Evaluated exactly once per inserted row. |
 
-**Prerequisite: fix `before_persist` chaining.** `_apply_df_transforms`
-(`simple_read_persist_strategy.py`) keeps the last non-None DataFrame returned by
-`persist.before_persist` receivers, and gives each receiver the original DataFrame. A
-`SurrogateKeyAspect` returning a DataFrame with the key column can therefore be silently
-overwritten by a user's `before_persist` transform, or overwrite it. Receivers have to
-chain (each sees the previous one's output) before the batch aspect is safe. Provenance
-stamping does not depend on the fix: the persist step adds its stamp after the receivers.
+**`before_persist` chaining.** `_apply_df_transforms` (`simple_read_persist_strategy.py`)
+kept the last non-None DataFrame returned by `persist.before_persist` receivers, and gave
+each receiver the original DataFrame, so one receiver's columns could silently overwrite
+another's. Phase 1 makes receivers chain (each sees the previous one's output), and adds
+keys in the persist step after all of them rather than as a receiver, so ordering between
+receivers never matters for keys. Provenance stamping uses the same position.
 
 **Staged effective_from.** Today the insert clause writes `staged.<sequence_by>`, or
 `current_timestamp()` when there is none. The revised merge computes it once as a staged
@@ -383,8 +390,14 @@ adopt `v1` later at no cost, but that is not needed for this work.
 - **With `scd.sequence_by`:** the version key is a function of the business key and the
   sequence value. A replay or rebuild recreates the same version rows with the same keys.
   Late or back-dated rows rejected by the strictly-later check never get inserted, so
-  they never mint a key. The SDP/AUTO CDC path sets `__START_AT` from the same sequence
-  value, so a key computed in its source view agrees with the Delta provider's.
+  they never mint a key.
+- **SDP / AUTO CDC lowering: unresolved.** Computing the version key in the source view
+  does not give parity with the Delta provider. On an untracked- or sequence-only update
+  the incoming sequence advances while the stored `__START_AT` stays the same, so a
+  recomputed key would either open new history (if tracked) or be overwritten in place
+  (if untracked). Snapshot flows also order by ingestion rather than `scd.sequence_by`.
+  A lowering needs the stored version start and must keep insert-only keys. Until then
+  the SDP declaration engine rejects `surrogate.*` tags.
 - **Without `scd.sequence_by`:** effective_from is processing time, so version keys are
   unique and fixed once stored, but **not reproducible** on a rebuild. Registration
   **warns**; `surrogate.require_reproducible=true` turns the warning into an error for
@@ -408,12 +421,15 @@ from kindling.surrogate_keys import KeyContext, SurrogateKeyGenerators
 
 @SurrogateKeyGenerators.register("acme_customer_key", deterministic=True, output_type="string")
 def acme_customer_key(ctx: KeyContext) -> Column:
-    return F.concat_ws(
-        "-",
+    parts = [
+        F.lit(ctx.options["prefix"]),
         ctx.col("source_system"),
         F.lpad(ctx.col("customer_id").cast("string"), 10, "0"),
-        F.date_format(ctx.effective_from, "yyyyMMddHHmmss"),
-    )
+    ]
+    # Only an SCD2 version key has an effective date; a durable key must not use one.
+    if ctx.kind == "version":
+        parts.append(F.date_format(ctx.effective_from, "yyyyMMddHHmmss"))
+    return F.concat_ws("-", *parts)
 ```
 
 **`KeyContext`** gives the generator all of the row's data, including the effective date:
@@ -429,8 +445,11 @@ def acme_customer_key(ctx: KeyContext) -> Column:
   generator therefore cannot depend on values that change when the version closes.
 - `entity`: a read-only view of the entity metadata (id, tags, merge columns).
 - `kind`: which key is being built: `"version"` (SCD2 version key), `"durable"` (SCD2
-  durable key) or `"key"` (non-SCD2). For a durable key, `effective_from` is `None`, so a
-  generator can't build a "durable" key that changes with each version by mistake.
+  durable key) or `"key"` (non-SCD2). The same generator builds both SCD2 keys, called
+  once per kind. The durable contract is that the key must not depend on anything
+  version-specific; for a durable key `effective_from` is `None`, so a generator can't
+  build a "durable" key that changes with each version by mistake (the example branches
+  on `kind`).
 - `options`: the entity's `surrogate.generator.<option>` tags as a read-only
   `{option: value}` mapping (string values), so one generator can be parameterized per
   entity, e.g. `surrogate.generator.prefix: CUST`.
@@ -485,6 +504,11 @@ default**, fixing the null and separator collisions described above. The legacy
   adopt `v1`. It then **keeps writing that table with the legacy encoding** and records
   `legacy` on it, so a table never mixes two ID encodings. New tables get `v1`.
   (Confirmed 2026-10-19.)
+- **Changing encodings requires a rebuild.** An explicit `temporal.id_encoding` that
+  differs from a non-empty table's encoding, whether recorded in the property or inferred
+  as legacy, **fails** at `ensure_destination` with a message to rebuild the table.
+  Replaying events under new IDs would insert duplicates instead of matching the stored
+  rows. The warning above covers only the implicit case.
 - **Engine parity**: the Databricks lowering (`temporal_lowering.py`) constructs the same
   event IDs as the engine, so both must switch together and share one encoder.
   Otherwise the two execution modes would produce different IDs. A parity test asserts
@@ -546,7 +570,7 @@ Recorded 2026-10-19.
    SCD2 version and durable keys inside both providers' merges, the staged
    effective_from column, and key columns as insert-only (out of tracking, the in-place
    update set and the SCD1 update set). The `before_persist` chaining fix, then the
-   non-SCD2 batch aspect plus the streaming-start call. `custom` generators: registry,
+   non-SCD2 keys in the batch persist step plus the streaming-start call. `custom` generators: registry,
    `KeyContext` (including `kind` and `options`), resolution at `ensure_destination`,
    the determinism helper. Deterministic generators only; non-deterministic ones arrive
    with `uuid4`.
@@ -564,7 +588,8 @@ Recorded 2026-10-19.
 - **Golden vectors** for `v1`: null placement, embedded separators, empty vs NULL,
   unicode, int vs long, decimal scale (including zero, negative, tiny values that Spark's
   cast renders in scientific notation, and maximum precision), timestamps across session
-  timezones (same instant gives the same key), namespace and normalization.
+  timezones (same instant gives the same key), namespace (including namespace `a` over
+  `("b")` vs no namespace over `("a", "b")`) and normalization.
 - **`uuid5`** cross-checked against Python's `uuid.uuid5`.
 - **SCD2:** replay idempotency with `sequence_by` (same version keys); the warning (and
   the `require_reproducible` error) without it; dropped stale rows and snapshot closes
@@ -574,8 +599,8 @@ Recorded 2026-10-19.
 - **SCD1:** a tracked change leaves the key unchanged.
 - **`uuid4`:** evaluated once per inserted row (no divergence between union branches);
   SCD1 updates leave it unchanged; rejected for durable keys and merge columns.
-- **`before_persist` chaining:** a user transform and the key aspect both apply,
-  in either order.
+- **`before_persist` chaining:** receivers chain, and a key survives any user
+  `before_persist` transform, because the persist step adds it after the receivers.
 - **Custom generators:** registration, resolution at `ensure_destination` (missing name
   errors with the registered list), use inside `merge_as_stream`'s per-batch merge
   with the generator module *not* imported in the worker (it must travel as the captured
