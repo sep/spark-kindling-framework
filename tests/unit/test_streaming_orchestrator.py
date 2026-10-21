@@ -219,3 +219,49 @@ def test_stop_stops_queries_and_runtime_components():
     assert all(query.stop_calls == 1 for query in queries)
     assert all(query.await_calls == 1 for query in queries)
     assert orchestrator.get_status().active_query_count == 0
+
+
+def test_pipe_starting_signal_precedes_each_stream_start_with_the_run_id():
+    """No pipe lifecycle signal fires before an orchestrated stream starts,
+    so the orchestrator emits streaming.pipe_starting; the provenance run
+    capture takes the stream's execution id from it."""
+    from kindling.provenance import ProvenanceRunCapture
+
+    signals = BlinkerSignalProvider()
+    starter = FakePipeStreamStarter()
+    capture = ProvenanceRunCapture(signals)
+    capture.register()
+    events = []
+    signals.create_signal("streaming.pipe_starting").connect(
+        lambda sender, **kwargs: events.append(("starting", kwargs["pipe_id"], kwargs["run_id"])),
+        weak=False,
+    )
+    original = starter.start_pipe_stream
+
+    def start(pipeid, options=None):
+        events.append(("start", pipeid, capture.execution_id(pipeid)))
+        return original(pipeid, options)
+
+    starter.start_pipe_stream = start
+    service = FakeManagedService()
+    orchestrator = StreamingOrchestrator(
+        pipe_stream_starter=starter,
+        query_manager=FakeStreamingQueryManager(),
+        streaming_listener=service,
+        health_monitor=FakeManagedService(),
+        recovery_manager=SimpleNamespace(
+            start=service.start, stop=service.stop, get_all_recovery_states=lambda: {}
+        ),
+        logger_provider=FakeLoggerProvider(),
+        signal_provider=signals,
+    )
+
+    result = orchestrator.start(make_plan())
+
+    run_id = result.run_id
+    assert events == [
+        ("starting", "pipe_a", run_id),
+        ("start", "pipe_a", run_id),
+        ("starting", "pipe_b", run_id),
+        ("start", "pipe_b", run_id),
+    ]

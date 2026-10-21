@@ -10,6 +10,13 @@ from kindling.entity_provider import (
 )
 from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.injection import *
+from kindling.provenance import (
+    MODE_STREAMING,
+    build_provenance_stamp,
+    current_execution_id,
+    drop_provenance,
+    stamp_provenance,
+)
 from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from kindling.spark_trace import *
@@ -105,6 +112,9 @@ class SimplePipeStreamStarter(PipeStreamStarter):
                 frame = provider.read_entity_as_stream(entity)
             else:
                 frame = provider.read_entity(entity)
+            # As in the batch read: an input's provenance names its own
+            # writer, so it is dropped unless the pipe keeps it.
+            frame = drop_provenance(frame, entity, pipe)
             input_entity_frames[entity_id.replace(".", "_")] = frame
 
         # Transform
@@ -209,6 +219,21 @@ class SimplePipeStreamStarter(PipeStreamStarter):
         from kindling.surrogate_keys import apply_surrogate_keys
 
         transformed_stream = apply_surrogate_keys(transformed_stream, output_entity)
+        # Provenance stamp, after the key step as in the batch persist. Its
+        # values are fixed when the stream starts (the execution id is the
+        # run that started it); processed_at is current_timestamp(), so per
+        # micro-batch.
+        transformed_stream = stamp_provenance(
+            transformed_stream,
+            output_entity,
+            lambda: build_provenance_stamp(
+                pipe,
+                output_entity,
+                mode=MODE_STREAMING,
+                execution_id=current_execution_id(pipe.pipeid),
+                config_service=self.cs,
+            ),
+        )
 
         if write_mode in ("merge", "insert"):
             # merge_as_stream starts the query itself (foreachBatch resolves

@@ -64,6 +64,9 @@ class StreamingOrchestrator(SignalEmitter):
     """
 
     EMITS = [
+        # Before each pipe's stream starts, with the orchestrator's run_id
+        # (provenance stamps take their execution id from it).
+        "streaming.pipe_starting",
         "streaming.orchestrator_started",
         "streaming.orchestrator_completed",
         "streaming.orchestrator_failed",
@@ -327,6 +330,7 @@ class StreamingOrchestrator(SignalEmitter):
     ) -> PipeResult:
         pipe_options = self._resolve_pipe_options(pipe_id, streaming_options)
         query_id = f"{run_id}:{pipe_id}"
+        self.emit("streaming.pipe_starting", run_id=run_id, pipe_id=pipe_id)
 
         def builder(_spark, _config, pipe_id=pipe_id, pipe_options=pipe_options):
             return self.pipe_stream_starter.start_pipe_stream(pipe_id, pipe_options)
