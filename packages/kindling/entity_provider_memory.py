@@ -20,6 +20,7 @@ from .data_entities import (
     build_null_safe_change_condition,
     column_name_key,
     normalize_scd2_batch,
+    provenance_batch_columns,
     quote_sql_identifier,
     scd2_batch_schema,
     scd_change_columns,
@@ -79,6 +80,9 @@ def _memory_scd1_merge(
             business_keys,
             case_sensitive=case_sensitive,
             insert_only_columns=key_columns,
+            uncompared_columns=provenance_batch_columns(
+                entity_metadata, incoming_df.columns, case_sensitive
+            ),
         )
         current_keys = {name_key(column) for column in current_df.columns}
         if all(name_key(column) in current_keys for column in tracked_columns):
@@ -268,14 +272,20 @@ def _memory_scd2_merge(
     # tracked: a change closes the current version and opens a new one.
     # untracked (incl. sequence_by): a change only to these updates the
     # current version in place.
+    # provenance: in no change test, but rewritten with every in-place
+    # update (overwrite overwrites); a close keeps the closed version's.
+    provenance_columns = provenance_batch_columns(
+        entity_metadata, incoming_df.columns, case_sensitive
+    )
     tracked_columns, untracked_columns = scd_change_columns(
         cfg,
         incoming_df.columns,
         business_keys,
         case_sensitive=case_sensitive,
         insert_only_columns=key_columns,
+        uncompared_columns=provenance_columns,
     )
-    untracked_keys = {name_key(column) for column in untracked_columns}
+    untracked_keys = {name_key(column) for column in untracked_columns + provenance_columns}
 
     historical_rows = current_df.filter(_qcol(cfg.is_current_column) == lit(False))
     current_rows = current_df.filter(_qcol(cfg.is_current_column) == lit(True))
@@ -750,12 +760,18 @@ class MemoryEntityProvider(
             else:
                 # Without a declared schema, the batch's business columns
                 # bootstrap the table (as the Delta merge does).
+                from kindling.provenance import augment_schema_for_provenance
                 from kindling.surrogate_keys import augment_schema_for_surrogate_keys
 
                 current_df = self.spark.createDataFrame(
                     [],
-                    augment_schema_for_surrogate_keys(
-                        augment_schema_for_scd2(scd2_batch_schema(entity_metadata, df.schema), cfg),
+                    augment_schema_for_provenance(
+                        augment_schema_for_surrogate_keys(
+                            augment_schema_for_scd2(
+                                scd2_batch_schema(entity_metadata, df.schema), cfg
+                            ),
+                            entity_metadata,
+                        ),
                         entity_metadata,
                     ),
                 )

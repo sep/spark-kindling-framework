@@ -2,6 +2,7 @@ import dataclasses
 import logging
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import MISSING, dataclass, field, fields, replace
 from pathlib import Path
@@ -433,6 +434,7 @@ def scd_change_columns(
     business_keys: List[str],
     case_sensitive: bool = True,
     insert_only_columns: Optional[List[str]] = None,
+    uncompared_columns: Optional[List[str]] = None,
 ) -> Tuple[List[str], List[str]]:
     """Split a batch's columns into ``(tracked, untracked)`` for change detection.
 
@@ -455,6 +457,11 @@ def scd_change_columns(
     ``insert_only_columns`` (surrogate key columns) are a third class: they
     are neither tracked nor untracked, so no merge clause ever rewrites
     them.
+
+    ``uncompared_columns`` (the provenance column) are a fourth class: in
+    neither list, so a difference in them is never a change and never
+    selects an in-place update; callers write them with every row write
+    (the SCD2 insert values and touch set, the SCD1 update set).
     """
     key = column_name_key(case_sensitive)
     temporal_columns = (
@@ -463,6 +470,7 @@ def scd_change_columns(
         else set()
     )
     insert_only = {key(name) for name in insert_only_columns or ()}
+    insert_only |= {key(name) for name in uncompared_columns or ()}
     non_candidates = {key(name) for name in list(business_keys) + list(temporal_columns)}
     candidates = [
         column
@@ -946,8 +954,8 @@ class ProvenanceConfig:
 
 def provenance_config_from_tags(entity: EntityMetadata) -> ProvenanceConfig:
     """Extract provenance configuration from an entity's tags (never raises)."""
-    tags = getattr(entity, "tags", None) or {}
-    if not any(str(key).startswith("provenance.") for key in tags):
+    tags = getattr(entity, "tags", None)
+    if not isinstance(tags, Mapping) or not any(str(key).startswith("provenance.") for key in tags):
         return ProvenanceConfig()
     return ProvenanceConfig(
         enabled=_tag_text(tags, "provenance.enabled").lower() == "true",
@@ -962,15 +970,31 @@ def provenance_column(entity: EntityMetadata) -> Optional[str]:
     return cfg.column if cfg.enabled else None
 
 
+def provenance_batch_columns(
+    entity: EntityMetadata, columns: List[str], case_sensitive: bool = True
+) -> List[str]:
+    """The batch's provenance column (as the batch spells it), or ``[]``.
+
+    The merges pass it to ``scd_change_columns`` as an uncompared column
+    and add it to every write set.
+    """
+    column = provenance_column(entity)
+    if column is None:
+        return []
+    key = column_name_key(case_sensitive)
+    return [name for name in columns if key(name) == key(column)]
+
+
 def provenance_kept_inputs(pipe) -> Tuple[str, ...]:
     """Input entity ids whose provenance column a pipe keeps on read.
 
     Read from the pipe's ``provenance.keep_inputs`` tag (comma-separated
     entity ids); every other input has the column dropped on read.
     """
-    return tuple(
-        _parse_column_list_tag(getattr(pipe, "tags", None) or {}, "provenance.keep_inputs") or ()
-    )
+    tags = getattr(pipe, "tags", None)
+    if not isinstance(tags, Mapping):
+        return ()
+    return tuple(_parse_column_list_tag(tags, "provenance.keep_inputs") or ())
 
 
 def _provenance_setting_defaults(config_service) -> Dict[str, str]:

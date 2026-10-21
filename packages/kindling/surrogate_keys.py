@@ -36,6 +36,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from kindling.data_entities import (
     EntityMetadata,
     SurrogateKeyConfig,
+    provenance_column,
     quote_sql_identifier,
     scd_config_from_tags,
     spark_case_sensitive,
@@ -383,7 +384,8 @@ class KeyContext:
       framework (a plain DataFrame column, or ``alias``-qualified, e.g.
       ``staged.<name>`` inside a merge).
     - ``columns``: every data column, after transforms (staging helpers,
-      SCD2 temporal columns and key columns excluded).
+      SCD2 temporal columns, key columns and the provenance column
+      excluded: the stamp differs on every run).
     - ``key_columns``: the resolved ``surrogate.from`` columns.
     - ``effective_from``: the final, stored effective_from of the version
       being inserted; ``None`` for non-SCD2 entities and for durable keys.
@@ -727,7 +729,9 @@ def _key_expression(
             namespace=cfg.namespace,
             alias=alias,
             case_sensitive=case_sensitive,
-            excluded_columns=tuple(plan.key_columns) + tuple(plan.temporal_columns),
+            excluded_columns=tuple(plan.key_columns)
+            + tuple(plan.temporal_columns)
+            + tuple(filter(None, [provenance_column(plan.entity)])),
         )
         built = plan.generator.func(ctx)
         if not isinstance(built, Column):
