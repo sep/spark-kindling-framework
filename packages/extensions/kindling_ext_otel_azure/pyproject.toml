@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "spark-kindling-ext-otel-azure"
-version = "0.14.0rc2"
+version = "0.14.0rc3"
 description = "Azure Monitor OpenTelemetry integration for Kindling framework"
 authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
 license = "MIT"
@@ -38,7 +38,7 @@ classifiers = [
 # typing-extensions pinned high because Databricks runtime ships an older
 # version and the `deprecated` decorator (used by opentelemetry) needs >=4.6.
 dependencies = [
-    "spark-kindling>=0.14.0rc2,<0.15",
+    "spark-kindling>=0.14.0rc3,<0.15",
     "azure-monitor-opentelemetry>=1.6.0,<1.9.0",
     "opentelemetry-api>=1.20.0,<2.0.0",
     "opentelemetry-sdk>=1.20.0,<2.0.0",
