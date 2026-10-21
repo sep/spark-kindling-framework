@@ -198,3 +198,15 @@ class TestRunCapture:
 
     def test_unregistered_capture_has_nothing(self):
         assert ProvenanceRunCapture(BlinkerSignalProvider()).execution_id("p1") is None
+
+
+def test_stamp_values_are_text_or_null_for_test_doubles():
+    """Only str values reach the stamp: a Mock pipe (as many unit tests use)
+    gives nulls, never a Mock literal."""
+    pipe = MagicMock(input_entity_ids="not-a-list")
+    stamp = build_provenance_stamp(
+        pipe, _entity({"provenance.enabled": "true"}), mode=MODE_BATCH, config_service=MagicMock()
+    )
+    assert stamp.pipe_id is None and stamp.pipe_name is None
+    assert stamp.input_entity_ids == ()
+    assert stamp.tags == ()

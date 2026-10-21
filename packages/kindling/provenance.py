@@ -22,6 +22,7 @@ The stamp is data, not telemetry: nothing here emits spans or metrics.
 
 import fnmatch
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
@@ -186,16 +187,19 @@ def drop_provenance(df: DataFrame, entity: EntityMetadata, pipe=None) -> DataFra
     Kept when the reading pipe lists the entity in ``provenance.keep_inputs``.
     Otherwise a downstream table could inherit a stamp naming the wrong
     pipe, and the stamp's maps break ``distinct`` and ``groupBy``.
+
+    Lazy: ``DataFrame.drop`` by name is a no-op for a missing column, so no
+    schema is resolved here (an SDP dataset function must not analyze its
+    inputs eagerly).
     """
     if df is None:
         return df
     column = provenance_column(entity)
     if column is None:
         return df
-    if pipe is not None and entity.entityid in provenance_kept_inputs(pipe):
+    if pipe is not None and getattr(entity, "entityid", None) in provenance_kept_inputs(pipe):
         return df
-    existing = _find_column(df.columns, column)
-    return df.drop(existing) if existing is not None else df
+    return df.drop(column)
 
 
 # ── Stamp values ─────────────────────────────────────────────────────────────
@@ -256,8 +260,8 @@ def selected_pipe_tags(pipe, entity: EntityMetadata) -> Tuple[Tuple[str, str], .
     from kindling.config_loaders import is_resolved_secret_value
 
     patterns = provenance_config_from_tags(entity).pipe_tags
-    tags = getattr(pipe, "tags", None) or {}
-    if not patterns or not tags:
+    tags = getattr(pipe, "tags", None)
+    if not patterns or not isinstance(tags, Mapping) or not tags:
         return ()
     selected = []
     for name in sorted(tags, key=str):
@@ -284,15 +288,20 @@ def build_provenance_stamp(
     ``run_id`` (the runtime manifest's per-initialization id) is null until
     that lands; ``execution_id`` is the executor's run id.
     """
+    input_ids = getattr(pipe, "input_entity_ids", None)
     return ProvenanceStamp(
-        pipe_id=getattr(pipe, "pipeid", None),
-        pipe_name=getattr(pipe, "name", None),
+        pipe_id=_text(getattr(pipe, "pipeid", None)),
+        pipe_name=_text(getattr(pipe, "name", None)),
         run_id=None,
-        execution_id=execution_id,
-        persist_id=persist_id,
+        execution_id=_text(execution_id),
+        persist_id=_text(persist_id),
         processed_at=processed_at,
         mode=mode,
-        input_entity_ids=tuple(getattr(pipe, "input_entity_ids", None) or ()),
+        input_entity_ids=(
+            tuple(str(entity_id) for entity_id in input_ids)
+            if isinstance(input_ids, (list, tuple))
+            else ()
+        ),
         tags=selected_pipe_tags(pipe, entity),
         **_runtime_identity(config_service),
     )
