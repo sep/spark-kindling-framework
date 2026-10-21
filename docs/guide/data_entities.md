@@ -844,7 +844,7 @@ the tags; explicit tags win.
 | `surrogate.strategy` | `hash`, `uuid5`, `custom` | `hash` |
 | `surrogate.from` | comma-separated input columns, in order | `merge_columns` |
 | `surrogate.include_effective_from` | `true` / `false`; SCD2 version key only | `true` |
-| `surrogate.namespace` | literal string encoded as the first input | none |
+| `surrogate.namespace` | literal string encoded ahead of the inputs | none |
 | `surrogate.hash.algo` | `sha256` | `sha256` |
 | `surrogate.hash.format` | `hex` | `hex` |
 | `surrogate.uuid.namespace` | UUID; required for `uuid5` | none |
@@ -866,7 +866,9 @@ functions (no UDFs), so keys agree across Spark 3, Spark 4 and Spark Connect:
 1. The inputs are the `surrogate.from` columns **in declared order**, then
    effective_from for an SCD2 version key. Column names are not part of the
    input: renaming a column keeps its keys.
-2. `surrogate.namespace`, when set, is encoded as the first value.
+2. `surrogate.namespace`, when set, comes first as `@<length>:<namespace>`.
+   Its own marker keeps it apart from the inputs: namespace `a` over `("b")`
+   and no namespace over `("a", "b")` give different keys.
 3. Each value is `N` when NULL, otherwise `S<length>:<canonical value>`, and
    the values are concatenated with no separator. `("a|b", "c")` and
    `("a", "b|c")` can't collide, and NULL (`N`) differs from `""` (`S0:`).

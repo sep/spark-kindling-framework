@@ -13,9 +13,10 @@ expressions; every placement calls it:
   and by the streaming start before the sink starts.
 
 All deterministic strategies hash one canonical string, the ``v1``
-encoding (``canonical_v1``): the input values in declared order, an
-optional namespace first, each value as ``N`` (NULL) or
-``S<char_length>:<canonical value>``, concatenated with no separator.
+encoding (``canonical_v1``): the input values in declared order, each as
+``N`` (NULL) or ``S<char_length>:<canonical value>``, concatenated with no
+separator, after an optional ``@<char_length>:<namespace>`` token. The
+namespace has its own marker so it can't be mistaken for an input value.
 Column names are not part of the input. Only built-in Spark functions are
 used: no UDFs and no JVM access, so the same expressions run on classic
 Spark 3.4+, Spark 4 and Spark Connect.
@@ -184,14 +185,19 @@ def _encode(value: _Typed) -> Column:
     )
 
 
-def encode_literal_v1(text: str) -> str:
-    """The ``v1`` encoding of one literal string value (e.g. a namespace)."""
-    return f"S{len(text)}:{text}"
+def encode_namespace_v1(namespace: str) -> str:
+    """The ``v1`` namespace token, ``@<char_length>:<namespace>``.
+
+    Input values always start with ``N`` or ``S``, so a canonical string with a
+    namespace never equals one without: namespace ``a`` over ``("b",)`` and no
+    namespace over ``("a", "b")`` stay distinct.
+    """
+    return f"@{len(namespace)}:{namespace}"
 
 
 def canonical_v1(values: Sequence[_Typed], namespace: Optional[str] = None) -> Column:
-    """The ``v1`` canonical string over typed inputs, namespace first."""
-    parts = [F.lit(encode_literal_v1(namespace))] if namespace else []
+    """The ``v1`` canonical string over typed inputs, namespace token first."""
+    parts = [F.lit(encode_namespace_v1(namespace))] if namespace else []
     parts.extend(_encode(value) for value in values)
     if not parts:
         return F.lit("")
