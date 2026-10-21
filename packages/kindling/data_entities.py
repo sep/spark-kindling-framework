@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import MISSING, dataclass, field, fields, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from delta.tables import DeltaTable
 from injector import Binder, Injector, inject, singleton
@@ -23,8 +23,10 @@ from kindling.spark_config import *
 from kindling.spark_log_provider import *
 from pyspark.sql import DataFrame
 from pyspark.sql.types import (
+    ArrayType,
     BooleanType,
     MapType,
+    StringType,
     StructField,
     StructType,
     TimestampType,
@@ -92,6 +94,13 @@ class SCDConfig:
     # delete_when — change-feed only: a SQL predicate marking rows that
     # CLOSE the current version without inserting a new one.
     delete_when: Optional[str] = None
+    # untracked_columns (scd.untracked) — the exclude-list counterpart of
+    # tracked_columns; the two are mutually exclusive. Columns outside the
+    # tracked set never count as a change: under SCD2 a change only to them
+    # (and the sequence_by column) updates the current version in place;
+    # under the default SCD1 merge a matched row whose only differences are
+    # untracked is not rewritten. Parsed for non-SCD2 entities too.
+    untracked_columns: Optional[List[str]] = None
 
 
 @dataclass
@@ -251,10 +260,24 @@ class EntityMetadata:
         return self.sql is not None
 
 
+def _parse_column_list_tag(tags: Dict[str, Any], key: str) -> Optional[List[str]]:
+    """Parse a comma-separated column-list tag; None when absent or empty."""
+    raw = str(tags.get(key) or "").strip()
+    if not raw:
+        return None
+    columns = [column.strip() for column in raw.split(",") if column.strip()]
+    return columns or None
+
+
 def scd_config_from_tags(entity: EntityMetadata) -> SCDConfig:
-    """Extract and validate SCD configuration from an entity's tags."""
+    """Extract and validate SCD configuration from an entity's tags.
+
+    ``scd.untracked`` is also parsed for entities without ``scd.type``: it
+    configures change detection for the default SCD1 keyed merge.
+    """
     tags = entity.tags or {}
     scd_type = tags.get("scd.type", "").strip()
+    untracked_columns = _parse_column_list_tag(tags, "scd.untracked")
     default_config = SCDConfig(
         enabled=False,
         tracked_columns=None,
@@ -263,6 +286,7 @@ def scd_config_from_tags(entity: EntityMetadata) -> SCDConfig:
         is_current_column="__is_current",
         current_entity_id=f"{entity.entityid}.current",
         routing_key_method="hash",
+        untracked_columns=untracked_columns,
     )
 
     if not scd_type:
@@ -274,12 +298,7 @@ def scd_config_from_tags(entity: EntityMetadata) -> SCDConfig:
             f"(only SCD Type 2 is supported), got '{scd_type}'"
         )
 
-    tracked_raw = tags.get("scd.tracked", "").strip()
-    tracked_columns = (
-        [column.strip() for column in tracked_raw.split(",") if column.strip()]
-        if tracked_raw
-        else None
-    )
+    tracked_columns = _parse_column_list_tag(tags, "scd.tracked")
 
     routing_key_method = tags.get("scd.routing_key", "hash").strip().lower()
     if routing_key_method not in ROUTING_KEY_METHODS:
@@ -329,6 +348,7 @@ def scd_config_from_tags(entity: EntityMetadata) -> SCDConfig:
         sequence_by=sequence_by,
         source_kind=source_kind,
         delete_when=delete_when,
+        untracked_columns=untracked_columns,
     )
 
 
@@ -338,6 +358,19 @@ def quote_sql_identifier(name: str, alias: Optional[str] = None) -> str:
     if alias:
         return f"{alias}.`{escaped}`"
     return f"`{escaped}`"
+
+
+def _type_contains_map(data_type) -> bool:
+    """Whether a Spark type is a MAP or contains one at any depth (in a
+    struct field or an array element). Spark can neither compare (``<=>``)
+    nor partition by such values, so callers compare their JSON form."""
+    if isinstance(data_type, MapType):
+        return True
+    if isinstance(data_type, StructType):
+        return any(_type_contains_map(field.dataType) for field in data_type.fields)
+    if isinstance(data_type, ArrayType):
+        return _type_contains_map(data_type.elementType)
+    return False
 
 
 def build_null_safe_change_condition(
@@ -350,25 +383,191 @@ def build_null_safe_change_condition(
     unorderable = {
         field.name
         for field in (schema.fields if schema else [])
-        if isinstance(field.dataType, MapType)
+        if _type_contains_map(field.dataType)
     }
 
     def _comparable(column: str, alias: str) -> str:
         ident = quote_sql_identifier(column, alias)
-        # Spark's binary comparison does not support ordering on MAP types;
-        # compare their JSON projection instead (same approach as the
-        # optimize_unchanged hash path).
+        # Spark's binary comparison does not support MAP types, nor structs
+        # or arrays containing one; compare their JSON projection instead
+        # (same approach as the optimize_unchanged hash path).
         if column in unorderable:
             return f"to_json({ident})"
         return ident
 
+    # NOT (a <=> b) is never NULL (both-null compares equal), so the
+    # condition can be negated safely: the earlier `a != b OR (a IS NULL) !=
+    # (b IS NULL)` form evaluated to NULL when both sides were null, and its
+    # negation then classified the row as neither changed nor unchanged.
     return " OR ".join(
         [
-            f"({_comparable(column, source_alias)} != "
-            f"{_comparable(column, target_alias)} OR "
-            f"({quote_sql_identifier(column, source_alias)} IS NULL) != "
-            f"({quote_sql_identifier(column, target_alias)} IS NULL))"
+            f"(NOT ({_comparable(column, source_alias)} <=> "
+            f"{_comparable(column, target_alias)}))"
             for column in tracked_columns
+        ]
+    )
+
+
+def spark_case_sensitive(spark) -> bool:
+    """Whether ``spark`` resolves column names case-sensitively.
+
+    Reads ``spark.sql.caseSensitive`` (Spark's default is false: ``STATUS``
+    and ``status`` name the same column).
+    """
+    try:
+        return str(spark.conf.get("spark.sql.caseSensitive", "false")).strip().lower() == "true"
+    except Exception:
+        return False
+
+
+def column_name_key(case_sensitive: bool) -> Callable[[str], str]:
+    """Key function under which two column names are the same column."""
+    if case_sensitive:
+        return lambda name: name
+    return lambda name: name.lower()
+
+
+def scd_change_columns(
+    cfg: SCDConfig,
+    columns: List[str],
+    business_keys: List[str],
+    case_sensitive: bool = True,
+    insert_only_columns: Optional[List[str]] = None,
+) -> Tuple[List[str], List[str]]:
+    """Split a batch's columns into ``(tracked, untracked)`` for change detection.
+
+    A difference in a tracked column is a change: under SCD2 it closes the
+    current version and opens a new one; under the SCD1 merge it rewrites
+    the matched row. Untracked columns never count as a change: SCD2
+    updates them on the current version in place, SCD1 leaves them alone.
+
+    - ``scd.tracked`` (allow-list): tracked is the list as declared;
+      every other non-key, non-temporal column of the batch is untracked.
+    - otherwise: every non-key, non-temporal column of the batch is
+      tracked except ``scd.untracked`` and the ``scd.sequence_by`` column
+      (ordering authority, not content).
+
+    Untracked columns absent from the batch are skipped. Temporal columns
+    are only excluded for SCD2 entities (``cfg.enabled``). Names match
+    exactly unless ``case_sensitive`` is False; providers pass the session's
+    ``spark_case_sensitive`` so ``STATUS`` and ``status`` are one column.
+
+    ``insert_only_columns`` (surrogate key columns) are a third class: they
+    are neither tracked nor untracked, so no merge clause ever rewrites
+    them.
+    """
+    key = column_name_key(case_sensitive)
+    temporal_columns = (
+        {cfg.effective_from_column, cfg.effective_to_column, cfg.is_current_column}
+        if cfg.enabled
+        else set()
+    )
+    insert_only = {key(name) for name in insert_only_columns or ()}
+    non_candidates = {key(name) for name in list(business_keys) + list(temporal_columns)}
+    candidates = [
+        column
+        for column in columns
+        if key(column) not in non_candidates and key(column) not in insert_only
+    ]
+    if cfg.tracked_columns:
+        tracked = [name for name in cfg.tracked_columns if key(name) not in insert_only]
+        tracked_keys = {key(name) for name in tracked}
+        untracked = [column for column in candidates if key(column) not in tracked_keys]
+        return tracked, untracked
+
+    excluded = {key(name) for name in cfg.untracked_columns or ()}
+    if cfg.sequence_by:
+        excluded.add(key(cfg.sequence_by))
+    tracked = [column for column in candidates if key(column) not in excluded]
+    untracked = [column for column in candidates if key(column) in excluded]
+    return tracked, untracked
+
+
+def normalize_scd2_batch(df: DataFrame, entity: EntityMetadata, cfg: SCDConfig) -> DataFrame:
+    """One row per business key, as the SCD2 merges require.
+
+    With ``scd.sequence_by`` the batch is collapsed to the latest row per key
+    by sequence (the latest-change-per-key convention the streaming merge
+    applies per micro-batch and the incremental read applies to change
+    feeds); change-feed deletes take part like any other event. Without it
+    nothing orders two rows for one key: exact duplicate rows (identical in
+    every column, common in full reloads and retried extracts) collapse to
+    one, and a key whose rows differ is rejected.
+    Both SCD2 providers call this, so they agree: duplicate rows used to make
+    the Delta MERGE fail (several source rows matching one target row) and
+    the memory merge copy the current version once per source row.
+    """
+    from pyspark.sql import Window
+    from pyspark.sql.functions import col as _col
+    from pyspark.sql.functions import count as _count
+    from pyspark.sql.functions import lit as _lit
+    from pyspark.sql.functions import row_number, to_json
+
+    keys = [_col(quote_sql_identifier(key)) for key in entity.merge_columns]
+    if cfg.sequence_by:
+        rank = "__scd2_batch_rank"
+        latest_first = Window.partitionBy(*keys).orderBy(
+            _col(quote_sql_identifier(cfg.sequence_by)).desc()
+        )
+        return (
+            df.withColumn(rank, row_number().over(latest_first)).filter(_col(rank) == 1).drop(rank)
+        )
+
+    # Exact duplicates are harmless: keep one. Spark can't partition by a MAP,
+    # or by a struct or array containing one, so such columns are compared
+    # through their JSON form.
+    map_columns = {f.name for f in df.schema.fields if _type_contains_map(f.dataType)}
+    row_identity = [
+        (
+            to_json(_col(quote_sql_identifier(name)))
+            if name in map_columns
+            else _col(quote_sql_identifier(name))
+        )
+        for name in df.columns
+    ]
+    copy = "__scd2_batch_copy"
+    df = (
+        df.withColumn(copy, row_number().over(Window.partitionBy(*row_identity).orderBy(_lit(1))))
+        .filter(_col(copy) == 1)
+        .drop(copy)
+    )
+    duplicate = (
+        df.groupBy(*keys)
+        .agg(_count(_lit(1)).alias("__scd2_batch_rows"))
+        .filter(_col("__scd2_batch_rows") > 1)
+        .limit(1)
+        .collect()
+    )
+    if duplicate:
+        values = {key: duplicate[0][index] for index, key in enumerate(entity.merge_columns)}
+        raise ValueError(
+            f"Entity '{entity.entityid}': the batch has differing rows for business key "
+            f"{values}; without scd.sequence_by an SCD2 merge can't tell which is latest "
+            "(declare scd.sequence_by to apply the latest row per key)"
+        )
+    return df
+
+
+def scd2_batch_schema(entity: EntityMetadata, batch_schema: StructType) -> StructType:
+    """The declared schema of an SCD2 entity, or, when it declares none, the
+    batch's business columns (without temporal, staging or surrogate key
+    columns, which the merge sets). Used to create a missing SCD2
+    destination from its first batch."""
+    if entity.schema:
+        return entity.schema if isinstance(entity.schema, StructType) else StructType(entity.schema)
+    cfg = scd_config_from_tags(entity)
+    excluded = {
+        name.lower()
+        for name in [cfg.effective_from_column, cfg.effective_to_column, cfg.is_current_column]
+        + surrogate_key_columns(entity)
+    }
+    return StructType(
+        [
+            field
+            for field in batch_schema.fields
+            if field.name.lower() not in excluded
+            and field.name.lower() != "__merge_key"
+            and not field.name.lower().startswith("__scd2_")
         ]
     )
 
@@ -391,6 +590,327 @@ def augment_schema_for_scd2(schema: StructType, cfg: SCDConfig) -> StructType:
     if not extra_fields:
         return schema_struct
     return StructType(schema_struct.fields + extra_fields)
+
+
+# ── Surrogate keys (tags-first; see docs/guide/data_entities.md) ─────────────
+#
+# Tag parsing and registration-time validation live here, beside the SCD
+# configuration they interact with. The encoder, the strategies, custom
+# generators and the key placements are in kindling.surrogate_keys.
+
+_SURROGATE_STRATEGIES = ("hash", "uuid5", "custom")
+_SURROGATE_KNOWN_TAGS = (
+    "surrogate.column",
+    "surrogate.durable_column",
+    "surrogate.strategy",
+    "surrogate.from",
+    "surrogate.include_effective_from",
+    "surrogate.namespace",
+    "surrogate.normalize",
+    "surrogate.hash.algo",
+    "surrogate.hash.format",
+    "surrogate.uuid.namespace",
+    "surrogate.generator",
+    "surrogate.require_reproducible",
+    "surrogate.encoding",
+)
+
+
+@dataclass(frozen=True)
+class SurrogateKeyConfig:
+    """Parsed surrogate key configuration derived from an entity's tags.
+
+    ``column`` is the key column (the *version* key on an SCD2 entity);
+    ``durable_column`` is the SCD2 durable key. ``from_columns`` defaults
+    to the entity's ``merge_columns``. Parsing never raises; registration
+    (``_validate_surrogate_config``) rejects invalid or unsupported values.
+    """
+
+    column: Optional[str] = None
+    durable_column: Optional[str] = None
+    strategy: str = "hash"
+    from_columns: Tuple[str, ...] = ()
+    include_effective_from: bool = True
+    namespace: Optional[str] = None
+    normalize: str = "none"
+    hash_algo: str = "sha256"
+    hash_format: str = "hex"
+    uuid_namespace: Optional[str] = None
+    generator: Optional[str] = None
+    # (option, value) pairs from surrogate.generator.<option> tags.
+    generator_options: Tuple[Tuple[str, str], ...] = ()
+    require_reproducible: bool = False
+    encoding: str = "v1"
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.column or self.durable_column)
+
+    @property
+    def key_columns(self) -> List[str]:
+        """The declared key columns (version/plain key first, then durable)."""
+        return [name for name in (self.column, self.durable_column) if name]
+
+
+def _tag_text(tags: Dict[str, Any], key: str) -> str:
+    value = tags.get(key)
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value).strip()
+
+
+def surrogate_config_from_tags(entity: EntityMetadata) -> SurrogateKeyConfig:
+    """Extract surrogate key configuration from an entity's tags (never raises)."""
+    tags = entity.tags or {}
+    column = _tag_text(tags, "surrogate.column") or None
+    durable_column = _tag_text(tags, "surrogate.durable_column") or None
+    if (
+        not column
+        and not durable_column
+        and not any(str(key).startswith("surrogate.") for key in tags)
+    ):
+        return SurrogateKeyConfig()
+    from_columns = _parse_column_list_tag(tags, "surrogate.from")
+    if from_columns is None:
+        from_columns = list(entity.merge_columns or [])
+    include_raw = _tag_text(tags, "surrogate.include_effective_from").lower()
+    namespace_raw = tags.get("surrogate.namespace")
+    namespace = None if namespace_raw is None or str(namespace_raw) == "" else str(namespace_raw)
+    options = tuple(
+        sorted(
+            (key[len("surrogate.generator.") :], str(value))
+            for key, value in tags.items()
+            if key.startswith("surrogate.generator.") and key != "surrogate.generator."
+        )
+    )
+    return SurrogateKeyConfig(
+        column=column,
+        durable_column=durable_column,
+        strategy=_tag_text(tags, "surrogate.strategy").lower() or "hash",
+        from_columns=tuple(from_columns),
+        include_effective_from=include_raw != "false",
+        namespace=namespace,
+        normalize=_tag_text(tags, "surrogate.normalize").lower() or "none",
+        hash_algo=_tag_text(tags, "surrogate.hash.algo").lower() or "sha256",
+        hash_format=_tag_text(tags, "surrogate.hash.format").lower() or "hex",
+        uuid_namespace=_tag_text(tags, "surrogate.uuid.namespace") or None,
+        generator=_tag_text(tags, "surrogate.generator") or None,
+        generator_options=options,
+        require_reproducible=_tag_text(tags, "surrogate.require_reproducible").lower() == "true",
+        encoding=_tag_text(tags, "surrogate.encoding") or "v1",
+    )
+
+
+def surrogate_key_columns(entity: EntityMetadata) -> List[str]:
+    """The entity's surrogate key column names (insert-only), or ``[]``."""
+    return surrogate_config_from_tags(entity).key_columns
+
+
+def _stamp_surrogate_encoding(entity: EntityMetadata) -> EntityMetadata:
+    """Record the key encoding (``surrogate.encoding``) on an entity with keys."""
+    tags = entity.tags or {}
+    if "surrogate.encoding" in tags or not surrogate_config_from_tags(entity).enabled:
+        return entity
+    return replace(entity, tags={**tags, "surrogate.encoding": "v1"})
+
+
+def _validate_surrogate_config(entity: EntityMetadata) -> None:
+    """Validate ``surrogate.*`` tags at registration time.
+
+    Column names compare case-insensitively (Spark's default resolution),
+    so a collision that differs only in case is still rejected. Custom
+    generator names are not resolved here: they resolve at
+    ``ensure_destination``, after bootstrap has imported every module.
+    """
+    tags = entity.tags or {}
+    surrogate_tags = [key for key in tags if key.startswith("surrogate.")]
+    if not surrogate_tags:
+        return
+    eid = entity.entityid
+
+    def fail(message: str) -> None:
+        raise ValueError(f"Entity '{eid}': {message}")
+
+    for key in surrogate_tags:
+        if key == "surrogate.unknown_member":
+            fail(
+                "surrogate.unknown_member is not yet supported (unknown-member "
+                "seeding arrives in a later release)"
+            )
+        if key not in _SURROGATE_KNOWN_TAGS and not key.startswith("surrogate.generator."):
+            fail(f"unknown surrogate tag '{key}' (known: {sorted(_SURROGATE_KNOWN_TAGS)})")
+
+    cfg = surrogate_config_from_tags(entity)
+    if not cfg.enabled:
+        fail(
+            "surrogate.* tags are set but neither surrogate.column nor "
+            "surrogate.durable_column names a key column"
+        )
+    if entity.is_sql_entity:
+        fail("surrogate keys do not apply to a SQL entity (a read-only view)")
+
+    if cfg.strategy == "uuid4":
+        fail(
+            "surrogate.strategy 'uuid4' is not yet supported (random keys arrive "
+            "in a later release); use 'uuid5' for a deterministic UUID-shaped key"
+        )
+    if cfg.strategy == "identity":
+        fail(
+            "surrogate.strategy 'identity' is not yet supported (Delta IDENTITY "
+            "columns arrive in a later release)"
+        )
+    if cfg.strategy not in _SURROGATE_STRATEGIES:
+        fail(
+            f"invalid surrogate.strategy '{cfg.strategy}' (expected one of "
+            f"{list(_SURROGATE_STRATEGIES)})"
+        )
+    if cfg.hash_algo in ("md5", "xxhash64"):
+        fail(
+            f"surrogate.hash.algo '{cfg.hash_algo}' is not yet supported "
+            "(only 'sha256' in this release)"
+        )
+    if cfg.hash_algo != "sha256":
+        fail(f"invalid surrogate.hash.algo '{cfg.hash_algo}' (expected 'sha256')")
+    if cfg.hash_format == "binary":
+        fail("surrogate.hash.format 'binary' is not yet supported (only 'hex' in this release)")
+    if cfg.hash_format != "hex":
+        fail(f"invalid surrogate.hash.format '{cfg.hash_format}' (expected 'hex')")
+    if cfg.normalize in ("trim", "trim_upper"):
+        fail(
+            f"surrogate.normalize '{cfg.normalize}' is not yet supported "
+            "(only 'none' in this release)"
+        )
+    if cfg.normalize != "none":
+        fail(f"invalid surrogate.normalize '{cfg.normalize}' (expected 'none')")
+    if cfg.encoding != "v1":
+        fail(f"unsupported surrogate.encoding '{cfg.encoding}' (expected 'v1')")
+    for key in ("surrogate.include_effective_from", "surrogate.require_reproducible"):
+        raw = _tag_text(tags, key).lower()
+        if raw not in ("", "true", "false"):
+            fail(f"{key} must be 'true' or 'false', got '{raw}'")
+    if "surrogate.from" in tags and not _parse_column_list_tag(tags, "surrogate.from"):
+        fail(
+            f"surrogate.from is set but contains no usable column names: "
+            f"'{tags.get('surrogate.from')}'"
+        )
+
+    # Strategy companions.
+    if cfg.strategy == "uuid5":
+        if not cfg.uuid_namespace:
+            fail("surrogate.strategy 'uuid5' requires surrogate.uuid.namespace (a UUID)")
+        import uuid as _uuid
+
+        try:
+            _uuid.UUID(cfg.uuid_namespace)
+        except ValueError:
+            fail(f"surrogate.uuid.namespace is not a valid UUID: '{cfg.uuid_namespace}'")
+    elif cfg.uuid_namespace:
+        fail("surrogate.uuid.namespace applies to surrogate.strategy 'uuid5' only")
+    if cfg.strategy == "custom":
+        if not cfg.generator:
+            fail("surrogate.strategy 'custom' requires surrogate.generator (a registered name)")
+    elif cfg.generator or cfg.generator_options:
+        fail("surrogate.generator and surrogate.generator.* apply to surrogate.strategy 'custom'")
+    if cfg.strategy != "custom" and not cfg.from_columns:
+        fail("surrogate keys need input columns: declare merge_columns or " "surrogate.from")
+
+    scd = scd_config_from_tags(entity)
+    if cfg.durable_column and not scd.enabled:
+        fail("surrogate.durable_column requires an SCD2 entity (scd.type: '2')")
+    if "surrogate.include_effective_from" in tags and not (scd.enabled and cfg.column):
+        fail("surrogate.include_effective_from applies to an SCD2 version key only")
+
+    def norm(name: str) -> str:
+        return name.lower()
+
+    key_names = cfg.key_columns
+    if len({norm(name) for name in key_names}) != len(key_names):
+        fail("surrogate.column and surrogate.durable_column must be different columns")
+    key_set = {norm(name) for name in key_names}
+    from_set = {norm(name) for name in cfg.from_columns}
+    for label, names in (
+        ("merge_columns", entity.merge_columns or []),
+        ("surrogate.from", cfg.from_columns),
+        ("scd.tracked", scd.tracked_columns or []),
+        ("scd.untracked", scd.untracked_columns or []),
+    ):
+        overlap = sorted(name for name in names if norm(name) in key_set)
+        if overlap:
+            fail(
+                f"surrogate key columns must not appear in {label} (keys are "
+                f"insert-only): {overlap}"
+            )
+    if scd.enabled:
+        temporal = {
+            norm(scd.effective_from_column): scd.effective_from_column,
+            norm(scd.effective_to_column): scd.effective_to_column,
+            norm(scd.is_current_column): scd.is_current_column,
+        }
+        clash = sorted(name for name in key_names if norm(name) in temporal)
+        if clash:
+            fail(f"surrogate key columns must not be SCD2 temporal columns: {clash}")
+        if norm(scd.effective_from_column) in from_set:
+            fail(
+                "surrogate.from must not include the effective_from column; the "
+                "version key includes it through surrogate.include_effective_from"
+            )
+        closing = sorted(
+            name
+            for name in cfg.from_columns
+            if norm(name) in (norm(scd.effective_to_column), norm(scd.is_current_column))
+        )
+        if closing:
+            fail(
+                "surrogate.from must not include effective_to or is_current, which "
+                f"change when a version is closed: {closing}"
+            )
+        if scd.sequence_by and norm(scd.sequence_by) in key_set:
+            fail("a surrogate key column must not be the scd.sequence_by column")
+    reserved = sorted(
+        name for name in key_names if name == "__merge_key" or name.startswith("__scd2_")
+    )
+    if reserved:
+        fail(f"surrogate key columns use reserved SCD2 staging names: {reserved}")
+
+    if entity.schema is not None:
+        from kindling.surrogate_keys import v1_type_problem
+
+        fields_by_name = {norm(field.name): field for field in entity.schema.fields}
+        missing = [name for name in cfg.from_columns if norm(name) not in fields_by_name]
+        if missing:
+            fail(f"surrogate.from columns not in the entity schema: {missing}")
+        for name in cfg.from_columns:
+            problem = v1_type_problem(fields_by_name[norm(name)].dataType)
+            if problem:
+                fail(f"surrogate.from column '{name}' cannot be encoded: {problem}")
+        if cfg.strategy in ("hash", "uuid5"):
+            for name in key_names:
+                declared = fields_by_name.get(norm(name))
+                if declared is not None and not isinstance(declared.dataType, StringType):
+                    fail(
+                        f"surrogate key column '{name}' is declared as "
+                        f"{declared.dataType.simpleString()}, but a '{cfg.strategy}' key "
+                        "is a STRING"
+                    )
+
+    if scd.enabled and cfg.column and cfg.include_effective_from and not scd.sequence_by:
+        message = (
+            f"Entity '{eid}': the SCD2 version key '{cfg.column}' includes "
+            "effective_from, which is processing time without scd.sequence_by, so "
+            "version keys are unique and fixed once stored but not reproducible on "
+            "a rebuild"
+        )
+        if cfg.require_reproducible:
+            raise ValueError(
+                message + "; surrogate.require_reproducible=true requires scd.sequence_by"
+            )
+        _ENTITY_LOGGER.warning(
+            "%s. Declare scd.sequence_by, or set surrogate.require_reproducible=true "
+            "to make this an error.",
+            message,
+        )
 
 
 @dataclass(frozen=True)
@@ -469,6 +989,11 @@ def _validate_derived_config(entity: EntityMetadata) -> None:
             f"Entity '{entity.entityid}': scd.type does not apply to a "
             "derived dataset — history semantics require a state dataset"
         )
+    if str(tags.get("scd.untracked") or "").strip():
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.untracked does not apply to a "
+            "derived dataset — its contents are replaced, not merged"
+        )
 
     if cfg.replace_keys and entity.schema is not None:
         schema_names = {field.name for field in entity.schema.fields}
@@ -521,11 +1046,83 @@ def _validate_write_mode_tag(entity: EntityMetadata) -> None:
                 f"Entity '{entity.entityid}': write.mode 'insert' contradicts "
                 "scd.type — SCD entities update history on change"
             )
+        if str(tags.get("scd.untracked") or "").strip():
+            raise ValueError(
+                f"Entity '{entity.entityid}': write.mode 'insert' never updates "
+                "existing rows, so scd.untracked has no effect"
+            )
+
+
+def _validate_scd_untracked(entity: EntityMetadata, cfg: SCDConfig) -> None:
+    """Validate ``scd.untracked`` (SCD2 and the default SCD1 merge alike)."""
+    tags = entity.tags or {}
+    untracked_raw = str(tags.get("scd.untracked") or "").strip()
+    if not untracked_raw:
+        return
+    if not cfg.untracked_columns:
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.untracked is set but contains no "
+            f"usable column names: '{untracked_raw}'"
+        )
+    if _parse_column_list_tag(tags, "scd.tracked"):
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.tracked and scd.untracked are "
+            "mutually exclusive — declare the tracked columns or the untracked "
+            "ones, not both"
+        )
+    if not entity.merge_columns:
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.untracked requires merge_columns "
+            "(business keys) — it configures change detection for keyed merges"
+        )
+
+    untracked = set(cfg.untracked_columns)
+    key_overlap = untracked & set(entity.merge_columns)
+    if key_overlap:
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.untracked must not include "
+            f"merge_columns (business keys): {sorted(key_overlap)}"
+        )
+
+    reserved = set()
+    if cfg.enabled:
+        reserved = {
+            cfg.effective_from_column,
+            cfg.effective_to_column,
+            cfg.is_current_column,
+            "__merge_key",
+        }
+    reserved_overlap = untracked & reserved
+    if reserved_overlap:
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.untracked must not include SCD2 "
+            f"temporal or reserved columns: {sorted(reserved_overlap)}"
+        )
+
+    if entity.schema is None:
+        return
+    schema_names = [field.name for field in entity.schema.fields]
+    missing = sorted(untracked - set(schema_names))
+    if missing:
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.untracked columns not in the "
+            f"entity schema: {missing}"
+        )
+    excluded = untracked | set(entity.merge_columns) | reserved
+    if cfg.sequence_by:
+        excluded.add(cfg.sequence_by)
+    if not [name for name in schema_names if name not in excluded]:
+        raise ValueError(
+            f"Entity '{entity.entityid}': scd.untracked leaves no tracked column — "
+            "at least one non-key column must be tracked"
+            + (" (scd.sequence_by is never tracked)" if cfg.sequence_by else "")
+        )
 
 
 def _validate_scd_config(entity: EntityMetadata) -> None:
     """Validate SCD tag configuration at registration time."""
     cfg = scd_config_from_tags(entity)
+    _validate_scd_untracked(entity, cfg)
     if not cfg.enabled:
         return
 
@@ -560,6 +1157,13 @@ def _validate_scd_config(entity: EntityMetadata) -> None:
         raise ValueError(
             f"Entity '{entity.entityid}': column '__merge_key' is reserved for SCD2 "
             "merge staging and must not appear in the entity schema."
+        )
+    staging_names = sorted(name for name in schema_names if name.startswith("__scd2_"))
+    if staging_names:
+        raise ValueError(
+            f"Entity '{entity.entityid}': columns {staging_names} use the '__scd2_' "
+            "prefix, which is reserved for SCD2 merge staging, and must not appear "
+            "in the entity schema."
         )
 
     current_id = cfg.current_entity_id.strip()
@@ -795,7 +1399,27 @@ class DataEntities:
         return cls.deregistry
 
     @classmethod
-    def entity(cls, **decorator_params):
+    def entity(cls, surrogate_key=None, durable_key=None, **decorator_params):
+        """Register an entity.
+
+        ``surrogate_key`` / ``durable_key`` are sugar for the
+        ``surrogate.column`` / ``surrogate.durable_column`` tags (see
+        docs/guide/data_entities.md, "Surrogate keys"). Like
+        ``insert_only_entity``, they only fill in default tags: explicit
+        tags win, and the framework reads the tags, never these arguments.
+        """
+        sugar_tags = {}
+        for tag, value in (
+            ("surrogate.column", surrogate_key),
+            ("surrogate.durable_column", durable_key),
+        ):
+            if value is None:
+                continue
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{tag} sugar expects a column name, got {value!r}")
+            sugar_tags[tag] = value.strip()
+        if sugar_tags:
+            decorator_params["tags"] = {**sugar_tags, **(decorator_params.get("tags") or {})}
         if cls.deregistry is None:
             try:
                 _raise_if_not_initialized("DataEntities.entity", "entity")
@@ -1060,7 +1684,7 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         if params is None:
             staged[entityid] = None
         else:
-            entity = self._build_metadata(entityid, params)
+            entity = _stamp_surrogate_encoding(self._build_metadata(entityid, params))
             self._validate_entity(entity)
             staged[entityid] = entity
         for target, derivations in list(self._derivations.items()):
@@ -1280,6 +1904,7 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
             # dataset", not with a downstream state-vocabulary complaint.
             _validate_derived_config(entity)
             _validate_scd_config(entity)
+            _validate_surrogate_config(entity)
             _validate_write_mode_tag(entity)
             _validate_schema_drift_tag(entity)
         except ValueError as error:

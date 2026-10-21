@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from injector import inject
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, expr, lit, sha2, struct, to_json
+from pyspark.sql.functions import coalesce, col, expr, lit, sha2, struct, to_json, when
 from pyspark.sql.streaming import StreamingQuery
 from pyspark.sql.types import TimestampType
 
@@ -18,7 +18,14 @@ from .data_entities import (
     SCDConfig,
     augment_schema_for_scd2,
     build_null_safe_change_condition,
+    column_name_key,
+    normalize_scd2_batch,
+    quote_sql_identifier,
+    scd2_batch_schema,
+    scd_change_columns,
     scd_config_from_tags,
+    spark_case_sensitive,
+    surrogate_key_columns,
 )
 from .entity_provider import (
     BaseEntityProvider,
@@ -30,14 +37,126 @@ from .injection import GlobalInjector
 from .spark_config import get_or_create_spark_session
 from .spark_log_provider import PythonLoggerProvider
 
+# Staging helper columns. Like the Delta provider, every incoming column
+# named __merge_key or starting with __scd2_ is refused, so the helpers can
+# never collide with a business column.
+_SCD2_MERGE_KEY_COLUMN = "__merge_key"
+_SCD2_RESERVED_PREFIX = "__scd2_"
+_SOURCE_PRESENT = "__scd2_source_present"
+_SOURCE_DELETE = "__scd2_source_delete"
+
+
+def _qcol(name: str, alias: Optional[str] = None):
+    """Column reference by literal name (``a.b`` is one column, not a path)."""
+    return col(quote_sql_identifier(name, alias))
+
 
 def _memory_scd1_merge(
-    current_df: DataFrame, incoming_df: DataFrame, entity_metadata: EntityMetadata
+    current_df: DataFrame,
+    incoming_df: DataFrame,
+    entity_metadata: EntityMetadata,
+    cfg: Optional[SCDConfig] = None,
 ) -> DataFrame:
-    """Full-row upsert: incoming rows replace matching business keys, others pass through."""
+    """Full-row upsert: incoming rows replace matching business keys, others pass through.
+
+    With ``scd.untracked``, mirrors the Delta SCD1 change condition: a
+    matched row is replaced only when a tracked column (present in both the
+    batch and the table) differs, null-safely; an untracked-only difference
+    keeps the existing row. A tracked column new to the table replaces every
+    matched row, as the Delta merge does when it drops the condition.
+    """
     business_keys = entity_metadata.merge_columns
-    untouched = current_df.join(incoming_df, on=business_keys, how="left_anti")
-    return untouched.unionByName(incoming_df, allowMissingColumns=True)
+    key_columns = surrogate_key_columns(entity_metadata)
+    case_sensitive = True
+    if key_columns or (cfg is not None and cfg.untracked_columns):
+        case_sensitive = spark_case_sensitive(incoming_df.sparkSession)
+    replacing_df = incoming_df
+    if cfg is not None and cfg.untracked_columns:
+        name_key = column_name_key(case_sensitive)
+        tracked_columns, _ = scd_change_columns(
+            cfg,
+            incoming_df.columns,
+            business_keys,
+            case_sensitive=case_sensitive,
+            insert_only_columns=key_columns,
+        )
+        current_keys = {name_key(column) for column in current_df.columns}
+        if all(name_key(column) in current_keys for column in tracked_columns):
+            current_df = current_df.toDF(*current_df.columns)
+            incoming_df = incoming_df.toDF(*incoming_df.columns)
+            change_condition = build_null_safe_change_condition(
+                "new", "old", tracked_columns, schema=incoming_df.schema
+            )
+            unchanged_keys = (
+                incoming_df.alias("new")
+                .join(current_df.alias("old"), on=business_keys, how="inner")
+                .where(f"NOT ({change_condition})")
+                .select(*[_qcol(key) for key in business_keys])
+            )
+            replacing_df = incoming_df.join(unchanged_keys, on=business_keys, how="left_anti")
+    untouched = current_df.join(replacing_df, on=business_keys, how="left_anti")
+    if key_columns:
+        replacing_df = _keep_existing_keys(
+            current_df, replacing_df, business_keys, key_columns, case_sensitive
+        )
+    return untouched.unionByName(replacing_df, allowMissingColumns=True)
+
+
+def _keep_existing_keys(
+    current_df: DataFrame,
+    replacing_df: DataFrame,
+    business_keys: List[str],
+    key_columns: List[str],
+    case_sensitive: bool,
+) -> DataFrame:
+    """Surrogate keys are insert-only: a replaced (matched) row keeps the key
+    it has; only rows for new business keys take the incoming key. Mirrors
+    the Delta SCD1 merge's explicit update set without key columns, also
+    when the table predates the key column: its existing rows keep NULL.
+
+    Helper columns get names no batch or table column uses (compared the
+    way the session resolves names), so any accepted column survives.
+    """
+    name_key = column_name_key(case_sensitive)
+    current_by_key = {name_key(column): column for column in current_df.columns}
+    incoming_by_key = {name_key(column): column for column in replacing_df.columns}
+    taken = set(current_by_key) | set(incoming_by_key)
+
+    def fresh(base: str) -> str:
+        name = base
+        while name_key(name) in taken:
+            name += "_"
+        taken.add(name_key(name))
+        return name
+
+    present_column = fresh("__sk_existing_present")
+    projection = [_qcol(key) for key in business_keys]
+    assignments = []  # (output column, helper column, value for a new key)
+    for key_column in key_columns:
+        current_name = current_by_key.get(name_key(key_column))
+        incoming_name = incoming_by_key.get(name_key(key_column))
+        if current_name is None and incoming_name is None:
+            continue
+        helper = fresh("__sk_existing")
+        if current_name is not None:
+            projection.append(_qcol(current_name).alias(helper))
+        else:
+            data_type = replacing_df.schema[incoming_name].dataType
+            projection.append(lit(None).cast(data_type).alias(helper))
+        if incoming_name is not None:
+            new_key_value = _qcol(incoming_name)
+        else:
+            new_key_value = lit(None).cast(current_df.schema[current_name].dataType)
+        assignments.append((incoming_name or current_name, helper, new_key_value))
+    if not assignments:
+        return replacing_df
+    projection.append(lit(True).alias(present_column))
+    existing = current_df.select(*projection)
+    joined = replacing_df.join(existing, on=business_keys, how="left")
+    matched = _qcol(present_column).isNotNull()
+    for output, helper, new_key_value in assignments:
+        joined = joined.withColumn(output, when(matched, _qcol(helper)).otherwise(new_key_value))
+    return joined.drop(present_column, *[helper for _, helper, _ in assignments])
 
 
 def _memory_insert_only_merge(
@@ -55,17 +174,26 @@ def _memory_scd2_merge(
     entity_metadata: EntityMetadata,
     cfg: SCDConfig,
     now_ts: Any,
+    key_plan: Any = None,
 ) -> DataFrame:
     """Execute an SCD Type 2 upsert as plain DataFrame joins/unions.
 
     Mirrors DeltaEntityProvider._execute_scd2_merge's declared-flow semantics
-    (sequence_by ordering, delete_when, close_on_missing) without Delta's
-    single-MERGE-statement staging trick: Memory does a full read-modify-write,
-    assembling historical rows, untouched current rows, closed (old) versions,
-    and new/changed versions, then returns the union for one write_to_entity
+    (tracked changes close and re-version, untracked-only changes update the
+    current version in place, sequence_by ordering guarded against the
+    current row's own sequence value, delete_when, close_on_missing) without
+    Delta's single-MERGE-statement staging trick: Memory does a full
+    read-modify-write, assembling historical rows, untouched current rows,
+    closed (old) versions, current versions updated in place, and
+    new/changed versions, then returns the union for one write_to_entity
     overwrite. ``now_ts`` is a single captured instant reused for every
     timestamp this call would otherwise stamp with current_timestamp(), so a
     closed row's effective_to and its replacement's effective_from agree.
+
+    Surrogate keys (``key_plan``, resolved from the entity when omitted) are
+    computed on the new versions only, from their final effective_from, and
+    never rewritten: current and closed versions keep the keys they have,
+    and incoming key columns are ignored — as in the Delta merge.
     """
     # A catalog/temp-view-backed DataFrame (current_df typically comes from
     # self.read_entity(), i.e. spark.table(...)) carries attribute lineage
@@ -75,31 +203,82 @@ def _memory_scd2_merge(
     current_df = current_df.toDF(*current_df.columns)
     incoming_df = incoming_df.toDF(*incoming_df.columns)
 
+    # Column names compare the way the session resolves them: by default
+    # (spark.sql.caseSensitive=false) `STATUS` in the batch is the table's
+    # `status`, not a new column.
+    case_sensitive = spark_case_sensitive(incoming_df.sparkSession)
+    name_key = column_name_key(case_sensitive)
+    reserved = [
+        column
+        for column in incoming_df.columns
+        if name_key(column) == _SCD2_MERGE_KEY_COLUMN
+        or name_key(column).startswith(_SCD2_RESERVED_PREFIX)
+    ]
+    if reserved:
+        raise ValueError(
+            f"Incoming DataFrame contains reserved column(s) {reserved}: "
+            f"'{_SCD2_MERGE_KEY_COLUMN}' and '{_SCD2_RESERVED_PREFIX}*' names are "
+            "reserved for SCD2 merge staging. Rename them before writing to an "
+            "SCD2 entity."
+        )
+
+    from kindling.surrogate_keys import (
+        drop_surrogate_key_columns,
+        resolve_surrogate_keys,
+        with_scd2_surrogate_keys,
+    )
+
+    if key_plan is None:
+        key_plan = resolve_surrogate_keys(entity_metadata)
+    key_columns = key_plan.key_columns if key_plan is not None else []
+    if key_plan is not None:
+        incoming_df = drop_surrogate_key_columns(incoming_df, key_plan, case_sensitive)
+
     business_keys = entity_metadata.merge_columns
     temporal_columns = {cfg.effective_from_column, cfg.effective_to_column, cfg.is_current_column}
+    temporal_keys = {name_key(column) for column in temporal_columns}
+    key_keys = {name_key(column) for column in business_keys}
 
-    if cfg.sequence_by and cfg.sequence_by not in incoming_df.columns:
+    # Batch columns the table does not have yet (additive schema): give the
+    # current rows typed nulls so they compare (and project) like the Delta
+    # provider's evolved table.
+    current_keys = {name_key(column) for column in current_df.columns}
+    for column in incoming_df.columns:
+        if name_key(column) not in current_keys and name_key(column) not in temporal_keys:
+            current_df = current_df.withColumn(
+                column, lit(None).cast(incoming_df.schema[column].dataType)
+            )
+
+    if cfg.sequence_by and name_key(cfg.sequence_by) not in {
+        name_key(column) for column in incoming_df.columns
+    }:
         raise ValueError(
             f"Entity '{entity_metadata.entityid}': scd.sequence_by column "
             f"'{cfg.sequence_by}' is missing from the incoming DataFrame"
         )
-    if cfg.sequence_by and incoming_df.filter(col(cfg.sequence_by).isNull()).head(1):
+    if cfg.sequence_by and incoming_df.filter(_qcol(cfg.sequence_by).isNull()).head(1):
         raise ValueError(
             f"Entity '{entity_metadata.entityid}': scd.sequence_by column "
             f"'{cfg.sequence_by}' contains null values in the incoming batch; "
             "every row must carry a sequence value"
         )
+    # One row per business key: the latest by sequence, or reject duplicates.
+    incoming_df = normalize_scd2_batch(incoming_df, entity_metadata, cfg)
 
-    tracked_columns = cfg.tracked_columns or [
-        column
-        for column in incoming_df.columns
-        if column not in business_keys
-        and column not in temporal_columns
-        and column != cfg.sequence_by
-    ]
+    # tracked: a change closes the current version and opens a new one.
+    # untracked (incl. sequence_by): a change only to these updates the
+    # current version in place.
+    tracked_columns, untracked_columns = scd_change_columns(
+        cfg,
+        incoming_df.columns,
+        business_keys,
+        case_sensitive=case_sensitive,
+        insert_only_columns=key_columns,
+    )
+    untracked_keys = {name_key(column) for column in untracked_columns}
 
-    historical_rows = current_df.filter(col(cfg.is_current_column) == lit(False))
-    current_rows = current_df.filter(col(cfg.is_current_column) == lit(True))
+    historical_rows = current_df.filter(_qcol(cfg.is_current_column) == lit(False))
+    current_rows = current_df.filter(_qcol(cfg.is_current_column) == lit(True))
 
     upserts_df = incoming_df
     deletes_df = None
@@ -107,112 +286,130 @@ def _memory_scd2_merge(
         delete_predicate = expr(cfg.delete_when)
         deletes_df = incoming_df.filter(delete_predicate)
         upserts_df = incoming_df.filter(~delete_predicate)
-    upserts_df = upserts_df.drop(*[c for c in temporal_columns if c in upserts_df.columns])
+    upserts_df = upserts_df.drop(*[c for c in upserts_df.columns if name_key(c) in temporal_keys])
 
-    match = upserts_df.alias("source").join(
-        current_rows.alias("target"), on=business_keys, how="inner"
+    # One source row per key (upserts and change-feed deletes), flagged so a
+    # single left join from the current rows classifies every current row.
+    # Each extra reference to current_df multiplies the lazily chained plan
+    # of the next merge, so the current rows are joined exactly once.
+    source_df = upserts_df.withColumn(_SOURCE_PRESENT, lit(True)).withColumn(
+        _SOURCE_DELETE, lit(False)
     )
+    if deletes_df is not None and not cfg.close_on_missing:
+        # Mirrors DeltaEntityProvider._execute_scd2_merge: deletes are only
+        # staged for change feeds. Under close_on_missing a deleted key is
+        # simply absent from the snapshot and closes as missing.
+        source_df = source_df.unionByName(
+            deletes_df.drop(*[c for c in deletes_df.columns if name_key(c) in temporal_keys])
+            .withColumn(_SOURCE_PRESENT, lit(True))
+            .withColumn(_SOURCE_DELETE, lit(True)),
+            allowMissingColumns=True,
+        )
+
+    joined = current_rows.alias("target").join(
+        source_df.alias("source"), on=business_keys, how="left"
+    )
+    present = _qcol(_SOURCE_PRESENT, "source").isNotNull()
+    is_delete = coalesce(_qcol(_SOURCE_DELETE, "source"), lit(False))
+
     if cfg.optimize_unchanged:
-        hash_source = sha2(to_json(struct(*[col(f"source.{c}") for c in tracked_columns])), 256)
-        hash_target = sha2(to_json(struct(*[col(f"target.{c}") for c in tracked_columns])), 256)
-        change_where = hash_source != hash_target
+        hash_source = sha2(
+            to_json(struct(*[_qcol(c, "source").alias(c) for c in tracked_columns])), 256
+        )
+        hash_target = sha2(
+            to_json(struct(*[_qcol(c, "target").alias(c) for c in tracked_columns])), 256
+        )
+        tracked_change = hash_source != hash_target
     else:
-        change_where = expr(
+        tracked_change = expr(
             build_null_safe_change_condition(
                 "source", "target", tracked_columns, schema=upserts_df.schema
             )
         )
+    # Sequence guard: strictly later than the current row's own sequence
+    # value (not its effective_from — an in-place update advances the
+    # former), so an older event never overwrites a newer in-place value.
+    applies = present
     if cfg.sequence_by:
-        change_where = change_where & (
-            col(f"source.{cfg.sequence_by}") > col(f"target.{cfg.effective_from_column}")
+        applies = present & (
+            _qcol(cfg.sequence_by, "target").isNull()
+            | (_qcol(cfg.sequence_by, "source") > _qcol(cfg.sequence_by, "target"))
         )
-    changed_match = match.where(change_where)
 
-    new_effective_from = col(f"source.{cfg.sequence_by}") if cfg.sequence_by else lit(now_ts)
+    # close: a tracked change (re-versioned) or a delete (closed only).
+    close_cond = applies & (is_delete | tracked_change)
+    # touch: only untracked columns changed — update the current row in place.
+    touch_cond = lit(False)
+    if untracked_columns:
+        touch_cond = (
+            applies
+            & ~is_delete
+            & ~tracked_change
+            & expr(
+                build_null_safe_change_condition(
+                    "source", "target", untracked_columns, schema=upserts_df.schema
+                )
+            )
+        )
+    # missing (snapshot): the key is absent from the batch.
+    missing_cond = ~present if cfg.close_on_missing else lit(False)
+
+    close_value = _qcol(cfg.sequence_by, "source") if cfg.sequence_by else lit(now_ts)
+    current_projection = []
+    for column in current_rows.columns:
+        # Using-join keys resolve unqualified; everything else from target.
+        column_key = name_key(column)
+        target_value = _qcol(column) if column_key in key_keys else _qcol(column, "target")
+        if column_key == name_key(cfg.effective_to_column):
+            value = (
+                when(close_cond, close_value)
+                .when(missing_cond, lit(now_ts))
+                .otherwise(target_value)
+            )
+        elif column_key == name_key(cfg.is_current_column):
+            value = when(close_cond | missing_cond, lit(False)).otherwise(target_value)
+        elif column_key in untracked_keys:
+            value = when(touch_cond, _qcol(column, "source")).otherwise(target_value)
+        else:
+            value = target_value
+        current_projection.append(value.alias(column))
+    current_versions = joined.select(*current_projection)
+
+    new_effective_from = _qcol(cfg.sequence_by, "source") if cfg.sequence_by else lit(now_ts)
     new_versions_from_changes = (
-        changed_match.withColumn("__new_effective_from", new_effective_from)
-        .select("source.*", "__new_effective_from")
-        .withColumn(cfg.effective_from_column, col("__new_effective_from"))
+        joined.where(close_cond & ~is_delete)
+        .select(
+            *[
+                (_qcol(column) if name_key(column) in key_keys else _qcol(column, "source")).alias(
+                    column
+                )
+                for column in upserts_df.columns
+            ],
+            new_effective_from.alias(cfg.effective_from_column),
+        )
         .withColumn(cfg.effective_to_column, lit(None).cast(TimestampType()))
         .withColumn(cfg.is_current_column, lit(True))
-        .drop("__new_effective_from")
-    )
-
-    close_value = col(f"source.{cfg.sequence_by}") if cfg.sequence_by else lit(now_ts)
-    closed_versions_from_changes = (
-        changed_match.withColumn("__close_value", close_value)
-        .select("target.*", "__close_value")
-        .withColumn(cfg.effective_to_column, col("__close_value"))
-        .withColumn(cfg.is_current_column, lit(False))
-        .drop("__close_value")
     )
 
     new_match = upserts_df.join(current_rows, on=business_keys, how="left_anti")
     new_versions_from_new_keys = (
         new_match.withColumn(
             cfg.effective_from_column,
-            col(cfg.sequence_by) if cfg.sequence_by else lit(now_ts),
+            _qcol(cfg.sequence_by) if cfg.sequence_by else lit(now_ts),
         )
         .withColumn(cfg.effective_to_column, lit(None).cast(TimestampType()))
         .withColumn(cfg.is_current_column, lit(True))
     )
-
-    closed_versions_from_missing = None
-    if cfg.close_on_missing:
-        missing_match = current_rows.join(upserts_df, on=business_keys, how="left_anti")
-        closed_versions_from_missing = missing_match.withColumn(
-            cfg.effective_to_column, lit(now_ts)
-        ).withColumn(cfg.is_current_column, lit(False))
-
-    closed_versions_from_deletes = None
-    if deletes_df is not None and not cfg.close_on_missing:
-        # Mirrors DeltaEntityProvider._execute_scd2_merge: delete_close_rows is
-        # computed but only staged in the non-close_on_missing branch. When
-        # close_on_missing is enabled, a deleted key is simply absent from the
-        # incoming snapshot and gets closed via closed_versions_from_missing;
-        # staging it again here would double-close the same current row.
-        delete_match = deletes_df.alias("source").join(
-            current_rows.alias("target"), on=business_keys, how="inner"
+    if key_plan is not None:
+        new_versions_from_changes = with_scd2_surrogate_keys(
+            new_versions_from_changes, key_plan, cfg.effective_from_column, case_sensitive
         )
-        if cfg.sequence_by:
-            delete_match = delete_match.where(
-                col(f"source.{cfg.sequence_by}") > col(f"target.{cfg.effective_from_column}")
-            )
-        delete_close_value = col(f"source.{cfg.sequence_by}") if cfg.sequence_by else lit(now_ts)
-        closed_versions_from_deletes = (
-            delete_match.withColumn("__close_value", delete_close_value)
-            .select("target.*", "__close_value")
-            .withColumn(cfg.effective_to_column, col("__close_value"))
-            .withColumn(cfg.is_current_column, lit(False))
-            .drop("__close_value")
+        new_versions_from_new_keys = with_scd2_surrogate_keys(
+            new_versions_from_new_keys, key_plan, cfg.effective_from_column, case_sensitive
         )
-
-    closed_frames = [
-        frame
-        for frame in (
-            closed_versions_from_changes,
-            closed_versions_from_missing,
-            closed_versions_from_deletes,
-        )
-        if frame is not None
-    ]
-
-    if closed_frames:
-        touched_keys = closed_frames[0].select(*business_keys)
-        for frame in closed_frames[1:]:
-            touched_keys = touched_keys.unionByName(frame.select(*business_keys))
-        current_rows_not_touched = current_rows.join(
-            touched_keys, on=business_keys, how="left_anti"
-        )
-    else:
-        current_rows_not_touched = current_rows
 
     result = historical_rows
-    for frame in (
-        [current_rows_not_touched]
-        + closed_frames
-        + [new_versions_from_changes, new_versions_from_new_keys]
-    ):
+    for frame in (current_versions, new_versions_from_changes, new_versions_from_new_keys):
         result = result.unionByName(frame, allowMissingColumns=True)
     return result
 
@@ -551,14 +748,16 @@ class MemoryEntityProvider(
             if exists:
                 current_df = self.read_entity(entity_metadata)
             else:
-                if entity_metadata.schema is None:
-                    raise ValueError(
-                        f"Memory entity '{entity_metadata.entityid}' has scd.type=2 but no "
-                        "schema defined. A schema is required to bootstrap the SCD2 "
-                        "temporal columns for a not-yet-existing entity."
-                    )
+                # Without a declared schema, the batch's business columns
+                # bootstrap the table (as the Delta merge does).
+                from kindling.surrogate_keys import augment_schema_for_surrogate_keys
+
                 current_df = self.spark.createDataFrame(
-                    [], augment_schema_for_scd2(entity_metadata.schema, cfg)
+                    [],
+                    augment_schema_for_surrogate_keys(
+                        augment_schema_for_scd2(scd2_batch_schema(entity_metadata, df.schema), cfg),
+                        entity_metadata,
+                    ),
                 )
             now_ts = self.spark.sql("SELECT current_timestamp() AS ts").collect()[0]["ts"]
             result = _memory_scd2_merge(current_df, df, entity_metadata, cfg, now_ts)
@@ -574,7 +773,7 @@ class MemoryEntityProvider(
         else:
             self.logger.info(f"Merging memory entity '{entity_metadata.entityid}' (mode: scd1)")
             result = (
-                _memory_scd1_merge(self.read_entity(entity_metadata), df, entity_metadata)
+                _memory_scd1_merge(self.read_entity(entity_metadata), df, entity_metadata, cfg)
                 if exists
                 else df
             )

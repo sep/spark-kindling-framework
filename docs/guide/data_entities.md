@@ -649,6 +649,7 @@ DataEntities.entity(
         "scd.type": "2",
         "scd.tracked": "name,email,region", # columns that trigger a new version when changed
                                              # omit to track all non-key, non-temporal columns
+                                             # (or use scd.untracked to list the exceptions)
     },
     schema=customer_schema,
 )
@@ -661,6 +662,80 @@ The schema you declare should contain only business columns. The framework auto-
 | Version start timestamp | `__effective_from` | `scd.effective_from_col` |
 | Version end timestamp (null = current) | `__effective_to` | `scd.effective_to_col` |
 | Current-row boolean flag | `__is_current` | `scd.current_col` |
+
+### Tracked and untracked columns
+
+A change to a tracked column closes the current version and opens a new one.
+By default every column is tracked except the keys (`merge_columns`), the
+temporal columns and `scd.sequence_by`. Narrow the tracked set with one of two
+tags:
+
+- `scd.tracked: "name,email,region"` lists the columns to track (an
+  allow-list). Every other column is untracked.
+- `scd.untracked: "ingested_at,load_id"` lists the columns not to track (an
+  exclude-list). Every other column stays tracked. Use it for bookkeeping
+  columns such as ingest timestamps and load ids.
+
+Both tags take a comma-separated list of literal column names. An incoming row
+for an existing key is handled like this:
+
+| Incoming change | Result |
+|---|---|
+| A tracked column changed | Close the current version and insert a new one with every incoming value |
+| Only untracked columns changed | Update the current version in place; `__effective_from` and `__is_current` don't change |
+| Only `scd.sequence_by` changed | Update the current version in place |
+| Nothing changed | No-op |
+
+Closed versions keep the untracked values they had when they were closed.
+
+A merge applies one row per business key. With `scd.sequence_by`, a batch with
+several rows for one key keeps the latest by sequence (as streaming merges do
+per micro-batch); the earlier rows in that batch open no versions. Without
+`scd.sequence_by`, rows identical in every column collapse to one (full reloads
+and retried extracts often contain them); a key whose rows differ is rejected,
+since nothing orders them.
+
+> **Behaviour change for `scd.tracked`.** Columns outside the `scd.tracked`
+> allow-list used to be ignored when only they changed: the current version
+> kept the values it had when it was opened. They are now updated in place on
+> the current version, the same as `scd.untracked` and the same as Lakeflow
+> AUTO CDC.
+
+Column names starting with `__scd2_` are reserved for the merge's staging
+columns, like `__merge_key`: registration rejects them in an SCD2 schema, and the
+merge rejects them in an incoming batch.
+
+A batch that brings a column the table doesn't have yet adds it, with
+schema evolution, as keyed merges and appends already do. A new untracked
+column is filled in on the current version in place; a new tracked column opens
+a new version for each key that now has a value (the closed version keeps NULL).
+
+Registration rejects:
+
+- `scd.tracked` and `scd.untracked` on the same entity;
+- `scd.untracked` on an entity without `merge_columns`, on a derived dataset,
+  or with `write.mode: insert`;
+- an untracked key column, temporal column or `__merge_key`;
+- an untracked column missing from the entity's declared schema (when it
+  declares one);
+- an `scd.untracked` list that leaves no tracked column (`scd.sequence_by`
+  counts as untracked).
+
+### Lakeflow (AUTO CDC)
+
+When the pipeline runs on Databricks Lakeflow (`kindling_ext_databricks`), the
+tags map to AUTO CDC's history-tracking lists. Only one list is ever passed,
+and the same list goes to the change-feed flow (`create_auto_cdc_flow`) and the
+snapshot flow (`create_auto_cdc_from_snapshot_flow`):
+
+| Kindling tags | AUTO CDC argument |
+|---|---|
+| `scd.tracked` | `track_history_column_list` = the tracked columns |
+| `scd.untracked` | `track_history_except_column_list` = the untracked columns, plus `scd.sequence_by` when it is set |
+| neither | `track_history_except_column_list` = `[scd.sequence_by]` when it is set, otherwise no list |
+
+AUTO CDC updates columns outside the tracked set in place on the current
+version, so the runner and Lakeflow give the same result.
 
 ### Companion entity
 
@@ -679,12 +754,15 @@ def gold_active_customers(silver_dim_customer_current):
 
 Writing to a companion entity raises `NotImplementedError`.
 
+In DAG mode (`run_datapipes_dag` / `use_dag=True`), a pipe that reads the companion runs after the pipe that writes the base entity, as if it read the base entity. A pipe can write the SCD2 entity and read its own companion (for example to detect changes against the current rows); it reads the rows from before its write and is not a cycle. SDP/Lakeflow declaration does not lower the companion: a declared pipe that reads it fails validation (`external_input_not_declarable`).
+
 ### Tag reference
 
 | Tag | Default | Description |
 |-----|---------|-------------|
 | `scd.type` | — | Set to `"2"` to enable SCD2 |
-| `scd.tracked` | all non-key, non-temporal columns | Comma-separated tracked columns |
+| `scd.tracked` | all non-key, non-temporal columns | Comma-separated tracked columns. A change confined to other columns updates the current version in place. Can't be combined with `scd.untracked` |
+| `scd.untracked` | none | Comma-separated columns that don't open a new version. A change confined to them updates the current version in place. Also applies to keyed merges without `scd.type` (see [Untracked columns on keyed merges](#untracked-columns-on-keyed-merges-scd1)). Can't be combined with `scd.tracked` |
 | `scd.effective_from_col` | `__effective_from` | Temporal column name override |
 | `scd.effective_to_col` | `__effective_to` | Temporal column name override |
 | `scd.current_col` | `__is_current` | Temporal column name override |
@@ -692,6 +770,287 @@ Writing to a companion entity raises `NotImplementedError`.
 | `scd.routing_key` | `hash` | `hash` (safe for all types) or `concat` (cheaper, readable) |
 | `scd.close_on_missing` | `false` | Set to `"true"` to close (expire) rows whose business key is absent from the incoming batch — acts as a soft-delete for keys that disappear from the source |
 | `scd.optimize_unchanged` | `false` | Set to `"true"` to skip re-inserting rows whose tracked columns are unchanged; uses a hash comparison to detect changes and avoids writing no-op history records |
+
+## Untracked Columns on Keyed Merges (SCD1)
+
+An entity with `merge_columns` and no `scd.type` is written with a keyed
+merge: matched rows are updated, new keys are inserted. The same
+`scd.untracked` tag applies here:
+
+```python
+DataEntities.entity(
+    entityid="silver.customers",
+    name="Customers",
+    merge_columns=["customer_id"],
+    tags={"scd.untracked": "ingested_at,load_id"},
+    schema=customer_schema,
+)
+```
+
+A matched row is updated only when a column other than the keys and the
+untracked columns differs. A change confined to untracked columns doesn't
+rewrite the row, so `ingested_at` and `load_id` keep the values from the last
+load that made a real change. New keys are inserted as usual. Entities
+without `scd.untracked` keep the unconditional update. The same registration
+rules apply as for SCD2 (above), except the temporal-column rule. `scd.tracked`
+has no meaning without `scd.type: "2"`.
+
+This is runner-only behaviour. Keyed SCD1 merges are not lowered to Lakeflow
+AUTO CDC today, so there is no Lakeflow mapping. AUTO CDC type 1 has no
+untracked-column setting and rewrites the row on any change, so if keyed SCD1
+is ever lowered to it, this becomes a documented divergence.
+
+## Surrogate Keys
+
+An entity can declare surrogate key columns and have the framework compute
+them. Keys are declared with tags, built from one canonical encoding (`v1`)
+that is safe to store, and set once when a row is inserted.
+
+```python
+# Hash key on a keyed (SCD1) entity: hashes merge_columns.
+DataEntities.entity(
+    entityid="silver.dim_product",
+    name="Products",
+    merge_columns=["product_id"],
+    tags={"surrogate.column": "product_sk"},
+    schema=product_schema,
+)
+
+# SCD2 dimension: a version key and a durable key.
+DataEntities.entity(
+    entityid="silver.dim_customer",
+    name="Customers",
+    merge_columns=["customer_id", "source_system"],
+    tags={
+        "scd.type": "2",
+        "scd.sequence_by": "updated_at",
+        "surrogate.column": "customer_version_sk",  # H(customer_id, source_system, effective_from)
+        "surrogate.durable_column": "customer_dk",   # H(customer_id, source_system)
+    },
+    schema=customer_schema,
+)
+```
+
+`DataEntities.entity(..., surrogate_key="customer_version_sk", durable_key="customer_dk")`
+is sugar for the two column tags. Like `insert_only_entity`, it only fills in
+the tags; explicit tags win.
+
+### Tags
+
+| Tag | Values | Default |
+|-----|--------|---------|
+| `surrogate.column` | column name (the version key on an SCD2 entity) | none |
+| `surrogate.durable_column` | column name; SCD2 only | none |
+| `surrogate.strategy` | `hash`, `uuid5`, `custom` | `hash` |
+| `surrogate.from` | comma-separated input columns, in order | `merge_columns` |
+| `surrogate.include_effective_from` | `true` / `false`; SCD2 version key only | `true` |
+| `surrogate.namespace` | literal string encoded ahead of the inputs | none |
+| `surrogate.hash.algo` | `sha256` | `sha256` |
+| `surrogate.hash.format` | `hex` | `hex` |
+| `surrogate.uuid.namespace` | UUID; required for `uuid5` | none |
+| `surrogate.generator` | registered generator name; required for `custom` | none |
+| `surrogate.generator.<option>` | string, passed to the generator as `ctx.options["<option>"]` | none |
+| `surrogate.require_reproducible` | `true` / `false` | `false` |
+| `surrogate.encoding` | `v1`; written by the framework | `v1` |
+
+`uuid4` and `identity` strategies, `md5` / `xxhash64`, the `binary` format,
+`surrogate.normalize` and `surrogate.unknown_member` are planned and rejected
+for now with a "not yet supported" error. The durable key uses the version
+key's strategy, namespace and inputs, without the effective date.
+
+### The `v1` encoding
+
+All strategies hash one canonical string, built with Spark's built-in
+functions (no UDFs), so keys agree across Spark 3, Spark 4 and Spark Connect:
+
+1. The inputs are the `surrogate.from` columns **in declared order**, then
+   effective_from for an SCD2 version key. Column names are not part of the
+   input: renaming a column keeps its keys.
+2. `surrogate.namespace`, when set, comes first as `@<length>:<namespace>`.
+   Its own marker keeps it apart from the inputs: namespace `a` over `("b")`
+   and no namespace over `("a", "b")` give different keys.
+3. Each value is `N` when NULL, otherwise `S<length>:<canonical value>`, and
+   the values are concatenated with no separator. `("a|b", "c")` and
+   `("a", "b|c")` can't collide, and NULL (`N`) differs from `""` (`S0:`).
+4. Canonical values: integers as decimal strings (an int `42` and a long `42`
+   agree); decimals in plain notation at the declared scale (a scale change is
+   a key change; scale above 36 is rejected); strings as is; booleans `T` / `F`;
+   dates `yyyy-MM-dd`; timestamps as UTC microseconds (`unix_micros`, the same in
+   every session timezone); binary as lowercase hex. Float, double,
+   `timestamp_ntz` and complex types are rejected.
+5. `hash` is the lowercase sha256 hex of the string (64 characters).
+   `uuid5` is the RFC 4122 name-based UUID of the string in
+   `surrogate.uuid.namespace`, identical to Python's
+   `uuid.uuid5(namespace, canonical)`.
+
+The encoding is recorded in the `surrogate.encoding` tag and, on Delta tables,
+in the table property `kindling.surrogate.encoding` (written at
+`ensure_destination`). A table that records a different encoding fails, so one
+table never mixes key encodings.
+
+A key column missing from the declared schema is added to the table, like
+the SCD2 temporal columns: `nullable=False`, with field metadata
+`kindling.surrogate=<strategy>`. It is a STRING for `hash` and `uuid5`, or
+the generator's `output_type` for `custom`. A declared key column with
+another type fails validation.
+
+### Where keys are computed
+
+- **SCD2** version and durable keys are minted inside the merge (Delta and
+  memory), on the inserted rows only, from the effective_from value that is
+  stored with the row. Streaming merges use the same merge per micro-batch.
+- **Other entities** get the key as a column just before the write: in batch
+  runs the persist step adds it after every `persist.before_persist` handler
+  has run, and in streaming pipes it is added after the pipe's transform,
+  just before the sink starts. A handler that normalizes an input column (for
+  example trims an id) therefore changes the key too: the key is always
+  computed from the values that are stored.
+
+`before_persist` and `read.after_read` receivers chain: each receiver gets the
+DataFrame the previous one returned, so all your transforms apply, in
+whatever order they run.
+
+### Keys are insert-only
+
+A key is set once, when its row is inserted, and no merge clause writes it
+again. Merges never match on keys.
+
+- Key columns are never tracked, so they never open an SCD2 version.
+- Key columns are never untracked either. Under `scd.tracked` every column
+  outside the list is updated in place, but key columns are left out of that
+  update.
+- Closing a version (effective_to, is_current) never touches its keys.
+- On a keyed (SCD1) merge, the matched-row update is an explicit set without
+  the key columns, so a tracked change doesn't rewrite the key.
+- A key column in the incoming data is ignored: the framework always computes
+  the key.
+
+Registration rejects a key column in `merge_columns`, `surrogate.from`,
+`scd.tracked` or `scd.untracked`, an SCD2 temporal or reserved column as a key,
+effective_from, effective_to or is_current in `surrogate.from`, and
+`surrogate.durable_column` on an entity without `scd.type: "2"`. Column names
+are compared without regard to case, as Spark resolves them by default.
+
+### SCD2 version and durable keys
+
+The version key identifies one version, so facts can pin the version that
+was current when they happened. The durable key is the same for every version
+of a business key, for joins on current state. The `.current` companion
+carries both, since they are ordinary columns.
+
+With `scd.sequence_by`, effective_from is the sequence value, so a replay or
+rebuild recreates the same version rows with the same keys. Stale rows
+rejected by the strictly-later check are never inserted and never get a key.
+
+Without `scd.sequence_by`, effective_from is processing time (one instant per
+merge, captured once). Version keys are unique and fixed once stored, but a
+rebuild produces different ones, so registration logs a warning.
+`surrogate.require_reproducible: "true"` turns the warning into an error.
+Durable keys are unaffected.
+
+### Custom generators
+
+A generator is a function that builds a Spark Column from a `KeyContext`. It
+is not a row-level UDF, so the same generator runs before a write and inside
+an SCD2 merge.
+
+```python
+from pyspark.sql import Column, functions as F
+from kindling.surrogate_keys import KeyContext, SurrogateKeyGenerators
+
+@SurrogateKeyGenerators.register("acme_customer_key", deterministic=True, output_type="string")
+def acme_customer_key(ctx: KeyContext) -> Column:
+    parts = [
+        F.lit(ctx.options["prefix"]),
+        ctx.col("source_system"),
+        F.lpad(ctx.col("customer_id").cast("string"), 10, "0"),
+    ]
+    # Only an SCD2 version key has an effective date ("version"); it is None
+    # for a durable key ("durable") and on non-SCD2 entities ("key").
+    if ctx.kind == "version":
+        parts.append(F.date_format(ctx.effective_from, "yyyyMMddHHmmss"))
+    return F.concat_ws("-", *parts)
+```
+
+```python
+tags={
+    "surrogate.column": "acme_key",
+    "surrogate.strategy": "custom",
+    "surrogate.generator": "acme_customer_key",
+    "surrogate.generator.prefix": "CUST",
+}
+```
+
+`KeyContext` gives the generator:
+
+| Member | What it is |
+|--------|------------|
+| `col(name)` | a column of the rows being keyed, bound by the framework |
+| `columns` | every data column after transforms (no staging, temporal or key columns) |
+| `key_columns` | the resolved `surrogate.from` |
+| `effective_from` | the stored effective_from of the version being inserted; `None` for non-SCD2 entities and for durable keys |
+| `effective_to`, `is_current` | their insert-time values (NULL, true) on SCD2 entities; `None` otherwise |
+| `entity` | read-only view: `entityid`, `name`, `merge_columns`, `tags` |
+| `kind` | `"version"` (SCD2 version key), `"durable"` (SCD2 durable key) or `"key"` (non-SCD2) |
+| `options` | the entity's `surrogate.generator.<option>` tags, read-only |
+| `canonical(*cols)`, `hash(*cols, algo=)` | the `v1` helpers; pass column names or columns from `col()` / `effective_from` for their typed forms |
+
+There are no batch or run ids on purpose: they would make every key
+non-reproducible.
+
+Generator names resolve at `ensure_destination`, after bootstrap has
+imported every module, so entity and generator modules can be imported in
+any order. An unknown name fails there and lists the registered generators.
+Streaming pipes and parallel batch generations call `ensure_destination`
+before any data moves. A sequential batch run doesn't, so there a mistyped
+name fails at the pipe's first persist, after its reads (the persist fails,
+so watermarks don't advance).
+A streaming merge resolves the generator on the driver and carries the
+function itself into the micro-batch callback. Under Spark Connect that
+callback runs in a process that never ran bootstrap and may not be able to
+import your module, so the generator's module is pickled by value while the
+callback is serialized. Generators must therefore be picklable: functions
+with no SparkSession, DI service or other live object in their closure,
+calling only helpers that are themselves importable or in the same module.
+
+Determinism is declared, not inspected. Only `deterministic=True` generators
+are accepted for now; non-deterministic ones arrive with `uuid4`. Check a
+generator in your tests with `assert_generator_deterministic`, which
+evaluates it twice with a repartition in between and compares:
+
+```python
+from kindling.surrogate_keys import assert_generator_deterministic
+
+assert_generator_deterministic("acme_customer_key", sample_df, key_columns=["customer_id"],
+                               options={"prefix": "CUST"})
+```
+
+### Lakeflow (SDP)
+
+Surrogate keys are not lowered to SDP/Lakeflow yet. Declaring a pipe whose
+output entity carries `surrogate.*` tags fails validation with
+`surrogate_keys_not_lowered`, so a Lakeflow app can't silently write the
+dataset without its keys. Run such pipes with the Kindling runner, or compute
+the key in the pipe and drop the tags.
+
+### Project-wide overrides
+
+There is no global default generator. To use one generator across a group of
+entities, set the tags with a `dataentities-bytag:` overlay, so each entity
+still shows its own key declaration:
+
+```yaml
+dataentities-bytag:
+  key_family:
+    acme:
+      tags:
+        surrogate.strategy: custom
+        surrogate.generator: acme_customer_key
+        surrogate.generator.prefix: CUST
+```
+
+Every entity tagged `key_family: acme` (and declaring `surrogate.column`)
+then uses the generator.
 
 ## Best Practices
 

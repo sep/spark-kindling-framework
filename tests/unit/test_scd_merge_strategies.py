@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -46,12 +47,17 @@ def test_delta_merge_strategies_get_unknown_name_raises_value_error():
         DeltaMergeStrategies.get("missing")
 
 
+def _plain_entity(tags=None):
+    """An entity without scd.untracked: the SCD1 merge stays unconditional."""
+    return SimpleNamespace(entityid="silver.plain", merge_columns=["id"], tags=tags or {})
+
+
 def _apply_scd1_strategy():
     delta_table = MagicMock()
     aliased_delta = delta_table.alias.return_value
     merge_builder = aliased_delta.merge.return_value
     df = MagicMock()
-    entity = MagicMock()
+    entity = _plain_entity()
 
     SCD1MergeStrategy().apply(delta_table, df, entity, "old.`id` = new.`id`")
 
@@ -104,7 +110,7 @@ def _apply_scd1_strategy_legacy_delta(existing_conf_value=None):
     df = MagicMock()
     conf = df.sparkSession.conf
     conf.get.return_value = existing_conf_value
-    entity = MagicMock()
+    entity = _plain_entity()
 
     SCD1MergeStrategy().apply(delta_table, df, entity, "old.`id` = new.`id`")
 
@@ -152,6 +158,49 @@ def test_scd1_strategy_legacy_delta_restores_conf_even_when_merge_fails():
     conf.get.return_value = None
 
     with pytest.raises(RuntimeError, match="merge failed"):
-        SCD1MergeStrategy().apply(delta_table, df, MagicMock(), "old.`id` = new.`id`")
+        SCD1MergeStrategy().apply(delta_table, df, _plain_entity(), "old.`id` = new.`id`")
 
     conf.unset.assert_called_once_with("spark.databricks.delta.schema.autoMerge.enabled")
+
+
+# ── scd.untracked change condition ────────────────────────────────────────────
+
+
+def _apply_scd1_untracked(target_columns, legacy=False):
+    delta_table = MagicMock()
+    delta_table.toDF.return_value.columns = target_columns
+    merge_builder = delta_table.alias.return_value.merge.return_value
+    if legacy:
+        del merge_builder.withSchemaEvolution
+    df = MagicMock()
+    df.columns = ["id", "name", "ingested_at"]
+    df.schema = None
+    df.sparkSession.conf.get.return_value = None
+    entity = _plain_entity({"scd.untracked": "ingested_at"})
+
+    SCD1MergeStrategy().apply(delta_table, df, entity, "old.`id` = new.`id`")
+    if legacy:
+        return merge_builder
+    return merge_builder.withSchemaEvolution.return_value
+
+
+def test_scd1_untracked_updates_matched_rows_only_on_tracked_change():
+    builder = _apply_scd1_untracked(["id", "name", "ingested_at"])
+
+    condition = builder.whenMatchedUpdateAll.call_args.kwargs["condition"]
+    assert condition == "(NOT (new.`name` <=> old.`name`))"
+
+
+def test_scd1_untracked_condition_applies_on_legacy_delta_too():
+    builder = _apply_scd1_untracked(["id", "name", "ingested_at"], legacy=True)
+
+    condition = builder.whenMatchedUpdateAll.call_args.kwargs["condition"]
+    assert "new.`name`" in condition
+    assert "ingested_at" not in condition
+
+
+def test_scd1_untracked_tracked_column_new_to_target_drops_condition():
+    """A tracked column the table lacks must materialize on every matched row."""
+    builder = _apply_scd1_untracked(["id", "ingested_at"])
+
+    builder.whenMatchedUpdateAll.assert_called_once_with()

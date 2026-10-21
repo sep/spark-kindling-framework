@@ -33,6 +33,7 @@ from . import (
     spark_session,
     spark_trace,
     streaming_orchestrator,
+    surrogate_keys,
     test_framework,
     watermarking,
 )

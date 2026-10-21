@@ -751,6 +751,25 @@ class TestValidation:
         assert issue_codes(issues) == ["output_entity_not_table_backed"]
         assert "memory" in issues[0].reason
 
+    @pytest.mark.parametrize("capabilities", [OSS_SDP, DATABRICKS_SDP], ids=["oss", "databricks"])
+    def test_surrogate_keys_are_rejected_until_lowered(self, entities, capabilities):
+        entities = entities + [
+            make_entity(
+                "silver.dim_product",
+                tags={"surrogate.column": "product_sk", "surrogate.encoding": "v1"},
+            )
+        ]
+        pipes = FakePipeRegistry(
+            [make_pipe("dim.product", ["landing.orders"], "silver.dim_product")]
+        )
+        engine = make_engine(FakeEntityRegistry(entities), pipes, capabilities=capabilities)
+
+        issues = engine.validate()
+
+        assert issue_codes(issues) == ["surrogate_keys_not_lowered"]
+        assert "not lowered to SDP/Lakeflow" in issues[0].reason
+        assert "surrogate.column" in issues[0].reason
+
     def test_sql_view_pipe_fails_fast(self, entity_registry):
         pipes = FakePipeRegistry(
             [
@@ -789,6 +808,40 @@ class TestValidation:
 
         assert issue_codes(issues) == ["external_input_not_declarable"]
         assert "mem.lookup" in issues[0].reason
+
+    def test_scd2_current_companion_input_names_its_base_producer(self):
+        """Reading `<scd2 entity>.current` fails fast with a reason that names
+        the companion and the pipe producing its base, not a generic
+        "provider type 'current_view'" storage-read rejection."""
+        from kindling.data_entities import DataEntityManager
+
+        manager = DataEntityManager()
+        manager.register_entity(
+            "landing.customer", name="landing", merge_columns=["id"], tags={}, schema=None
+        )
+        manager.register_entity(
+            "gold.customer", name="gold", merge_columns=["id"], tags={}, schema=None
+        )
+        manager.register_entity(
+            "silver.customer",
+            name="Customer",
+            merge_columns=["id"],
+            tags={"scd.type": "2", "scd.sequence_by": "updated_at"},
+            schema=None,
+        )
+        pipes = FakePipeRegistry(
+            [
+                make_pipe("load_silver", ["landing.customer"], "silver.customer"),
+                make_pipe("build_gold", ["silver.customer.current"], "gold.customer"),
+            ]
+        )
+        engine = make_engine(manager, pipes, capabilities=DATABRICKS_SDP)
+
+        issues = [issue for issue in engine.validate() if issue.pipe_id == "build_gold"]
+
+        assert issue_codes(issues) == ["external_input_not_declarable"]
+        assert "SCD2 current-row companion" in issues[0].reason
+        assert "'silver.customer' is produced by pipe 'load_silver'" in issues[0].reason
 
     def test_internal_inputs_do_not_require_declarable_providers(
         self, entity_registry, pipe_registry

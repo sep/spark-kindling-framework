@@ -363,7 +363,9 @@ class KindlingStreamingListener(StreamingQueryListener, SignalEmitter):
         Runs until stop() is called or thread is interrupted.
         """
         self.logger.info("Event consumer thread started")
-        self._last_metrics_log_time = time.time()
+        # Monotonic: a wall-clock correction (NTP, WSL resync) must not delay
+        # or hasten the periodic metrics log.
+        self._last_metrics_log_time = time.monotonic()
 
         while self._running:
             try:
@@ -395,7 +397,7 @@ class KindlingStreamingListener(StreamingQueryListener, SignalEmitter):
 
     def _maybe_log_metrics(self):
         """Log metrics periodically based on configured interval."""
-        now = time.time()
+        now = time.monotonic()
         if now - self._last_metrics_log_time >= self._metrics_log_interval:
             metrics = self.get_metrics()
             self.logger.info(

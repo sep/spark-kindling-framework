@@ -172,6 +172,14 @@ predicate, change_feed only), `scd.close_on_missing`, `scd.optimize_unchanged`,
 `scd.tracked` columns in `merge_columns`, and never name a schema column
 `__merge_key` or one of the temporal columns.
 
+`scd.untracked: "ingested_at,load_id"` is the exclude-list form of
+`scd.tracked`; the two can't be combined. Under SCD2 a change confined to
+untracked columns (columns outside `scd.tracked`, or listed in
+`scd.untracked`) updates the current version in place instead of opening a new
+one. On a keyed merge without `scd.type` (SCD1), `scd.untracked` stops an
+untracked-only change from rewriting the row. Keys and temporal columns can't
+be untracked, and at least one column must stay tracked.
+
 ## 5. SQL entities
 
 ```python

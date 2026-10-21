@@ -6,6 +6,47 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- **Surrogate keys.** An entity declares key columns with tags and the
+  framework computes them: `surrogate.column` (on an SCD2 entity, the version
+  key) and `surrogate.durable_column` (SCD2 only; the same for every version),
+  with `surrogate.strategy` `hash` (default: lowercase sha256 hex), `uuid5`
+  (RFC 4122, identical to Python's `uuid.uuid5`, needs
+  `surrogate.uuid.namespace`) or `custom`. Inputs are `surrogate.from`
+  (default `merge_columns`, in declared order), plus effective_from for an SCD2
+  version key, with an optional `surrogate.namespace`. Every strategy hashes
+  one canonical string, the `v1` encoding: column names are not part of it,
+  NULL and empty string differ, separators can't collide, decimals are plain
+  at their declared scale, and timestamps are UTC microseconds, so keys don't
+  depend on the session timezone. The encoding is recorded in the
+  `surrogate.encoding` tag and the Delta table property
+  `kindling.surrogate.encoding`. Key columns are added to the table schema
+  when not declared (`nullable=False`, field metadata `kindling.surrogate`).
+  Keys are insert-only: SCD2 keys are minted inside the Delta and memory
+  merges on inserted rows, from the stored effective_from, and are never
+  tracked, never updated in place (also under `scd.tracked`) and never touched
+  by a close; a keyed (SCD1) merge's update leaves them alone. Other entities
+  get keys in the persist step, after every `persist.before_persist` handler
+  (so a handler that normalizes an input changes the key too), and when a
+  streaming pipe starts. An SCD2 version key without `scd.sequence_by` logs a warning
+  (keys are not reproducible on a rebuild);
+  `surrogate.require_reproducible: "true"` makes it an error. Registration
+  validates the tags, input types and key placement; `uuid4`, `identity`,
+  `md5`, `xxhash64`, the binary format and normalization are rejected as not
+  yet supported. `DataEntities.entity(surrogate_key=..., durable_key=...)` is
+  sugar for the column tags.
+- **Custom surrogate key generators.** `@SurrogateKeyGenerators.register(name,
+  deterministic=True, output_type=...)` registers a function that builds the
+  key Column from a `KeyContext` (bound columns, `effective_from`, `kind`,
+  `options` from `surrogate.generator.<option>` tags, and the `v1`
+  `canonical()` / `hash()` helpers). Names resolve at `ensure_destination`
+  (an unknown name lists the registered ones); a streaming merge carries the
+  resolved function into its micro-batch callback (pickled by value), so it
+  also works under Spark Connect, where the callback's process never ran
+  bootstrap. Only deterministic generators are accepted for now.
+  `assert_generator_deterministic(generator, sample_df)` checks one in tests.
+  Surrogate keys are not lowered to SDP/Lakeflow yet: declaring a pipe whose
+  output carries `surrogate.*` tags fails validation
+  (`surrogate_keys_not_lowered`).
 - **Kindling is published to PyPI.** `pip install 'spark-kindling[standalone]'
   spark-kindling-cli` now works without release URLs. Published:
   `spark-kindling`, `spark-kindling-cli`, `spark-kindling-sdk` and the
@@ -19,9 +60,60 @@ All notable changes to spark-kindling are documented here.
   published version (bump the extension's version when its code changes).
 - `kindling env update` / `env add` / `env bootstrap` take `--source
   auto|pypi|github`.
+- **`scd.untracked` entity tag: columns that never count as a change.** A
+  comma-separated list of column names, the exclude-list counterpart of
+  `scd.tracked` (an entity may declare one or the other, not both). On an
+  SCD2 entity (`scd.type: "2"`) a change only to untracked columns, or only
+  to the `scd.sequence_by` column, updates the current version in place
+  (`__effective_from` and `__is_current` stay as they are); a tracked change
+  still closes the current version, which keeps the untracked values it
+  had, and opens a new one. On an entity without `scd.type`, the keyed merge
+  rewrites a matched row only when a non-key, non-untracked column differs
+  (compared null-safely); without the tag every matched row is rewritten, as
+  before. Delta and memory providers, batch and streaming merges.
+  Registration rejects a business key, an SCD2 temporal or reserved column,
+  a column missing from the declared schema, or a list that leaves no
+  tracked column.
 
 ### Changed
 
+- **SCD2 merges take one row per business key per batch.** With
+  `scd.sequence_by`, a batch carrying several rows for one key is collapsed
+  to the latest row by sequence (the convention streaming merges already
+  apply per micro-batch), on both providers; the Delta merge used to fail
+  with `DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE` when two of
+  them were newer than the current version, and the memory merge copied the
+  current version once per row (so two stale events left two identical
+  current versions). Without `scd.sequence_by`, exact duplicate rows collapse
+  to one, and a key whose rows differ is rejected with an error naming it
+  (nothing orders them).
+- **SCD2 effective_from is staged once per merge.** Without
+  `scd.sequence_by`, the Delta SCD2 merge now captures one processing-time
+  instant on the driver (as the memory provider already did) and stages it as
+  a column that the insert, the close and surrogate version keys all read,
+  instead of evaluating `current_timestamp()` in the MERGE clauses. Stored
+  values don't change meaning; missing-key closes on snapshot sources still
+  use the MERGE's own time.
+- **SCD2 updates untracked columns in place.** Columns outside an
+  `scd.tracked` list used to be ignored when they were the only change, so
+  the current version kept the values it opened with; they are now updated
+  on the current version in place, as with `scd.untracked`. The same applies
+  to a newer `scd.sequence_by` value with no tracked change (it was
+  ignored). The Temporal extension's conditions entity now keeps
+  `generation` current this way. The out-of-order guard compares an incoming
+  sequence value with the current version's `scd.sequence_by` value instead
+  of its `__effective_from`, so an older event never overwrites a newer
+  in-place update.
+- **SCD2 merges add new columns to the table.** A batch carrying a column
+  the SCD2 table does not have used to fail the MERGE (Delta) or the change
+  comparison (memory). The table now gains the column, as with the default
+  keyed merge: a new untracked column lands on each current version in
+  place, and a new tracked column opens a new version for every key that now
+  carries a value. `schema.drift: warn` / `fail` still apply first.
+- **Column names starting with `__scd2_` are reserved on SCD2 entities**,
+  like `__merge_key`: registration rejects them in the declared schema and
+  both providers reject them in an incoming batch, because the merge uses
+  such columns for staging and would overwrite them.
 - **Kindling dependencies are pinned as PyPI versions.** `kindling package
   init` scaffolds `==` pins for `spark-kindling`, the SDK and the CLI in the
   package's `dev` group instead of release wheel URLs, unless the repo root
@@ -55,9 +147,53 @@ All notable changes to spark-kindling are documented here.
   PyPI, and release wheel URLs otherwise.
 - Package metadata on PyPI: project URLs, classifiers and keywords; README
   links are absolute so they work on pypi.org.
+- **Databricks bootstrap warns when early staging falls back to the DBFS
+  root.** With no `kindling.temp_path` in the job parameters, the bootstrap
+  script stages the Kindling wheel, and the bootstrap stages the settings
+  files, under `dbfs:/tmp`; both now warn, naming the job parameter and the
+  `CONFIG__platform_databricks__kindling__temp_path` variable, because
+  workspaces that restrict DBFS root access fail at that step. When a
+  `kindling.temp_path` comes only from settings files, the bootstrap warns
+  that it applies only to later staging such as extension wheels. Where
+  staging goes is unchanged.
 
 ### Fixed
 
+- **The first write of an SCD2 entity runs the SCD2 merge.** When the table
+  did not exist yet, a batch run wrote the first batch with a plain write: on
+  Delta its rows landed with NULL `__effective_from`, `__effective_to` and
+  `__is_current` (invisible to the `.current` companion, and the next load
+  inserted the key again instead of versioning it); on the memory provider
+  the temporal columns were missing and the next merge failed. The first
+  write now goes through the merge, which creates the table (from the
+  declared schema, or from the batch's columns when none is declared) and
+  sets the temporal columns and surrogate keys. Other entities keep the plain
+  first write.
+- **`persist.before_persist` and `read.after_read` receivers chain.** Each
+  receiver used to get the original DataFrame, and the last non-None return
+  won, so one receiver's transform could silently discard another's (a
+  `DataSignals` handler's dispatcher returns its input even when it changes
+  nothing). Each receiver now gets the DataFrame the previous receiver
+  returned.
+- **A Delta SCD2 snapshot no longer closes unchanged rows with null tracked
+  columns.** With `scd.source_kind: snapshot` (or `scd.close_on_missing`), a
+  key present in the batch whose tracked columns were unchanged but
+  included a null was treated as missing and closed. Change detection now
+  compares null-safely in both directions.
+- **DAG mode orders readers of an SCD2 entity's current-row companion after
+  the entity's writer.** The pipe graph only matched an input to a pipe
+  writing that exact id, and nothing writes the auto-registered
+  `<entity>.current` companion, so a pipe reading it got no dependency on the
+  pipe writing the SCD2 entity: both landed in the same generation and the
+  reader could see the previous run's rows, or none on a first run. The
+  graph now resolves the companion to its base entity (its
+  `scd.companion_of` tag); a pipe that writes the SCD2 entity and reads its
+  own companion stays a prior-state self-read, not a cycle. The shared-input
+  cache no longer reuses a frame across a write: an entity read both by its
+  producer and by a downstream pipe (its own output, or its companion) is not
+  cached, so the downstream pipe no longer gets the producer's pre-write
+  frame. SDP declaration still rejects a companion read, now with a reason
+  naming the base entity and the pipe producing it.
 - **`kindling env add` / `env update` pin an extension's Kindling extension
   dependencies** from the same release (e.g. SDP for the Databricks
   extension), before the extension itself. `kindling env add
@@ -90,6 +226,8 @@ All notable changes to spark-kindling are documented here.
   timestamps, so an NTP or WSL clock correction during a span gave a
   negative or inflated duration. It is now measured with a monotonic clock;
   `startTime`/`endTime` stay wall-clock timestamps.
+- **The streaming listener's periodic metrics log uses a monotonic clock**, so a
+  wall-clock correction no longer delays or hastens it.
 - **Streaming recovery backoff no longer follows wall-clock corrections.**
   The recovery manager scheduled each restart attempt as a wall-clock
   time and compared it with `datetime.now()`, so a clock correction

@@ -66,13 +66,20 @@ CDC flow — instead of a materialized view:
 | `scd.source_kind: snapshot` / `scd.close_on_missing: true` | `create_auto_cdc_from_snapshot_flow` |
 | `scd.delete_when` | `apply_as_deletes=expr(...)` |
 | `scd.tracked` | `track_history_column_list` |
+| `scd.untracked` | `track_history_except_column_list=[*untracked, sequence_by]` |
 | (default) sequence column ≠ content | `track_history_except_column_list=[sequence_by]` |
+
+The tracking list goes to both the change-feed and the snapshot flow, and
+only one list is ever passed. `sequence_by` is added to the exclude list
+only when declared. Columns outside the tracked set are updated in place on
+the current version, which is also what the runner does.
 
 Fail-fast mapping requirements (validated with everything else, all
 errors at once): change-feed targets need `scd.sequence_by`
 (`scd_sequence_by_required`); `scd.type` must be `2`, matching core registration
 (`scd_type_unsupported` — bitemporal is deliberately excluded while in
-Beta); keys are required (`scd_keys_required`).
+Beta); keys are required (`scd_keys_required`); `scd.tracked` and
+`scd.untracked` can't both be set (`scd_tracked_untracked_exclusive`).
 
 Documented divergences from the runner engine (dual-engine parity
 criterion): history columns are `__START_AT`/`__END_AT` (the entity's
@@ -81,7 +88,9 @@ ordering is ingestion order, not `scd.sequence_by`; out-of-order
 change-feed rows are reconciled into history rather than ignored under
 the runner's strictly-later rule; the `scd.current_entity_id`
 current-view companion stays runner-only (an ordinary declared view is
-the SDP-native replacement, tracked separately). Expectations, when
+the SDP-native replacement, tracked separately); `scd.untracked` on a
+keyed SCD1 merge (no `scd.type`) is runner-only, because keyed SCD1 is not
+lowered to AUTO CDC. Expectations, when
 configured, attach to the source view — quality is checked on the
 incoming feed.
 

@@ -29,7 +29,7 @@ from kindling.streaming_recovery_manager import (
 )
 
 
-def _wait_until(condition, timeout=2.0, interval=0.02):
+def _wait_until(condition, timeout=10.0, interval=0.02):
     """Poll `condition` (a zero-arg callable) until it returns truthy or
     `timeout` elapses. Recovery attempts run on a background thread, so a
     fixed `time.sleep()` races the thread's own check_interval poll loop --

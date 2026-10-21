@@ -49,3 +49,32 @@ class TestCacheOptimizer:
         levels = optimizer.as_level_map(recommendations)
 
         assert levels == {"entity.shared": "DISK_ONLY"}
+
+    def test_entity_read_before_and_after_its_write_is_not_shared(self):
+        """A producer that reads its own output sees the pre-write state;
+        its downstream consumers see the post-write state. One cached frame
+        would serve the stale pre-write data to the downstream reader."""
+        graph = PipeGraph()
+        graph.add_node(PipeNode("pipe_self", ["entity.src", "entity.a"], "entity.a"))
+        graph.add_node(PipeNode("pipe_down", ["entity.a"], "entity.b"))
+
+        assert CacheOptimizer().recommend(graph) == {}
+
+    def test_scd2_companion_read_by_its_base_writer_is_not_shared(self):
+        graph = PipeGraph()
+        graph.add_node(
+            PipeNode("detect_changes", ["entity.src", "silver.dim.current"], "silver.dim")
+        )
+        graph.add_node(PipeNode("build_gold", ["silver.dim.current"], "gold.dim"))
+        graph.entity_aliases["silver.dim.current"] = "silver.dim"
+
+        assert CacheOptimizer().recommend(graph) == {}
+
+    def test_shared_companion_read_after_its_base_write_is_recommended(self):
+        graph = PipeGraph()
+        graph.add_node(PipeNode("load", ["entity.src"], "silver.dim"))
+        graph.add_node(PipeNode("gold_a", ["silver.dim.current"], "gold.a"))
+        graph.add_node(PipeNode("gold_b", ["silver.dim.current"], "gold.b"))
+        graph.entity_aliases["silver.dim.current"] = "silver.dim"
+
+        assert set(CacheOptimizer().recommend(graph)) == {"silver.dim.current"}

@@ -16,6 +16,7 @@ from kindling_ext_databricks import (
     scd_spec_from_tags,
     validate_scd_spec,
 )
+from kindling_ext_databricks.auto_cdc import track_history_kwargs
 from kindling_ext_sdp import DeclarationValidationError
 from kindling_ext_sdp.declaration_plan import DatasetDeclaration, DatasetType
 
@@ -184,6 +185,24 @@ class TestChangeFeedMapping:
         flow = dp.cdc_flows[0]
         assert flow["track_history_column_list"] == ["status", "tier"]
         assert "track_history_except_column_list" not in flow
+
+    def test_untracked_columns_map_to_except_list_with_sequence_by(self):
+        """scd.untracked is the exclude-list: the untracked columns plus the
+        sequence column are updated in place, not versioned."""
+        dp = declare({**CHANGE_FEED_TAGS, "scd.untracked": "ingested_at, load_id"})
+
+        flow = dp.cdc_flows[0]
+        assert flow["track_history_except_column_list"] == [
+            "ingested_at",
+            "load_id",
+            "updated_at",
+        ]
+        assert "track_history_column_list" not in flow
+
+    def test_untracked_sequence_column_is_not_listed_twice(self):
+        dp = declare({**CHANGE_FEED_TAGS, "scd.untracked": "updated_at,load_id"})
+
+        assert dp.cdc_flows[0]["track_history_except_column_list"] == ["updated_at", "load_id"]
 
     def test_scd_type_1_fails_fast_matching_core_registration(self):
         """Core registration only accepts scd.type='2'; the adapter must
@@ -427,6 +446,36 @@ class TestSnapshotMapping:
 
         assert "sequence_by" not in dp.snapshot_flows[0]
 
+    def test_snapshot_default_tracks_every_column(self):
+        dp = declare(SNAPSHOT_TAGS)
+
+        flow = dp.snapshot_flows[0]
+        assert "track_history_column_list" not in flow
+        assert "track_history_except_column_list" not in flow
+
+    def test_snapshot_tracked_columns_reach_the_snapshot_flow(self):
+        """scd.tracked used to be silently dropped for snapshot sources."""
+        dp = declare({**SNAPSHOT_TAGS, "scd.tracked": "status,tier"})
+
+        flow = dp.snapshot_flows[0]
+        assert flow["track_history_column_list"] == ["status", "tier"]
+        assert "track_history_except_column_list" not in flow
+
+    def test_snapshot_untracked_columns_map_to_except_list(self):
+        dp = declare({**SNAPSHOT_TAGS, "scd.untracked": "ingested_at"})
+
+        flow = dp.snapshot_flows[0]
+        assert flow["track_history_except_column_list"] == ["ingested_at"]
+        assert "track_history_column_list" not in flow
+
+    def test_snapshot_sequence_column_is_excluded_from_tracking(self):
+        """The runner never tracks scd.sequence_by, whatever the source kind."""
+        dp = declare({**SNAPSHOT_TAGS, "scd.sequence_by": "updated_at", "scd.untracked": "load_id"})
+
+        flow = dp.snapshot_flows[0]
+        assert flow["track_history_except_column_list"] == ["load_id", "updated_at"]
+        assert "sequence_by" not in flow
+
     def test_snapshot_delete_when_fails_fast(self):
         entities, pipes = scd_graph({**SNAPSHOT_TAGS, "scd.delete_when": "deleted = true"})
         engine = DatabricksSdpEngine(entities, pipes, dp_module=FakeLakeflowDp())
@@ -463,6 +512,16 @@ class TestAutoCdcValidation:
 
         with pytest.raises(DeclarationValidationError, match="scd_type_unsupported"):
             engine.build_plan()
+
+    @pytest.mark.parametrize("tags", [CHANGE_FEED_TAGS, SNAPSHOT_TAGS])
+    def test_tracked_and_untracked_together_fail_fast(self, tags):
+        entities, pipes = scd_graph({**tags, "scd.tracked": "status", "scd.untracked": "load_id"})
+        dp = FakeLakeflowDp()
+        engine = DatabricksSdpEngine(entities, pipes, dp_module=dp)
+
+        with pytest.raises(DeclarationValidationError, match="scd_tracked_untracked_exclusive"):
+            engine.build_plan()
+        assert dp.cdc_flows == [] and dp.snapshot_flows == []
 
     def test_missing_merge_columns_fails_fast(self):
         entities, pipes = scd_graph(CHANGE_FEED_TAGS, merge_columns=[])
@@ -529,6 +588,20 @@ class TestScdSpecParsing:
         assert spec.source_kind == "change_feed"
         assert spec.sequence_by is None
         assert spec.tracked_columns == ()
+
+    def test_untracked_parses_to_literal_column_names(self):
+        spec = scd_spec_from_tags({"scd.type": "2", "scd.untracked": " a, b ,,c "})
+
+        assert spec.untracked_columns == ("a", "b", "c")
+        assert spec.tracked_columns == ()
+
+    def test_validate_flags_tracked_with_untracked(self):
+        spec = scd_spec_from_tags(
+            {**CHANGE_FEED_TAGS, "scd.tracked": "status", "scd.untracked": "load_id"}
+        )
+
+        codes = [code for code, _ in validate_scd_spec(spec, ["customer_id"])]
+        assert codes == ["scd_tracked_untracked_exclusive"]
 
     def test_validate_reports_all_issues_at_once(self):
         spec = scd_spec_from_tags({"scd.type": "9", "scd.source_kind": "change_feed"})
@@ -636,3 +709,46 @@ def test_temporal_generated_and_implicit_sibling_collisions(
     assert other_leaf in str(exc.value)
     # Implicit siblings and helper names belong only to their resource.
     assert engine.build_plan(["other"]).datasets[0].name == f"gold.{other_leaf}"
+
+
+# --------------------------------------------------------------------- #
+# History-tracking lists                                                 #
+# --------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "tags, expected",
+    [
+        ({}, {}),
+        ({"scd.sequence_by": "seq"}, {"track_history_except_column_list": ["seq"]}),
+        ({"scd.tracked": "a,b"}, {"track_history_column_list": ["a", "b"]}),
+        (
+            {"scd.tracked": "a,b", "scd.sequence_by": "seq"},
+            {"track_history_column_list": ["a", "b"]},
+        ),
+        ({"scd.untracked": "x,y"}, {"track_history_except_column_list": ["x", "y"]}),
+        (
+            {"scd.untracked": "x,y", "scd.sequence_by": "seq"},
+            {"track_history_except_column_list": ["x", "y", "seq"]},
+        ),
+        (
+            {"scd.untracked": "x,x,seq", "scd.sequence_by": "seq"},
+            {"track_history_except_column_list": ["x", "seq"]},
+        ),
+    ],
+)
+@pytest.mark.parametrize("source_kind", ["change_feed", "snapshot"])
+def test_track_history_kwargs_mapping(tags, expected, source_kind):
+    spec = scd_spec_from_tags({"scd.type": "2", "scd.source_kind": source_kind, **tags})
+
+    assert track_history_kwargs(spec) == expected
+
+
+def test_track_history_kwargs_never_returns_both_lists():
+    """AUTO CDC takes one list or the other. Validation rejects declaring
+    both tags; even an unvalidated spec yields only the allow-list."""
+    spec = scd_spec_from_tags(
+        {"scd.type": "2", "scd.sequence_by": "seq", "scd.tracked": "a", "scd.untracked": "x"}
+    )
+
+    assert track_history_kwargs(spec) == {"track_history_column_list": ["a"]}

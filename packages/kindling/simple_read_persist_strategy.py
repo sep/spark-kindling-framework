@@ -17,6 +17,7 @@ from kindling.injection import *
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log import *
+from kindling.surrogate_keys import apply_surrogate_keys
 from kindling.trace_ops import COMPONENT_PIPES, tracing_gates
 from kindling.watermarking import *
 from pyspark.sql.functions import col
@@ -64,13 +65,8 @@ def _read_only_output_error(output_entity) -> ValueError:
     return ValueError(message)
 
 
-def _apply_df_transforms(results, df):
-    """Return the last non-None DataFrame returned by any signal subscriber."""
-    if results:
-        for _, retval in results:
-            if retval is not None and hasattr(retval, "schema"):
-                df = retval
-    return df
+def _is_dataframe(value) -> bool:
+    return value is not None and hasattr(value, "schema")
 
 
 @GlobalInjector.singleton_autobind()
@@ -97,6 +93,10 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
     Receives ``df``, ``pipe_id``, ``source_entity_id``, ``output_entity_id``,
     ``persist_id``. Return a new DataFrame to replace the one written to
     storage, or ``None`` to leave it unchanged.
+
+    Both DataFrame-transforming signals (``read.after_read`` and
+    ``persist.before_persist``) chain: each receiver is passed the
+    DataFrame the previous receiver returned.
 
     Watermark bookkeeping is deliberately NOT handled here: the
     ``WatermarkAspect`` (``kindling.watermarking``) listens to
@@ -200,14 +200,16 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
             df = provider.read_entity(entity)
 
         if df is not None:
-            results = self.emit(
+            # Receivers chain: each sees the previous receiver's DataFrame.
+            df, _ = self.emit_chained(
                 "read.after_read",
+                "df",
+                _is_dataframe,
                 df=df,
                 entity_id=entity.entityid,
                 pipe_id=pipe.pipeid,
                 used_watermark=usewm,
             )
-            df = _apply_df_transforms(results, df)
 
         return df
 
@@ -297,15 +299,22 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
             # persist.persist_failed, so observers like
             # WatermarkAspect treat it as a failed persist (pending
             # watermark discarded, retry re-reads the same slice).
-            results = self.emit(
+            # Receivers chain: each sees the previous receiver's DataFrame.
+            df, _ = self.emit_chained(
                 "persist.before_persist",
+                "df",
+                _is_dataframe,
                 df=df,
                 pipe_id=pipe.pipeid,
                 source_entity_id=src_input_entity_id,
                 output_entity_id=pipe.output_entity_id,
                 persist_id=persist_id,
             )
-            df = _apply_df_transforms(results, df)
+            # Non-SCD2 surrogate keys: a framework-owned final step after
+            # every before_persist transform, so the key is computed from
+            # the values that are stored (signal receivers have no
+            # guaranteed order). SCD2 keys are minted inside the merge.
+            df = apply_surrogate_keys(df, output_entity)
 
             # SQL entities are read-only views, whatever provider their tags
             # name; reject before any write branch (derived replace included).
@@ -414,6 +423,18 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                     output_provider.append_to_entity(df, output_entity)
                 else:
                     raise _read_only_output_error(output_entity)
+            elif (
+                write_mode != "append"
+                and hasattr(output_provider, "merge_to_entity")
+                and scd_config_from_tags(output_entity).enabled
+            ):
+                # An SCD2 entity's first write must produce the rows the
+                # merge would: temporal columns (effective_from/to,
+                # is_current) and surrogate keys are set by the merge, so a
+                # plain write would land rows that no current view sees and
+                # the next merge cannot match. The providers' merge creates
+                # the missing destination and runs the SCD2 insert path.
+                output_provider.merge_to_entity(df, output_entity)
             else:
                 if isinstance(output_provider, WritableEntityProvider):
                     output_provider.write_to_entity(df, output_entity)

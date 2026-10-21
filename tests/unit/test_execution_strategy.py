@@ -3,7 +3,6 @@
 from unittest.mock import Mock
 
 import pytest
-
 from kindling.data_pipes import DataPipesManager, PipeMetadata
 from kindling.execution_strategy import (
     BatchExecutionStrategy,
@@ -746,3 +745,81 @@ class TestExecutionPlanGenerator:
         assert plan.total_generations() == 2
         assert plan.generations[0].pipe_ids == ["source"]
         assert plan.generations[1].pipe_ids == ["consumer"]
+
+
+class TestScd2CompanionPlanning:
+    """Plans order readers of an SCD2 current-row companion after the base writer."""
+
+    @pytest.fixture
+    def logger_provider(self):
+        provider = Mock()
+        provider.get_logger = Mock(return_value=Mock())
+        return provider
+
+    @pytest.fixture
+    def generator(self, logger_provider):
+        from kindling.data_entities import DataEntityManager
+
+        entities = DataEntityManager()
+        for entity_id in ("bronze.customer", "gold.customer", "gold.segment"):
+            entities.register_entity(
+                entity_id, name=entity_id, merge_columns=["id"], tags={}, schema=None
+            )
+        entities.register_entity(
+            "silver.customer",
+            name="Customer",
+            merge_columns=["id"],
+            tags={"scd.type": "2"},
+            schema=None,
+        )
+        pipes = DataPipesManager(logger_provider)
+        for pipe_id, inputs, output in (
+            ("load_silver", ["bronze.customer"], "silver.customer"),
+            (
+                "detect_changes",
+                ["bronze.customer", "silver.customer.current"],
+                "silver.customer",
+            ),
+            ("build_gold", ["silver.customer.current"], "gold.customer"),
+            ("build_segment", ["silver.customer.current"], "gold.segment"),
+        ):
+            pipes.register_pipe(
+                pipe_id,
+                name=pipe_id,
+                execute=lambda **kwargs: None,
+                tags={},
+                input_entity_ids=inputs,
+                output_entity_id=output,
+                output_type="delta",
+            )
+        builder = PipeGraphBuilder(pipes, logger_provider, entity_registry=entities)
+        return ExecutionPlanGenerator(pipes, builder, logger_provider)
+
+    def test_batch_plan_runs_companion_reader_after_base_writer(self, generator):
+        plan = generator.generate_batch_plan(["build_gold", "load_silver"])
+
+        assert [gen.pipe_ids for gen in plan.generations] == [["load_silver"], ["build_gold"]]
+
+    def test_streaming_plan_starts_companion_reader_before_base_writer(self, generator):
+        plan = generator.generate_streaming_plan(["load_silver", "build_gold"])
+
+        assert [gen.pipe_ids for gen in plan.generations] == [["build_gold"], ["load_silver"]]
+
+    def test_companion_read_by_its_writer_is_not_a_cache_candidate(self, generator):
+        """detect_changes reads current rows before writing; build_gold after."""
+        plan = generator.generate_batch_plan(["detect_changes", "build_gold"])
+
+        assert [gen.pipe_ids for gen in plan.generations] == [
+            ["detect_changes"],
+            ["build_gold"],
+        ]
+        assert plan.metadata["cache_recommendations"] == {}
+
+    def test_companion_shared_after_base_write_stays_a_cache_candidate(self, generator):
+        plan = generator.generate_batch_plan(["load_silver", "build_gold", "build_segment"])
+
+        assert [gen.pipe_ids for gen in plan.generations] == [
+            ["load_silver"],
+            ["build_gold", "build_segment"],
+        ]
+        assert set(plan.metadata["cache_recommendations"]) == {"silver.customer.current"}

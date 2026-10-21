@@ -37,7 +37,11 @@ from kindling_ext_sdp import OssSdpEngine, SdpModeWriteError, SdpWriteGuardProvi
 from pyspark.sql import SparkSession
 from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
-from tests.spark_test_helper import _teardown_non_delta_jvm, set_spark_log_level
+from tests.spark_test_helper import (
+    _teardown_non_delta_jvm,
+    _worker_scoped_ivy_dir,
+    set_spark_log_level,
+)
 
 
 @pytest.fixture(scope="module")
@@ -52,6 +56,7 @@ def spark(warehouse_dir):
     _teardown_non_delta_jvm()
     builder = (
         SparkSession.builder.appName("SdpModeIntegration")
+        .config("spark.jars.ivy", _worker_scoped_ivy_dir())
         .master("local[2]")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config(

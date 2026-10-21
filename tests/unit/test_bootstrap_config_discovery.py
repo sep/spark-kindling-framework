@@ -309,3 +309,38 @@ def test_explicit_config_file_platform_environment_is_peeked_before_discovery(tm
 
     assert detect_platform.call_args_list[0].args[0]["platform_service"] == "databricks"
     assert mock_configure.call_args.kwargs["platform"] == "databricks"
+
+
+@pytest.mark.parametrize(
+    ("bootstrap_temp_path", "expected"),
+    [("/Volumes/main/sales/kindling/tmp", "/Volumes/main/sales/kindling/tmp"), (None, None)],
+)
+def test_config_download_staging_path_is_kept_for_hot_reload(bootstrap_temp_path, expected):
+    config = {
+        "platform": "databricks",
+        "workspace_id": "adb-1",
+        "artifacts_storage_path": "/Volumes/main/sales/kindling/artifacts",
+        "declaration_only": True,
+    }
+    if bootstrap_temp_path:
+        config["kindling.temp_path"] = bootstrap_temp_path
+
+    with (
+        patch("kindling.bootstrap._get_storage_utils", return_value=MagicMock()),
+        patch("kindling.bootstrap.download_config_files", return_value=[]) as download,
+        patch(
+            "kindling.bootstrap.detect_platform",
+            side_effect=lambda config=None: (config or {}).get("platform_service") or "standalone",
+        ),
+    ):
+        mock_configure = _run_initialize(
+            config,
+            config_values={
+                "kindling.temp_path": expected,
+                "kindling.bootstrap.declaration_only": True,
+            },
+        )
+
+    # The initial download and the reload context get the same staging path.
+    assert download.call_args.kwargs["temp_path"] == expected
+    assert mock_configure.call_args.kwargs["temp_path"] == expected
