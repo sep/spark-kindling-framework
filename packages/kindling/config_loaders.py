@@ -13,14 +13,41 @@ Key Features:
 - Support for nested secrets in complex structures
 """
 
+import hashlib
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 # Dynaconf imports
 from dynaconf.utils.parse_conf import parse_conf_data
 
 logger = logging.getLogger(__name__)
+
+# SHA-256 digests (never the values) of every secret resolved in this
+# process, so code that copies config values elsewhere (provenance stamps
+# copy allow-listed pipe tags into rows) can leave out the ones that held a
+# secret, whichever path resolved it.
+_RESOLVED_SECRET_DIGESTS: Set[str] = set()
+
+
+def _secret_digest(value: Any) -> str:
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+def _remember_resolved_secret(value: Any) -> Any:
+    if value is not None and str(value):
+        _RESOLVED_SECRET_DIGESTS.add(_secret_digest(value))
+    return value
+
+
+def is_resolved_secret_value(value: Any) -> bool:
+    """Whether ``value`` is a secret resolved in this process (or still an
+    unresolved ``@secret`` reference)."""
+    if _is_unresolved_secret_reference(value):
+        return True
+    if value is None or not _RESOLVED_SECRET_DIGESTS:
+        return False
+    return _secret_digest(value) in _RESOLVED_SECRET_DIGESTS
 
 
 def load_secrets_from_provider(obj, env: str = None, silent: bool = True, key: str = None):
@@ -113,7 +140,7 @@ def load_secrets_from_provider(obj, env: str = None, silent: bool = True, key: s
 
                 try:
                     # Fetch from platform-specific secret provider
-                    resolved = secret_provider.get_secret(secret_name)
+                    resolved = _remember_resolved_secret(secret_provider.get_secret(secret_name))
 
                     # Log success (without revealing value)
                     logger.debug(f"Resolved secret '{secret_name}' at {path}")
@@ -214,7 +241,7 @@ def resolve_secret_value(value: Any, secret_provider) -> Any:
         secret_name = value[len("@secret ") :].strip()
     else:
         secret_name = value[len("@secret:") :].strip()
-    return secret_provider.get_secret(secret_name)
+    return _remember_resolved_secret(secret_provider.get_secret(secret_name))
 
 
 def find_unresolved_secret_references(obj) -> List[str]:
