@@ -391,13 +391,9 @@ adopt `v1` later at no cost, but that is not needed for this work.
   sequence value. A replay or rebuild recreates the same version rows with the same keys.
   Late or back-dated rows rejected by the strictly-later check never get inserted, so
   they never mint a key.
-- **SDP / AUTO CDC lowering: unresolved.** Computing the version key in the source view
-  does not give parity with the Delta provider. On an untracked- or sequence-only update
-  the incoming sequence advances while the stored `__START_AT` stays the same, so a
-  recomputed key would either open new history (if tracked) or be overwritten in place
-  (if untracked). Snapshot flows also order by ingestion rather than `scd.sequence_by`.
-  A lowering needs the stored version start and must keep insert-only keys. Until then
-  the SDP declaration engine rejects `surrogate.*` tags.
+- **SDP / AUTO CDC lowering.** Phase 1's SDP declaration engine rejects every
+  `surrogate.*` tag. See [SDP / AUTO CDC lowering](#sdp--auto-cdc-lowering) for what can
+  be lowered and the plan for the rest.
 - **Without `scd.sequence_by`:** effective_from is processing time, so version keys are
   unique and fixed once stored, but **not reproducible** on a rebuild. Registration
   **warns**; `surrogate.require_reproducible=true` turns the warning into an error for
@@ -485,6 +481,63 @@ ones.
 `deterministic=False` generators are placed like `uuid4`, with the same restrictions. A
 test helper, `assert_generator_deterministic(generator, sample_df)`, evaluates the
 generator twice with a repartition in between and compares the results.
+
+## SDP / AUTO CDC lowering
+
+Evaluated 2026-10-21. Phase 1 rejects every `surrogate.*` tag in SDP mode. Only the SCD2
+**version key** is actually hard to lower.
+
+**Why the version key is hard.** The version key is H(`surrogate.from`, effective_from).
+In the Delta provider effective_from is fixed once a version is inserted: an in-place
+(untracked or sequence-only) update changes only the untracked columns. AUTO CDC behaves
+the same way, keeping the opening row's sequence in `__START_AT`. But a key computed in
+the pipe's source view sees the *incoming* sequence, not the stored start, so on every
+in-place update it is wrong. If the key column is untracked, AUTO CDC overwrites the
+stored key with the new hash. If it is tracked, the changed hash opens a new version.
+Snapshot flows (`create_auto_cdc_from_snapshot_flow`) also order by ingestion rather
+than `scd.sequence_by`, so they can't reproduce the runner's version keys under any
+placement.
+
+**What can be lowered as a source-view column.** A key computed in the source view is
+correct when its inputs can't change while the row keeps its identity:
+
+- non-SCD2 keys (append flows);
+- SCD1 keys: AUTO CDC type 1 rewrites the key on every update, but with the same value;
+- SCD2 durable keys.
+
+The rule: a built-in strategy (`hash`, `uuid5`) and `surrogate.from` limited to the merge
+columns (and, for an SCD2 version key, the tracked columns, which are constant within a
+version). Custom generators stay rejected in SDP mode, because `ctx.col` can read any
+column and the engine can't check what a generator depends on.
+
+**Options for the version key:**
+
+1. **Generated column on the AUTO CDC target** (preferred). Declare the key in the
+   target's schema as `GENERATED ALWAYS AS (<v1 hash of surrogate.from, __START_AT>)`.
+   Its inputs are constant within a version, so Delta recomputing it on update is
+   harmless. The key is stored in the table, with no companion view and no read-side
+   synthesis, and the lowering only adds a schema string. Streaming-table schemas accept
+   generated columns over deterministic built-in functions. Open points:
+   - a community report has a generated `is_current` column on an SCD2 `apply_changes`
+     target reading NULL until a full refresh, so this needs a spike on a real workspace;
+   - it needs a SQL-text rendering of the `v1` encoder, golden-tested against the
+     Column version;
+   - `__START_AT` has the `sequence_by` type, while the runner stores effective_from as a
+     timestamp, so the expression must apply the runner's cast exactly or the keys won't
+     match (for example with a long sequence).
+2. **A downstream view or materialized view that adds the key.** It works, but it is a
+   companion workaround: consumers must read the view rather than the entity's table.
+3. **A foreachBatch sink running Kindling's merge.** It matches the runner exactly, but
+   drops AUTO CDC and makes the lowering more complicated.
+4. **Keep rejecting version keys in SDP mode.** This is the fallback.
+
+**Plan (0.15, not rc3):**
+
+1. Lift the rejection for non-SCD2, SCD1 and SCD2 durable keys under the rule above,
+   with the key as a source-view column.
+2. Spike option 1 in one cloud system test. Adopt it if the key is populated on the first
+   run and equals the runner's key for the same input; otherwise keep option 4.
+3. Snapshot sources keep rejecting version keys.
 
 ## Temporal extension IDs
 
@@ -576,7 +629,9 @@ Recorded 2026-10-19.
    with `uuid4`.
 2. **Random keys and temporal IDs:** `uuid4` insert-clause placement (and
    `deterministic=False` generators). The temporal extension's switch to `v1` with
-   legacy opt-out and detection, in both the engine and the Databricks lowering.
+   legacy opt-out and detection, in both the engine and the Databricks lowering. SDP
+   lowering of the keys that a source view can carry, and the generated-column spike for
+   SCD2 version keys (see [SDP / AUTO CDC lowering](#sdp--auto-cdc-lowering)).
 3. **Options and conventions:** `xxhash64` and `md5`, `binary` format, `normalize`,
    unknown-member seeding.
 4. **Later:** `identity` (DDL in ensure/migration through the `DeltaTable` builder with
