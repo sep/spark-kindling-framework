@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "spark-kindling-ext-cosmos"
-version = "0.14.0rc2"
+version = "0.14.0rc3"
 description = "Azure Cosmos DB entity provider extension for Kindling"
 authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
 license = "MIT"
@@ -38,7 +38,7 @@ classifiers = [
 # without extras, so nothing here is required at import time: a bare install
 # works on every platform. Never request both extras in one environment.
 dependencies = [
-    "spark-kindling>=0.14.0rc2,<0.15",
+    "spark-kindling>=0.14.0rc3,<0.15",
 ]
 
 [project.urls]
