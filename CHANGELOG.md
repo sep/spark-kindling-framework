@@ -2,6 +2,35 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Added
+
+- **Provenance stamping (phase 1).** An output entity can carry a nullable
+  `__provenance` struct column naming the pipe, run and inputs that wrote each
+  row: `pipe_id`, `pipe_name`, `run_id` (null until the runtime manifest
+  lands), `execution_id` (the executor's run id), `persist_id`,
+  `processed_at`, `mode` (`batch`/`streaming`/`sdp`), app, environment,
+  platform and Kindling version, `input_entity_ids`, `input_versions`
+  (reserved, null), an allow-listed `tags` map and `schema_version`. Turn it
+  on project-wide with the `kindling.provenance.*` settings block (the
+  lowest-precedence default for Delta and memory entities; read-only, SQL,
+  SCD2 companion and `system.*` entities are skipped) or per entity with
+  `provenance.enabled` / `provenance.column` / `provenance.pipe_tags` tags; an
+  entity opts out with `provenance.enabled: "false"`. The batch persist step
+  (after the surrogate key step), the streaming start and the SDP dataset
+  builder (declaration-time literals) stamp the output. The column is written
+  with every row write and never counts as a change: a provenance-only
+  difference opens no SCD2 version, triggers no SCD2 in-place update and no
+  SCD1 update under `scd.untracked`, so enabling it on an existing SCD2 table
+  re-versions nothing; an SCD2 close keeps the closed version's stamp. AUTO
+  CDC lists it in `track_history_except_column_list` when the entity has no
+  `scd.tracked` allow-list. Downstream reads drop an input's stamp unless the
+  pipe lists the input in `provenance.keep_inputs`. Custom surrogate key
+  generators never see it in `ctx.columns`. Pipe tags that held a resolved
+  secret are never copied into the stamp. `StreamingOrchestrator` emits a new
+  `streaming.pipe_starting` signal before starting each pipe.
+
 ## [0.14.0] - 2026-10-21
 
 ### Added

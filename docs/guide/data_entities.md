@@ -1052,6 +1052,106 @@ dataentities-bytag:
 Every entity tagged `key_family: acme` (and declaring `surrogate.column`)
 then uses the generator.
 
+## Provenance Stamping
+
+A stamped entity carries one nullable struct column, `__provenance` by
+default, that records which pipe, in which run, from which inputs wrote each
+row. The record is data: it lives in the row, is queried with SQL and is kept
+as long as the row is. It is not telemetry (nothing is emitted, and turning
+tracing off does not turn it off), so its settings live under
+`kindling.provenance.*`. Design: `docs/proposals/provenance_stamping.md`.
+
+### Turning it on
+
+Project-wide, in any settings layer (base, platform, environment or the app's
+own files):
+
+```yaml
+kindling:
+  provenance:
+    enabled: true             # default false
+    column: __provenance      # default
+    pipe_tags: [domain, owner, "layer.*"]   # allow-list; names and fnmatch globs
+```
+
+Per entity, with tags (`tags=`, `dataentities:`, `dataentities-bytag:` or
+`entity_tags`):
+
+```python
+tags={
+    "provenance.enabled": "false",          # opt out of the settings default
+    "provenance.column": "_lineage",
+    "provenance.pipe_tags": "domain,owner",
+}
+```
+
+The settings block is the **lowest-precedence default**: it fills in each
+`provenance.*` tag an entity does not set after the `dataentities-bytag:` and
+`dataentities:` overlays, so every other layer wins, and an entity opts out in
+its own declaration. The block reaches Delta and memory entities only; it
+skips read-only, SQL, SCD2 companion and `system.*` entities. Any other
+provider opts in with an explicit `provenance.enabled: "true"` tag.
+
+Registration rejects the column in `merge_columns`, `partition_columns`,
+`cluster_columns`, `scd.tracked`, `scd.untracked`, `scd.sequence_by`,
+`surrogate.from`, the surrogate key columns or `derived.replace_keys`, as an
+SCD2 temporal column, in the declared schema (the framework adds it), and a
+name starting with `__scd2_`. `provenance.pipe_tags` must name tags: `*` is
+rejected. Pipe tags that held a resolved secret are never copied.
+
+### The column
+
+| Field | Value |
+|---|---|
+| `pipe_id`, `pipe_name` | The pipe that wrote the row |
+| `run_id` | The runtime manifest's run id; null until that lands |
+| `execution_id` | The executor's run id (one per `execute` / `run_datapipes` call, or per streaming orchestrator start); null outside an executor |
+| `persist_id` | The batch persist call; null for streaming and SDP |
+| `processed_at` | Write time (per micro-batch on a stream; the declaration time on SDP) |
+| `mode` | `batch`, `streaming` or `sdp` |
+| `app_name`, `environment`, `platform`, `kindling_version` | Best effort; null when unknown |
+| `input_entity_ids` | The pipe's inputs |
+| `input_versions` | Reserved for the version of each input read; null for now |
+| `tags` | The allow-listed pipe tags (`map<string,string>`) |
+| `schema_version` | `1` |
+
+Fields are only ever added. Existing rows of an existing table get a null
+stamp ("written before provenance was enabled") until they are next written.
+
+### Overwrite overwrites
+
+The column is written with every row write, and it is **never a change**:
+
+| Write | Provenance on the stored row |
+|---|---|
+| Append (batch or streaming), derived replace | The write that stored the row |
+| `write.mode: insert` | The write that inserted it; an existing key keeps its stamp |
+| SCD1 keyed merge | The last write that updated the row. With `scd.untracked`, a provenance-only (or untracked-only) difference is skipped, so the stamp names the last real change; without it every matched row is rewritten and restamped |
+| SCD2 | Each version: the write that stored it. A close keeps the closed version's stamp; an in-place update (untracked-only change, sequence-only bump) overwrites it |
+
+A difference only in the stamp never opens an SCD2 version and never
+triggers an in-place update, so adding the column to an existing SCD2 table
+re-versions nothing. On Lakeflow the column is in the AUTO CDC
+`track_history_except_column_list` (unless the entity has an `scd.tracked`
+allow-list, which already leaves it out). A custom surrogate key generator's
+`ctx.columns` never includes it.
+
+### Reads downstream
+
+A downstream pipe's read drops an input's provenance column (batch, streaming
+and SDP reads), so a table never inherits a stamp naming another pipe. A pipe
+keeps it for named inputs with a pipe tag:
+
+```python
+tags={"provenance.keep_inputs": "silver.orders"}
+```
+
+Writing a kept stamp to a stamped output fails (the stamp would be replaced):
+rename or drop it in the pipe.
+
+Writes outside a pipe's persist step (file ingestion, the watermark entity)
+are not stamped.
+
 ## Best Practices
 
 1. **Entity Naming**: Use hierarchical naming with layer prefixes (bronze.*, silver.*, gold.*)
