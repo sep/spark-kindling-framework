@@ -59,6 +59,9 @@ class ScdSpec:
     delete_when: Optional[str]
     tracked_columns: Tuple[str, ...]
     untracked_columns: Tuple[str, ...] = ()
+    #: The entity's provenance column when it is stamped (from
+    #: ``kindling.data_entities.provenance_column``): never history.
+    provenance_column: Optional[str] = None
 
     @property
     def is_snapshot(self) -> bool:
@@ -111,12 +114,21 @@ def track_history_kwargs(spec: ScdSpec) -> Dict[str, List[str]]:
       ``scd.sequence_by`` is set (the sequence column is ordering
       authority, not content, so a sequence-only bump updates in place),
       otherwise nothing (every column is tracked).
+
+    A stamped entity's provenance column is never history: without an
+    allow-list it joins the except list; an allow-list already leaves it
+    out. AUTO CDC then updates it in place on the current version, also
+    when only the stamp differs (the runner skips such a row); either way
+    the stamp names a write that stored the row's data ("overwrite
+    overwrites"), so this is not a divergence.
     """
     if spec.tracked_columns:
         return {"track_history_column_list": list(spec.tracked_columns)}
     except_columns = list(spec.untracked_columns)
     if spec.sequence_by and spec.sequence_by not in except_columns:
         except_columns.append(spec.sequence_by)
+    if spec.provenance_column and spec.provenance_column not in except_columns:
+        except_columns.append(spec.provenance_column)
     if except_columns:
         return {"track_history_except_column_list": list(dict.fromkeys(except_columns))}
     return {}

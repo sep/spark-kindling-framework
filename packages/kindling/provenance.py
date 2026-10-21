@@ -24,7 +24,7 @@ import fnmatch
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Dict, Iterable, Optional, Tuple
 
@@ -34,6 +34,7 @@ from kindling.data_entities import (
     provenance_column,
     provenance_config_from_tags,
     provenance_kept_inputs,
+    quote_sql_identifier,
 )
 from kindling.injection import GlobalInjector
 from kindling.signaling import SignalProvider
@@ -170,11 +171,17 @@ def augment_schema_for_provenance(schema, entity: EntityMetadata):
 
     Like ``augment_schema_for_scd2``: new tables get the column at creation,
     and ``schema.drift: fail`` and declarative schemas accept it. A schema of
-    None (inferred from the first write) is returned unchanged.
+    None (inferred from the first write) is returned unchanged; a DDL string
+    (an SDP declaration's schema) gets the column appended in DDL.
     """
     column = provenance_column(entity)
     if schema is None or column is None:
         return schema
+    if isinstance(schema, str):
+        if not schema.strip():
+            return schema
+        ddl_type = provenance_struct_type().simpleString()
+        return f"{schema.rstrip().rstrip(',')}, {quote_sql_identifier(column)} {ddl_type}"
     schema_struct = schema if isinstance(schema, StructType) else StructType(schema)
     if _find_column(schema_struct.fieldNames(), column) is not None:
         return schema_struct
@@ -305,6 +312,68 @@ def build_provenance_stamp(
         tags=selected_pipe_tags(pipe, entity),
         **_runtime_identity(config_service),
     )
+
+
+# ── Declarative engines ──────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class DeclaredProvenance:
+    """Provenance lowering for one declared dataset (SDP/Lakeflow).
+
+    Built when the dataset is declared, so every value is a literal,
+    ``processed_at`` included (incremental refresh never sees
+    ``current_timestamp()``). Both operations are lazy: an SDP dataset
+    function must not analyze its inputs eagerly, so there is no
+    existing-column check on the output (``withColumn`` replaces).
+    """
+
+    column: Optional[str] = None
+    stamp: Optional[ProvenanceStamp] = None
+    #: (input entity id, provenance column dropped from that input's read)
+    dropped_inputs: Tuple[Tuple[str, str], ...] = ()
+
+    def drop_from_input(self, entity_id: str, df: DataFrame) -> DataFrame:
+        for dropped_id, column in self.dropped_inputs:
+            if dropped_id == entity_id:
+                return df.drop(column)
+        return df
+
+    def stamp_output(self, df: DataFrame) -> DataFrame:
+        if self.column is None or self.stamp is None:
+            return df
+        return df.withColumn(self.column, provenance_column_expr(self.stamp))
+
+
+def declared_provenance(
+    pipe,
+    entity,
+    input_entities: Mapping[str, Any],
+    *,
+    processed_at: Optional[datetime] = None,
+    config_service=None,
+) -> DeclaredProvenance:
+    """The provenance lowering of ``pipe`` writing ``entity`` in a
+    declarative engine: the output stamp (``mode='sdp'``, no run, execution
+    or persist id) and the stamp columns to drop from each input read
+    (``input_entities`` maps input entity id to its metadata)."""
+    dropped = []
+    kept = provenance_kept_inputs(pipe)
+    for entity_id, input_entity in (input_entities or {}).items():
+        column = provenance_column(input_entity) if input_entity is not None else None
+        if column is not None and entity_id not in kept:
+            dropped.append((entity_id, column))
+    column = provenance_column(entity) if entity is not None else None
+    stamp = None
+    if column is not None:
+        stamp = build_provenance_stamp(
+            pipe,
+            entity,
+            mode=MODE_SDP,
+            processed_at=processed_at or datetime.now(timezone.utc),
+            config_service=config_service,
+        )
+    return DeclaredProvenance(column=column, stamp=stamp, dropped_inputs=tuple(dropped))
 
 
 # ── Execution ids ────────────────────────────────────────────────────────────

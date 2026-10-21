@@ -752,3 +752,64 @@ def test_track_history_kwargs_never_returns_both_lists():
     )
 
     assert track_history_kwargs(spec) == {"track_history_column_list": ["a"]}
+
+
+# --------------------------------------------------------------------- #
+# Provenance column                                                      #
+# --------------------------------------------------------------------- #
+
+
+class TestProvenanceColumn:
+    """A stamped entity's provenance column is never history: it joins the
+    except list unless an scd.tracked allow-list already leaves it out."""
+
+    @pytest.mark.parametrize(
+        "tags, expected",
+        [
+            ({}, {"track_history_except_column_list": ["__provenance"]}),
+            (
+                {"scd.sequence_by": "seq"},
+                {"track_history_except_column_list": ["seq", "__provenance"]},
+            ),
+            (
+                {"scd.untracked": "x", "scd.sequence_by": "seq"},
+                {"track_history_except_column_list": ["x", "seq", "__provenance"]},
+            ),
+            ({"scd.tracked": "a,b"}, {"track_history_column_list": ["a", "b"]}),
+        ],
+    )
+    def test_track_history_kwargs(self, tags, expected):
+        from dataclasses import replace
+
+        spec = replace(
+            scd_spec_from_tags({"scd.type": "2", **tags}), provenance_column="__provenance"
+        )
+
+        assert track_history_kwargs(spec) == expected
+
+    def test_change_feed_flow_excludes_the_stamp(self):
+        dp = declare({**CHANGE_FEED_TAGS, "provenance.enabled": "true"})
+
+        assert dp.cdc_flows[0]["track_history_except_column_list"] == [
+            "updated_at",
+            "__provenance",
+        ]
+
+    def test_snapshot_flow_excludes_the_renamed_stamp(self):
+        dp = declare(
+            {**SNAPSHOT_TAGS, "provenance.enabled": "true", "provenance.column": "_lineage"}
+        )
+
+        assert dp.snapshot_flows[0]["track_history_except_column_list"] == ["_lineage"]
+
+    def test_allow_list_is_kept_as_is(self):
+        dp = declare({**CHANGE_FEED_TAGS, "provenance.enabled": "true", "scd.tracked": "status"})
+
+        flow = dp.cdc_flows[0]
+        assert flow["track_history_column_list"] == ["status"]
+        assert "track_history_except_column_list" not in flow
+
+    def test_unstamped_entity_is_unchanged(self):
+        dp = declare({**CHANGE_FEED_TAGS, "provenance.enabled": "false"})
+
+        assert dp.cdc_flows[0]["track_history_except_column_list"] == ["updated_at"]

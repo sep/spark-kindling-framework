@@ -210,3 +210,11 @@ def test_stamp_values_are_text_or_null_for_test_doubles():
     assert stamp.pipe_id is None and stamp.pipe_name is None
     assert stamp.input_entity_ids == ()
     assert stamp.tags == ()
+
+
+def test_augment_ddl_schema_string():
+    entity = _entity({"provenance.enabled": "true"})
+    ddl = augment_schema_for_provenance("id STRING, status STRING", entity)
+    assert ddl.startswith("id STRING, status STRING, `__provenance` struct<pipe_id:string,")
+    assert augment_schema_for_provenance("", entity) == ""
+    assert augment_schema_for_provenance("id STRING", _entity()) == "id STRING"
