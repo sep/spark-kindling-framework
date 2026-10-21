@@ -32,7 +32,11 @@ from kindling.trace_ops import wrap_provider_ops
 from pyspark.sql import SparkSession
 from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
-from tests.spark_test_helper import _teardown_non_delta_jvm, set_spark_log_level
+from tests.spark_test_helper import (
+    _teardown_non_delta_jvm,
+    _worker_scoped_ivy_dir,
+    set_spark_log_level,
+)
 
 SOURCE_SCHEMA = StructType(
     [
@@ -93,6 +97,7 @@ class TestPipeRunSpanTree:
     def spark(self):
         spark = (
             SparkSession.builder.appName("TracingTreeTest")
+            .config("spark.jars.ivy", _worker_scoped_ivy_dir())
             .master("local[2]")
             .config("spark.sql.shuffle.partitions", "2")
             .getOrCreate()
@@ -178,6 +183,7 @@ class TestDeltaWatermarkedSpanTree:
         _teardown_non_delta_jvm()
         builder = (
             SparkSession.builder.appName("TracingTreeDeltaTest")
+            .config("spark.jars.ivy", _worker_scoped_ivy_dir())
             .master("local[2]")
             .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
             .config(

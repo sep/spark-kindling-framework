@@ -47,7 +47,11 @@ from pyspark.sql.types import (
     StructType,
 )
 
-from tests.spark_test_helper import _teardown_non_delta_jvm, set_spark_log_level
+from tests.spark_test_helper import (
+    _teardown_non_delta_jvm,
+    _worker_scoped_ivy_dir,
+    set_spark_log_level,
+)
 
 
 @pytest.fixture(scope="module")
@@ -55,6 +59,7 @@ def spark():
     _teardown_non_delta_jvm()
     builder = (
         SparkSession.builder.appName("SurrogateKeyEncoding")
+        .config("spark.jars.ivy", _worker_scoped_ivy_dir())
         .master("local[2]")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config(
@@ -215,8 +220,16 @@ def test_timestamps_are_session_timezone_independent(spark, timezone):
 
 
 def test_namespace_is_encoded_first(spark):
-    assert _canonical(spark, [("a",)], _strings("x"), namespace="crm") == ["S3:crmS1:a"]
+    assert _canonical(spark, [("a",)], _strings("x"), namespace="crm") == ["@3:crmS1:a"]
     assert _canonical(spark, [("a",)], _strings("x"), namespace=None) == ["S1:a"]
+
+
+def test_namespace_cannot_collide_with_an_input_value(spark):
+    # Namespace "a" over ("b",) vs no namespace over ("a", "b").
+    namespaced = _canonical(spark, [("b",)], _strings("x"), namespace="a")
+    plain = _canonical(spark, [("a", "b")], _strings("x", "y"))
+    assert namespaced == ["@1:aS1:b"]
+    assert plain == ["S1:aS1:b"]
 
 
 def test_hash_is_lowercase_sha256_hex_of_the_canonical_string(spark):
@@ -373,7 +386,7 @@ def test_apply_uuid5_and_namespace(spark):
         }
     )
     got = apply_surrogate_keys(df, entity).first()["product_uuid"]
-    assert got == str(uuid.uuid5(uuid.NAMESPACE_OID, "S3:erpS2:p1"))
+    assert got == str(uuid.uuid5(uuid.NAMESPACE_OID, "@3:erpS2:p1"))
 
 
 def test_apply_leaves_scd2_and_keyless_entities_alone(spark):
