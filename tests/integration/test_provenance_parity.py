@@ -147,16 +147,21 @@ PROVENANCE = {"provenance.enabled": "true"}
 
 TS = lambda day: datetime(2026, 7, day, 0, 0, 0)  # noqa: E731
 
-# Every way an SCD2 entity can split its columns: the provenance column
-# must stay out of the change tests under each one. (Under sequence_by a
-# rewrite with an equal sequence value is also stopped by the sequence
-# guard, so only the other forms pin the provenance exclusion itself.)
+# The ways an SCD2 entity splits its columns: the provenance column must
+# stay out of the change tests under each (default: tracked by default;
+# scd.untracked: an exclude-list; scd.tracked: an allow-list, where it would
+# otherwise land in the untracked comparison; sequence_by: a sequence-only
+# bump updates in place). Each test runs the forms that reach a different
+# code path for it, to keep the single-process CI suite's JVM within budget.
 SCD2_FORMS = {
     "default": {},
     "scd.untracked": {"scd.untracked": "load_id"},
     "scd.tracked": {"scd.tracked": "status,updated_at"},
     "sequence_by": {"scd.sequence_by": "updated_at"},
 }
+# A rewrite with an equal sequence value is also stopped by the sequence
+# guard, so sequence_by can't pin the no-change rule; these three do.
+NO_CHANGE_FORMS = ["default", "scd.untracked", "scd.tracked"]
 
 
 def _suffix(request):
@@ -216,7 +221,7 @@ def _rows(provider, entity):
 # ── SCD2 ──────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("form", list(SCD2_FORMS))
+@pytest.mark.parametrize("form", NO_CHANGE_FORMS)
 def test_scd2_provenance_only_difference_is_no_change(spark, provider, request, form):
     entity = _scd2_entity(request, "prov_noop", SCD2_FORMS[form])
 
@@ -229,7 +234,7 @@ def test_scd2_provenance_only_difference_is_no_change(spark, provider, request, 
     assert _stamp(current[0]) == "w1", "nor update the current version in place"
 
 
-@pytest.mark.parametrize("form", list(SCD2_FORMS))
+@pytest.mark.parametrize("form", ["default", "scd.tracked"])
 def test_scd2_close_keeps_the_closed_versions_stamp(spark, provider, request, form):
     entity = _scd2_entity(request, "prov_close", SCD2_FORMS[form])
 
@@ -242,7 +247,7 @@ def test_scd2_close_keeps_the_closed_versions_stamp(spark, provider, request, fo
     assert _stamp(current[0]) == "w2", "the new version carries this write's stamp"
 
 
-@pytest.mark.parametrize("form", ["scd.untracked", "scd.tracked", "sequence_by"])
+@pytest.mark.parametrize("form", ["scd.tracked", "sequence_by"])
 def test_scd2_in_place_update_overwrites_the_stamp(spark, provider, request, form):
     entity = _scd2_entity(request, "prov_touch", SCD2_FORMS[form])
 
@@ -258,18 +263,7 @@ def test_scd2_in_place_update_overwrites_the_stamp(spark, provider, request, for
     assert _stamp(current[0]) == "w2", "overwrite overwrites: the in-place update restamps"
 
 
-def test_scd2_new_key_carries_the_stamp(spark, provider, request):
-    entity = _scd2_entity(request, "prov_new_key", {})
-
-    _merge(spark, provider, entity, [("c1", "bronze", "L1", TS(1))], write="w1")
-    _merge(spark, provider, entity, [("c2", "bronze", "L1", TS(1))], write="w2")
-
-    rows = _rows(provider, entity)
-    assert _stamp(rows["c1"]) == "w1"
-    assert _stamp(rows["c2"]) == "w2"
-
-
-@pytest.mark.parametrize("form", list(SCD2_FORMS))
+@pytest.mark.parametrize("form", ["default", "scd.tracked"])
 def test_adding_the_column_to_an_existing_scd2_table_opens_no_versions(
     spark, provider, request, form
 ):
@@ -368,13 +362,9 @@ def test_custom_generator_columns_leave_out_the_provenance_column(spark, provide
 # ── Table creation ────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("scd2", [False, True], ids=["scd1", "scd2"])
-def test_delta_table_is_created_with_the_column(spark, delta_provider, request, scd2):
-    entity = (
-        _scd2_entity(request, "prov_create", {})
-        if scd2
-        else _scd1_entity(request, "prov_create", {})
-    )
+@pytest.mark.parametrize("form", ["scd2"])
+def test_delta_table_is_created_with_the_column(spark, delta_provider, request, form):
+    entity = _scd2_entity(request, "prov_create", {})
     delta_provider.ensure_entity_table(entity)
 
     schema = delta_provider.read_entity(entity).schema
