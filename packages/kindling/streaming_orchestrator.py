@@ -64,6 +64,11 @@ class StreamingOrchestrator(SignalEmitter):
     """
 
     EMITS = [
+        # Before each pipe's stream starts, with the orchestrator's run_id
+        # (provenance stamps take their execution id from it).
+        "streaming.pipe_starting",
+        # A pipe's stream failed to start (pairs with pipe_starting).
+        "streaming.pipe_start_failed",
         "streaming.orchestrator_started",
         "streaming.orchestrator_completed",
         "streaming.orchestrator_failed",
@@ -266,7 +271,11 @@ class StreamingOrchestrator(SignalEmitter):
 
     def stop(self, await_termination: bool = True) -> None:
         """Stop all managed streaming queries and monitoring components."""
-        with self._trace("stop", {"query_count": len(self._query_ids_by_pipe)}):
+        # Read before stop_runtime() resets the run state, so the stopped
+        # signal names the run it stopped.
+        run_id = self._current_result.run_id if self._current_result else None
+        stopped_query_count = len(self._query_ids_by_pipe)
+        with self._trace("stop", {"query_count": stopped_query_count}):
             for query_id in reversed(list(self._query_ids_by_pipe.values())):
                 try:
                     query_info = self.query_manager.get_query_status(query_id)
@@ -283,8 +292,8 @@ class StreamingOrchestrator(SignalEmitter):
 
         self.emit(
             "streaming.orchestrator_stopped",
-            run_id=self._current_result.run_id if self._current_result else None,
-            stopped_query_count=len(self._query_ids_by_pipe),
+            run_id=run_id,
+            stopped_query_count=stopped_query_count,
         )
 
     def get_status(self) -> StreamingOrchestratorStatus:
@@ -327,6 +336,7 @@ class StreamingOrchestrator(SignalEmitter):
     ) -> PipeResult:
         pipe_options = self._resolve_pipe_options(pipe_id, streaming_options)
         query_id = f"{run_id}:{pipe_id}"
+        self.emit("streaming.pipe_starting", run_id=run_id, pipe_id=pipe_id)
 
         def builder(_spark, _config, pipe_id=pipe_id, pipe_options=pipe_options):
             return self.pipe_stream_starter.start_pipe_stream(pipe_id, pipe_options)
@@ -348,6 +358,13 @@ class StreamingOrchestrator(SignalEmitter):
             self.logger.error(
                 f"Failed to start orchestrated streaming pipe '{pipe_id}': {exc}",
                 include_traceback=True,
+            )
+            self.emit(
+                "streaming.pipe_start_failed",
+                run_id=run_id,
+                pipe_id=pipe_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
             )
             return PipeResult(
                 pipe_id=pipe_id,

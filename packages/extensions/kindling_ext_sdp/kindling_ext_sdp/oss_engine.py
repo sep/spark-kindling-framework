@@ -33,6 +33,16 @@ from kindling_ext_sdp.declaration_plan import (
 )
 
 
+class _NoProvenance:
+    """Provenance lowering when kindling core is unavailable: a no-op."""
+
+    def drop_from_input(self, entity_id, df):
+        return df
+
+    def stamp_output(self, df):
+        return df
+
+
 class SdpRuntimeUnavailableError(ImportError):
     """``pyspark.pipelines`` is not importable on this runtime."""
 
@@ -197,8 +207,44 @@ class OssSdpEngine(DeclarationEngine):
         if dataset.cluster_columns:
             kwargs["cluster_by"] = list(dataset.cluster_columns)
         if dataset.schema is not None:
-            kwargs["schema"] = dataset.schema
+            kwargs["schema"] = self._declared_schema(dataset)
         return kwargs
+
+    def _provenance(self):
+        """``kindling.provenance``, or None when kindling core is not
+        importable (this package also runs standalone, e.g. inside the
+        spark-pipelines CLI's Python): then nothing is stamped."""
+        try:
+            from kindling import provenance
+        except ImportError:
+            return None
+        return provenance
+
+    def _declared_schema(self, dataset: DatasetDeclaration):
+        """The declared schema plus the provenance column when the output
+        entity is stamped."""
+        provenance = self._provenance()
+        if provenance is None:
+            return dataset.schema
+        entity = self.entity_registry.get_entity_definition(dataset.name) or dataset
+        return provenance.augment_schema_for_provenance(dataset.schema, entity)
+
+    def _declared_provenance(self, dataset: DatasetDeclaration):
+        """The dataset's provenance lowering (see
+        ``kindling.provenance.declared_provenance``), bound now, at
+        declaration time; a no-op without kindling core."""
+        provenance = self._provenance()
+        if provenance is None:
+            return _NoProvenance()
+        inputs = {
+            pipe_input.entity_id: self.entity_registry.get_entity_definition(pipe_input.entity_id)
+            for pipe_input in dataset.inputs
+        }
+        return provenance.declared_provenance(
+            self.pipe_registry.get_pipe_definition(dataset.pipe_id),
+            self.entity_registry.get_entity_definition(dataset.name),
+            inputs,
+        )
 
     def _build_dataset_function(
         self, dataset: DatasetDeclaration, stream_driving_inputs: bool = False
@@ -226,6 +272,9 @@ class OssSdpEngine(DeclarationEngine):
         stream_resolver = self._external_stream_read_resolver
         provider_stream_resolver = self._provider_stream_resolver
         dataset_name = self.dataset_name
+        # Input stamps are dropped and the output is stamped (provenance
+        # stamping), with values bound here at declaration time.
+        provenance = self._declared_provenance(dataset)
 
         def dataset_function():
             spark = session_provider()
@@ -248,8 +297,9 @@ class OssSdpEngine(DeclarationEngine):
                     df = spark.table(table_name)
                 else:
                     df = resolver(spark, pipe_input.entity_id)
+                df = provenance.drop_from_input(pipe_input.entity_id, df)
                 input_dfs[pipe_input.entity_id.replace(".", "_")] = df
-            return dataset.execute(**input_dfs)
+            return provenance.stamp_output(dataset.execute(**input_dfs))
 
         dataset_function.__name__ = dataset_name(dataset.name)
         dataset_function.__qualname__ = dataset_function.__name__

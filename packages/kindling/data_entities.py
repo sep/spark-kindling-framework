@@ -2,6 +2,7 @@ import dataclasses
 import logging
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import MISSING, dataclass, field, fields, replace
 from pathlib import Path
@@ -433,6 +434,7 @@ def scd_change_columns(
     business_keys: List[str],
     case_sensitive: bool = True,
     insert_only_columns: Optional[List[str]] = None,
+    uncompared_columns: Optional[List[str]] = None,
 ) -> Tuple[List[str], List[str]]:
     """Split a batch's columns into ``(tracked, untracked)`` for change detection.
 
@@ -455,6 +457,11 @@ def scd_change_columns(
     ``insert_only_columns`` (surrogate key columns) are a third class: they
     are neither tracked nor untracked, so no merge clause ever rewrites
     them.
+
+    ``uncompared_columns`` (the provenance column) are a fourth class: in
+    neither list, so a difference in them is never a change and never
+    selects an in-place update; callers write them with every row write
+    (the SCD2 insert values and touch set, the SCD1 update set).
     """
     key = column_name_key(case_sensitive)
     temporal_columns = (
@@ -463,6 +470,7 @@ def scd_change_columns(
         else set()
     )
     insert_only = {key(name) for name in insert_only_columns or ()}
+    insert_only |= {key(name) for name in uncompared_columns or ()}
     non_candidates = {key(name) for name in list(business_keys) + list(temporal_columns)}
     candidates = [
         column
@@ -910,6 +918,214 @@ def _validate_surrogate_config(entity: EntityMetadata) -> None:
             "%s. Declare scd.sequence_by, or set surrogate.require_reproducible=true "
             "to make this an error.",
             message,
+        )
+
+
+# ── Provenance stamping (see docs/proposals/provenance_stamping.md) ─────────
+#
+# The kindling.provenance.* settings and the provenance.* tag keys are
+# literals in this section only. Settings are baked into an eligible
+# entity's tags as the lowest-precedence defaults (_build_metadata); after
+# that the tags are the single contract, read through
+# provenance_config_from_tags. The column builder and the write paths are in
+# kindling.provenance.
+
+_PROVENANCE_KNOWN_TAGS = ("provenance.enabled", "provenance.column", "provenance.pipe_tags")
+_PROVENANCE_DEFAULT_COLUMN = "__provenance"
+# Providers the settings default reaches; any other provider needs an
+# explicit tag (CSV and Event Hub cannot hold a struct column).
+_PROVENANCE_DEFAULT_PROVIDERS = ("delta", "memory")
+
+
+@dataclass(frozen=True)
+class ProvenanceConfig:
+    """Parsed provenance configuration derived from an entity's tags.
+
+    ``pipe_tags`` is the allow-list of pipe tag names (literal names and
+    fnmatch globs) copied into the stamp's ``tags`` map. Parsing never
+    raises; registration (``_validate_provenance_config``) rejects invalid
+    values.
+    """
+
+    enabled: bool = False
+    column: str = _PROVENANCE_DEFAULT_COLUMN
+    pipe_tags: Tuple[str, ...] = ()
+
+
+def provenance_config_from_tags(entity: EntityMetadata) -> ProvenanceConfig:
+    """Extract provenance configuration from an entity's tags (never raises)."""
+    tags = getattr(entity, "tags", None)
+    if not isinstance(tags, Mapping) or not any(str(key).startswith("provenance.") for key in tags):
+        return ProvenanceConfig()
+    return ProvenanceConfig(
+        enabled=_tag_text(tags, "provenance.enabled").lower() == "true",
+        column=_tag_text(tags, "provenance.column") or _PROVENANCE_DEFAULT_COLUMN,
+        pipe_tags=tuple(_parse_column_list_tag(tags, "provenance.pipe_tags") or ()),
+    )
+
+
+def provenance_column(entity: EntityMetadata) -> Optional[str]:
+    """The entity's provenance column when stamping is enabled, else None."""
+    cfg = provenance_config_from_tags(entity)
+    return cfg.column if cfg.enabled else None
+
+
+def provenance_batch_columns(
+    entity: EntityMetadata, columns: List[str], case_sensitive: bool = True
+) -> List[str]:
+    """The batch's provenance column (as the batch spells it), or ``[]``.
+
+    The merges pass it to ``scd_change_columns`` as an uncompared column
+    and add it to every write set.
+    """
+    column = provenance_column(entity)
+    if column is None:
+        return []
+    key = column_name_key(case_sensitive)
+    return [name for name in columns if key(name) == key(column)]
+
+
+def provenance_kept_inputs(pipe) -> Tuple[str, ...]:
+    """Input entity ids whose provenance column a pipe keeps on read.
+
+    Read from the pipe's ``provenance.keep_inputs`` tag (comma-separated
+    entity ids); every other input has the column dropped on read.
+    """
+    tags = getattr(pipe, "tags", None)
+    if not isinstance(tags, Mapping):
+        return ()
+    return tuple(_parse_column_list_tag(tags, "provenance.keep_inputs") or ())
+
+
+def _provenance_setting_defaults(config_service) -> Dict[str, str]:
+    """The ``kindling.provenance.*`` settings block as ``provenance.*`` tag
+    defaults: only the keys the block sets. Values of an unexpected type
+    (including test doubles) are ignored."""
+    if config_service is None:
+        return {}
+    defaults: Dict[str, str] = {}
+    try:
+        enabled = config_service.get("kindling.provenance.enabled")
+        column = config_service.get("kindling.provenance.column")
+        pipe_tags = config_service.get("kindling.provenance.pipe_tags")
+    except Exception:
+        return {}
+    if isinstance(enabled, bool):
+        defaults["provenance.enabled"] = "true" if enabled else "false"
+    elif isinstance(enabled, str) and enabled.strip():
+        defaults["provenance.enabled"] = enabled.strip().lower()
+    if isinstance(column, str) and column.strip():
+        defaults["provenance.column"] = column.strip()
+    if isinstance(pipe_tags, str) and pipe_tags.strip():
+        defaults["provenance.pipe_tags"] = pipe_tags.strip()
+    elif isinstance(pipe_tags, (list, tuple)):
+        names = [str(name).strip() for name in pipe_tags if str(name).strip()]
+        if names:
+            defaults["provenance.pipe_tags"] = ",".join(names)
+    return defaults
+
+
+def _provenance_default_applies(entityid: str, params: Dict[str, Any]) -> bool:
+    """Whether the settings default reaches an entity: Delta and memory
+    providers only; never read-only, SQL, SCD2 companion or system.* entities."""
+    if str(entityid).startswith("system."):
+        return False
+    if params.get("sql") is not None:
+        return False
+    tags = params.get("tags") or {}
+    provider_type = _tag_text(tags, "provider_type").lower() or "delta"
+    if provider_type not in _PROVENANCE_DEFAULT_PROVIDERS:
+        return False
+    if _tag_text(tags, "provider.read_only").lower() == "true":
+        return False
+    return not tags.get("scd.companion_of")
+
+
+def _with_provenance_defaults(entityid: str, params: Dict[str, Any], config_service):
+    """``params`` with the settings block filled into its tags where the
+    entity has no ``provenance.*`` value of its own (lowest precedence)."""
+    defaults = _provenance_setting_defaults(config_service)
+    if not defaults or not _provenance_default_applies(entityid, params):
+        return params
+    tags = dict(params.get("tags") or {})
+    missing = {key: value for key, value in defaults.items() if key not in tags}
+    if not missing:
+        return params
+    tags.update(missing)
+    return {**params, "tags": tags}
+
+
+def _validate_provenance_config(entity: EntityMetadata) -> None:
+    """Validate ``provenance.*`` tags at registration time.
+
+    Column names compare case-insensitively (Spark's default resolution).
+    """
+    tags = entity.tags or {}
+    provenance_tags = [key for key in tags if str(key).startswith("provenance.")]
+    if not provenance_tags:
+        return
+    eid = entity.entityid
+
+    def fail(message: str) -> None:
+        raise ValueError(f"Entity '{eid}': {message}")
+
+    for key in provenance_tags:
+        if key not in _PROVENANCE_KNOWN_TAGS:
+            fail(f"unknown provenance tag '{key}' (known: {list(_PROVENANCE_KNOWN_TAGS)})")
+    enabled_raw = _tag_text(tags, "provenance.enabled").lower()
+    if enabled_raw not in ("", "true", "false"):
+        fail(f"provenance.enabled must be 'true' or 'false', got '{enabled_raw}'")
+    if "provenance.column" in tags and not _tag_text(tags, "provenance.column"):
+        fail("provenance.column is set but empty")
+    cfg = provenance_config_from_tags(entity)
+    for name in cfg.pipe_tags:
+        if not name.strip("*"):
+            fail(
+                f"provenance.pipe_tags is an allow-list; '{name}' would copy every "
+                "pipe tag (name the tags, or use a narrower glob)"
+            )
+    if not cfg.enabled:
+        return
+
+    if entity.is_sql_entity:
+        fail("provenance stamping does not apply to a SQL entity (a read-only view)")
+    if _tag_text(tags, "provider.read_only").lower() == "true":
+        fail("provenance stamping does not apply to a read-only entity")
+
+    def norm(name: str) -> str:
+        return name.lower()
+
+    column = norm(cfg.column)
+    if column == "__merge_key" or column.startswith("__scd2_"):
+        fail(f"provenance.column '{cfg.column}' uses a reserved SCD2 staging name")
+    scd = scd_config_from_tags(entity)
+    surrogate = surrogate_config_from_tags(entity)
+    derived = derived_config_from_tags(entity)
+    for label, names in (
+        ("merge_columns", entity.merge_columns or []),
+        ("partition_columns", entity.partition_columns or []),
+        ("cluster_columns", entity.cluster_columns or []),
+        ("scd.tracked", scd.tracked_columns or []),
+        ("scd.untracked", scd.untracked_columns or []),
+        ("scd.sequence_by", [scd.sequence_by] if scd.sequence_by else []),
+        ("surrogate.from", list(surrogate.from_columns) if surrogate.enabled else []),
+        ("surrogate key columns", surrogate.key_columns),
+        ("derived.replace_keys", derived.replace_keys or []),
+    ):
+        if any(norm(name) == column for name in names):
+            fail(f"the provenance column '{cfg.column}' must not appear in {label}")
+    if scd.enabled and column in {
+        norm(scd.effective_from_column),
+        norm(scd.effective_to_column),
+        norm(scd.is_current_column),
+    }:
+        fail(f"the provenance column '{cfg.column}' must not be an SCD2 temporal column")
+    if entity.schema is not None and any(
+        norm(field.name) == column for field in entity.schema.fields
+    ):
+        fail(
+            f"the provenance column '{cfg.column}' is added by the framework; "
+            "remove it from the declared schema"
         )
 
 
@@ -1838,9 +2054,12 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
         config overrides matching the entity's own tags
         (``dataentities-bytag:``) or its id (``dataentities:``). Tag rules
         apply first, id-glob patterns apply on top (no matchers yet -> raw
-        as-is)."""
+        as-is). The ``kindling.provenance.*`` settings then fill in any
+        ``provenance.*`` tag still unset (lowest precedence)."""
         if self._matcher is None and self._tag_matcher is None:
-            return EntityMetadata(entityid, **raw_params)
+            return EntityMetadata(
+                entityid, **_with_provenance_defaults(entityid, raw_params, self.config_service)
+            )
 
         base = {
             key: value
@@ -1894,7 +2113,9 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
                 declared_merge_columns,
                 params.get("merge_columns"),
             )
-        return EntityMetadata(entityid, **params)
+        return EntityMetadata(
+            entityid, **_with_provenance_defaults(entityid, params, self.config_service)
+        )
 
     def _validate_entity(self, entity: EntityMetadata) -> None:
         """Run registration-time validations on (possibly overlaid) metadata."""
@@ -1905,6 +2126,7 @@ class DataEntityManager(DataEntityRegistry, SignalEmitter):
             _validate_derived_config(entity)
             _validate_scd_config(entity)
             _validate_surrogate_config(entity)
+            _validate_provenance_config(entity)
             _validate_write_mode_tag(entity)
             _validate_schema_drift_tag(entity)
         except ValueError as error:

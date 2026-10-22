@@ -224,6 +224,7 @@ def _scd1_change_condition(delta_table, df: DataFrame, entity, key_columns=None)
         entity.merge_columns,
         case_sensitive=case_sensitive,
         insert_only_columns=key_columns,
+        uncompared_columns=provenance_batch_columns(entity, df.columns, case_sensitive),
     )
     target_columns = {name_key(column) for column in delta_table.toDF().columns}
     if any(name_key(column) not in target_columns for column in tracked_columns):
@@ -432,12 +433,17 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity, key_plan=None) -> No
     # The sequence column is ordering authority, not content: a row whose
     # only difference is a newer sequence value is an in-place update.
     temporal_keys = {name_key(column) for column in temporal_columns}
+    # The provenance column is in no change test; it is written with every
+    # insert and every in-place update (overwrite overwrites), and a close
+    # leaves the closed version's stamp as it was.
+    provenance_columns = provenance_batch_columns(entity, df.columns, case_sensitive)
     tracked_columns, untracked_columns = scd_change_columns(
         cfg,
         df.columns,
         business_keys,
         case_sensitive=case_sensitive,
         insert_only_columns=key_columns,
+        uncompared_columns=provenance_columns,
     )
     # Batch columns the table does not have yet (additive schema): compare
     # them against typed nulls, and let the MERGE evolve the table to add
@@ -498,7 +504,7 @@ def _execute_scd2_merge(delta_table, df: DataFrame, entity, key_plan=None) -> No
     }
     touch_set = {
         quote_sql_identifier(column): quote_sql_identifier(column, "staged")
-        for column in untracked_columns
+        for column in untracked_columns + provenance_columns
     }
 
     source_df = upserts_df
@@ -1813,11 +1819,14 @@ class DeltaEntityProvider(
 
     def _augment_entity_schema(self, entity) -> StructType:
         """The table schema to create: declared columns, SCD2 temporal columns,
-        then any surrogate key columns not declared."""
+        then any surrogate key columns not declared, then the provenance
+        column when the entity is stamped."""
+        from kindling.provenance import augment_schema_for_provenance
         from kindling.surrogate_keys import augment_schema_for_surrogate_keys
 
         schema = self._augment_schema_for_scd2(entity.schema, scd_config_from_tags(entity))
-        return augment_schema_for_surrogate_keys(schema, entity)
+        schema = augment_schema_for_surrogate_keys(schema, entity)
+        return augment_schema_for_provenance(schema, entity)
 
     def _delta_sql_identifier(self, table_ref: DeltaTableReference) -> Optional[str]:
         if self._is_for_name_mode(table_ref.access_mode) and table_ref.table_name:

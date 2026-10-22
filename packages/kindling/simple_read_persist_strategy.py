@@ -14,6 +14,13 @@ from kindling.entity_provider_csv import (
 )
 from kindling.entity_provider_registry import EntityProviderRegistry
 from kindling.injection import *
+from kindling.provenance import (
+    MODE_BATCH,
+    build_provenance_stamp,
+    current_execution_id,
+    drop_provenance,
+    stamp_provenance,
+)
 from kindling.signaling import SignalEmitter, SignalProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log import *
@@ -129,6 +136,7 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
         self.tp = tp
         self.logger = lp.get_logger("SimpleReadPersistStrategy")
         self._trace_gates = tracing_gates(config)
+        self._config = config
         self._init_signal_emitter(signal_provider)
 
     def create_pipe_entity_reader(self, pipe):
@@ -198,6 +206,10 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
         else:
             provider = self.provider_registry.get_provider_for_entity(entity)
             df = provider.read_entity(entity)
+
+        # An input's provenance column names the pipe that wrote it, not this
+        # one: dropped unless the pipe keeps it (provenance.keep_inputs).
+        df = drop_provenance(df, entity, pipe)
 
         if df is not None:
             # Receivers chain: each sees the previous receiver's DataFrame.
@@ -315,6 +327,20 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
             # the values that are stored (signal receivers have no
             # guaranteed order). SCD2 keys are minted inside the merge.
             df = apply_surrogate_keys(df, output_entity)
+            # Provenance stamp: also framework-owned and after the key step,
+            # so a non-SCD2 key never hashes the per-run stamp.
+            df = stamp_provenance(
+                df,
+                output_entity,
+                lambda: build_provenance_stamp(
+                    pipe,
+                    output_entity,
+                    mode=MODE_BATCH,
+                    persist_id=persist_id,
+                    execution_id=current_execution_id(pipe.pipeid),
+                    config_service=self._config,
+                ),
+            )
 
             # SQL entities are read-only views, whatever provider their tags
             # name; reject before any write branch (derived replace included).

@@ -373,6 +373,25 @@ def _clear_config_env_overrides(request, monkeypatch):
             monkeypatch.delenv(key, raising=False)
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _clear_delta_log_cache():
+    """Empty Delta's process-wide DeltaLog cache after each test module.
+
+    Every module stops its own SparkSession, but in a single-process run
+    (``poe test-all-ci``) the JVM lives on, and Delta keeps a static Guava
+    cache of every table's DeltaLog and snapshot (up to 10,000 entries, an
+    hour after last access) that ``spark.stop()`` does not touch. Each Delta
+    table any test creates stayed in it for the rest of the run: retained
+    heap grew to ~900 MB of the 1 GB driver and the suite failed with
+    OutOfMemoryError. Runs after the module's own fixtures are torn down;
+    a no-op without a local JVM or without Delta on its classpath.
+    """
+    yield
+    from tests.spark_test_helper import clear_delta_log_cache
+
+    clear_delta_log_cache()
+
+
 @pytest.fixture(scope="module")
 def spark_session():
     """

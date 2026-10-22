@@ -2948,6 +2948,20 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                 GlobalInjector.get(WatermarkAspect).register()
                 logger.info("Watermark aspect registered")
 
+            if not declaration_only:
+                # Execution ids for provenance stamps (kindling.provenance);
+                # every platform, since standalone runs stamp too.
+                try:
+                    from kindling.injection import GlobalInjector
+                    from kindling.provenance import ProvenanceRunCapture
+
+                    GlobalInjector.get(ProvenanceRunCapture).register()
+                except Exception as capture_error:
+                    logger.warning(
+                        "Provenance run capture not registered; provenance stamps "
+                        f"will carry a null execution_id: {capture_error}"
+                    )
+
             # Registration-gated tracing wiring (WatermarkAspect pattern):
             # read kindling.telemetry.tracing.* once and enable provider-op
             # tracing at the registry chokepoint. Runs on every platform —

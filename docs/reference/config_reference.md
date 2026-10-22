@@ -285,6 +285,20 @@ Design-time CLI tracing (no ConfigService exists before an app loads) is
 env-gated instead: `KINDLING_TRACE=1` enables `kindling.cli` spans and
 `KINDLING_KINDLING__TELEMETRY__TRACING__PRINT=true` prints them.
 
+### Provenance
+
+Row-level provenance stamping (see "Provenance Stamping" in
+`docs/guide/data_entities.md`). Not telemetry: tracing settings do not affect
+it. Each key is a default for the matching `provenance.*` entity tag, applied
+to Delta and memory entities (not read-only, SQL, SCD2 companion or
+`system.*` ones) that do not set the tag themselves.
+
+- `kindling.provenance.enabled` (default `false`): Stamp output entities.
+- `kindling.provenance.column` (default `__provenance`): The column name.
+- `kindling.provenance.pipe_tags` (list or comma-separated string, default
+  none): Allow-list of pipe tag names (literal names and fnmatch globs) copied
+  into the stamp's `tags` map. `*` is rejected.
+
 ### Secrets
 
 - `kindling.secrets.key_vault_url`: Azure Key Vault URL used by Fabric/Synapse secret resolution.

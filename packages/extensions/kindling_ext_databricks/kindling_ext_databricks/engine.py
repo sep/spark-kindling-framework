@@ -29,8 +29,10 @@ Databricks (Enzyme) is engine behavior, not a declaration keyword.
 Documented as a hint pending verification against a live workspace.
 """
 
+from dataclasses import replace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from kindling.data_entities import provenance_column
 from kindling.data_pipes import PipeMetadata
 from kindling_ext_databricks.auto_cdc import (
     SCD_SOURCE_SUFFIX,
@@ -345,6 +347,7 @@ class DatabricksSdpEngine(OssSdpEngine):
                 f"Dataset '{dataset.name}': output entity could not be resolved "
                 "while declaring its AUTO CDC flow."
             )
+        spec = replace(spec, provenance_column=provenance_column(entity))
         target_name = self.dataset_name(dataset.name)
         source_name = f"{target_name}{SCD_SOURCE_SUFFIX}"
 

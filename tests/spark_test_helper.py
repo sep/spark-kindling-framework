@@ -568,6 +568,31 @@ def _teardown_non_delta_jvm() -> bool:
     return True
 
 
+def clear_delta_log_cache() -> Optional[int]:
+    """Empty Delta's static DeltaLog cache in the live local JVM.
+
+    Delta caches every table's DeltaLog (and its snapshot) in a process-wide
+    cache that survives ``SparkSession.stop()``; see the
+    ``_clear_delta_log_cache`` fixture in tests/conftest.py. Returns the
+    number of entries cleared, or None when there is no local JVM or no
+    Delta on its classpath. The cache lives on the Scala companion object
+    (``DeltaLog$.MODULE$``): py4j does not see it as a static method of
+    ``DeltaLog``.
+    """
+    from pyspark import SparkContext
+
+    gateway = SparkContext._gateway
+    if gateway is None:
+        return None
+    try:
+        delta_log = getattr(getattr(gateway.jvm.org.apache.spark.sql.delta, "DeltaLog$"), "MODULE$")
+        cleared = int(delta_log.cacheSize())
+        delta_log.clearCache()
+        return cleared
+    except Exception:
+        return None
+
+
 def get_standalone_spark_session(app_name="KindlingTest"):
     """
     Create a standalone, Delta-configured Spark session (no cluster) for tests.
