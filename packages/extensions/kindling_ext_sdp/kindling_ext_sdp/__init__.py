@@ -51,7 +51,7 @@ from kindling_ext_sdp.engine_extension import SdpEngineExtension, engine_extensi
 from kindling_ext_sdp.guard_provider import SdpModeWriteError, SdpWriteGuardProvider
 from kindling_ext_sdp.oss_engine import OssSdpEngine, SdpRuntimeUnavailableError
 
-__version__ = "0.14.0"
+__version__ = "0.14.1rc1"
 
 __all__ = [
     "ADAPTER_TIER_CONFIG_KEYS",
