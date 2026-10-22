@@ -28,8 +28,15 @@ All notable changes to spark-kindling are documented here.
   `scd.tracked` allow-list. Downstream reads drop an input's stamp unless the
   pipe lists the input in `provenance.keep_inputs`. Custom surrogate key
   generators never see it in `ctx.columns`. Pipe tags that held a resolved
-  secret are never copied into the stamp. `StreamingOrchestrator` emits a new
-  `streaming.pipe_starting` signal before starting each pipe.
+  secret are never copied into the stamp. `StreamingOrchestrator` emits new
+  `streaming.pipe_starting` and `streaming.pipe_start_failed` signals around
+  each pipe's start.
+
+### Fixed
+
+- `streaming.orchestrator_stopped` carried `run_id=None` and
+  `stopped_query_count=0`: the payload was read after `stop()` had reset the
+  run state. It now names the run it stopped.
 
 ## [0.14.0] - 2026-10-21
 

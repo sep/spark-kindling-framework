@@ -265,3 +265,55 @@ def test_pipe_starting_signal_precedes_each_stream_start_with_the_run_id():
         ("starting", "pipe_b", run_id),
         ("start", "pipe_b", run_id),
     ]
+
+
+def test_stream_execution_ids_do_not_outlive_their_start_or_run():
+    """A failed start clears that pipe's captured execution id at once; the
+    others last until the run ends (a recovery restart reuses them)."""
+    from kindling.provenance import ProvenanceRunCapture
+
+    signals = BlinkerSignalProvider()
+    capture = ProvenanceRunCapture(signals)
+    capture.register()
+    starter = FakePipeStreamStarter()
+    original = starter.start_pipe_stream
+
+    def start(pipeid, options=None):
+        if pipeid == "pipe_b":
+            raise RuntimeError("sink unavailable")
+        return original(pipeid, options)
+
+    starter.start_pipe_stream = start
+    service = FakeManagedService()
+    orchestrator = StreamingOrchestrator(
+        pipe_stream_starter=starter,
+        query_manager=FakeStreamingQueryManager(),
+        streaming_listener=service,
+        health_monitor=FakeManagedService(),
+        recovery_manager=SimpleNamespace(
+            start=service.start, stop=service.stop, get_all_recovery_states=lambda: {}
+        ),
+        logger_provider=FakeLoggerProvider(),
+        signal_provider=signals,
+    )
+
+    result = orchestrator.start(make_plan(), error_strategy=ErrorStrategy.CONTINUE)
+
+    assert capture.execution_id("pipe_a") == result.run_id, "still running"
+    assert capture.execution_id("pipe_b") is None, "its start failed"
+    orchestrator.stop()
+    assert capture.execution_id("pipe_a") is None, "the run stopped"
+
+
+def test_stopped_signal_names_the_run_it_stopped():
+    """stop_runtime() resets the run state; the payload is read before it."""
+    orchestrator = make_orchestrator()
+    stopped = []
+    orchestrator._signal_provider.create_signal("streaming.orchestrator_stopped").connect(
+        lambda sender, **kwargs: stopped.append(kwargs), weak=False
+    )
+    result = orchestrator.start(make_plan())
+
+    orchestrator.stop()
+
+    assert stopped == [{"run_id": result.run_id, "stopped_query_count": 2}]

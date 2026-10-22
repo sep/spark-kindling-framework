@@ -219,6 +219,37 @@ class TestRunCapture:
         signals.get_signal("streaming.pipe_starting").send(None, pipe_id="s1", run_id="run-9")
         assert capture.execution_id("s1") == "run-9"
 
+    @pytest.mark.parametrize(
+        "ended",
+        [
+            "streaming.orchestrator_completed",
+            "streaming.orchestrator_failed",
+            "streaming.orchestrator_stopped",
+        ],
+    )
+    def test_orchestrator_run_end_clears_only_that_runs_pipes(self, ended):
+        signals, capture = self._capture()
+        starting = signals.get_signal("streaming.pipe_starting")
+        starting.send(None, pipe_id="s1", run_id="run-1")
+        starting.send(None, pipe_id="s2", run_id="run-1")
+        starting.send(None, pipe_id="s3", run_id="run-2")
+        signals.get_signal(ended).send(None, run_id="run-1")
+        assert capture.execution_id("s1") is None
+        assert capture.execution_id("s2") is None
+        assert capture.execution_id("s3") == "run-2"
+
+    def test_failed_stream_start_clears_that_pipe_of_that_run(self):
+        signals, capture = self._capture()
+        starting = signals.get_signal("streaming.pipe_starting")
+        starting.send(None, pipe_id="s1", run_id="run-1")
+        starting.send(None, pipe_id="s2", run_id="run-1")
+        failed = signals.get_signal("streaming.pipe_start_failed")
+        failed.send(None, pipe_id="s1", run_id="run-0")  # another run: ignored
+        assert capture.execution_id("s1") == "run-1"
+        failed.send(None, pipe_id="s1", run_id="run-1")
+        assert capture.execution_id("s1") is None
+        assert capture.execution_id("s2") == "run-1", "a running stream keeps its id"
+
     def test_unregistered_capture_has_nothing(self):
         assert ProvenanceRunCapture(BlinkerSignalProvider()).execution_id("p1") is None
 

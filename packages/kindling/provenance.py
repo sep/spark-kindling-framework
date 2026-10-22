@@ -403,6 +403,11 @@ class ProvenanceRunCapture:
 
     A pipe's entry is cleared when it completes, fails or is skipped, so a
     persist outside an executor gets a null execution id, not a stale one.
+    An orchestrated stream's entry lives as long as its run, since a
+    recovery restart starts the stream again: it is cleared when its start
+    fails (``streaming.pipe_start_failed``) and, for every pipe of the run,
+    when the run completes, fails or stops (those fire only once no query
+    of the run is running or recovering).
     """
 
     _SET_SIGNALS = (
@@ -417,6 +422,11 @@ class ProvenanceRunCapture:
         "datapipes.after_pipe",
         "datapipes.pipe_failed",
         "datapipes.pipe_skipped",
+    )
+    _RUN_END_SIGNALS = (
+        "streaming.orchestrator_completed",
+        "streaming.orchestrator_failed",
+        "streaming.orchestrator_stopped",
     )
 
     @inject
@@ -433,6 +443,8 @@ class ProvenanceRunCapture:
         for names, handler in (
             (self._SET_SIGNALS, self._on_started),
             (self._CLEAR_SIGNALS, self._on_finished),
+            (("streaming.pipe_start_failed",), self._on_start_failed),
+            (self._RUN_END_SIGNALS, self._on_run_ended),
         ):
             for name in names:
                 signal = self._signals.get_signal(name) or self._signals.create_signal(name)
@@ -451,6 +463,22 @@ class ProvenanceRunCapture:
             return None
         with self._lock:
             self._execution_ids.pop(str(pipe_id), None)
+        return None
+
+    def _on_start_failed(self, sender, *, pipe_id=None, run_id=None, **kwargs):
+        if pipe_id is None or run_id is None:
+            return None
+        with self._lock:
+            if self._execution_ids.get(str(pipe_id)) == str(run_id):
+                del self._execution_ids[str(pipe_id)]
+        return None
+
+    def _on_run_ended(self, sender, *, run_id=None, **kwargs):
+        if run_id is None:
+            return None
+        with self._lock:
+            for pipe_id in [p for p, r in self._execution_ids.items() if r == str(run_id)]:
+                del self._execution_ids[pipe_id]
         return None
 
     def execution_id(self, pipe_id: str) -> Optional[str]:
