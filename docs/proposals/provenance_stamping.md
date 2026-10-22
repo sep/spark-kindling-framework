@@ -2,7 +2,9 @@
 
 **Status:** Proposed (revised 2026-10-19: an optional `kindling.provenance.*`
 settings block with per-entity tag overrides; one untracked column, written
-with every row write). Design findings against the current write paths; no
+with every row write. Refreshed 2026-10-21 against 0.14.0, where the untracked
+column class, chained `before_persist` receivers, SCD2 schema evolution and
+surrogate keys shipped). Design findings against the current write paths; no
 code changes yet.
 **Created:** 2026-10-16
 **Related:** `governed_artifact_platform.md` (names provenance stamping as the
@@ -10,7 +12,8 @@ small Kindling write-path feature its whole story leans on, and asks for it to
 be specced against the current write path: this is that spec),
 `scd_untracked_columns.md` (the provenance column is untracked),
 `runtime_manifest.md` (rows link to a run record by `run_id`),
-`surrogate_keys.md` (also adds a column at persist time),
+`surrogate_keys.md` (also adds columns at persist time; phase 1 shipped in
+0.14.0),
 `fan_in_upsert_pipes.md` (several writers per entity).
 
 Not to be confused with:
@@ -75,7 +78,7 @@ struct<
 - Runtime detail (Spark, Delta and package versions) stays out of the row:
   `run_id` links to the run record proposed in `runtime_manifest.md`.
 - `persist_id` is the id of one batch persist call
-  (`simple_read_persist_strategy.py:221`); it is null for streaming and SDP.
+  (`simple_read_persist_strategy.py:223`); it is null for streaming and SDP.
 
 **The rule is "overwrite overwrites".** The column is written with every row
 write and names the pipe and run that wrote the row as it is stored now. When a
@@ -109,17 +112,17 @@ file.
 
 **How the two combine.** The settings block is applied as the
 **lowest-precedence tag defaults**, baked into the entity's metadata when it is
-built (`DataEntityManager._build_metadata`, `data_entities.py:1212`): after the
+built (`DataEntityManager._build_metadata`, `data_entities.py:1836`): after the
 `dataentities-bytag:` and `dataentities:` overlays have resolved, each
 `provenance.*` key the entity does not already have is filled from the block.
 Every layer above therefore wins, in the existing order: declared tags,
 `dataentities-bytag:`, `dataentities:`, the exact-id `entity_tags` map, and
-run-scoped `tag_overrides` (`get_entity_definition`, `data_entities.py:1396`).
+run-scoped `tag_overrides` (`DataEntityManager.get_entity_definition`, `data_entities.py:2021`).
 An entity opts out in its own declaration with `provenance.enabled: "false"`.
 
 After that, the tags are the single contract. One parser,
-`provenance_config_from_tags(entity)`, next to `scd_config_from_tags` and
-`surrogate_config_from_tags` in `data_entities.py`, is what every write path,
+`provenance_config_from_tags(entity)`, next to `scd_config_from_tags`
+(`data_entities.py:272`) and `surrogate_config_from_tags` (`:664`), is what every write path,
 provider merge and extension calls. The `kindling.provenance.*` settings keys
 and the `provenance.*` tag keys are literals inside that module only: no
 exported key constants, and extensions never read the keys themselves (the
@@ -153,8 +156,8 @@ always excluded (pipe tags may hold resolved secrets; see
   eligibility filter, so CSV and Event Hub outputs would be stamped and fail;
   and the column name and tag allow-list have no single default.
 - **Resolve the settings at each use site**, the `provider.access_mode` over
-  `kindling.delta.access_mode` pattern (`pipe_streaming.py:187-191`) or the
-  Cosmos run-level defaults (`entity_provider_cosmos.py:656`). It needs no
+  `kindling.delta.access_mode` pattern (`pipe_streaming.py:188-189`) or the
+  Cosmos run-level defaults (`entity_provider_cosmos.py:654`). It needs no
   baking, but about eight sites would each apply the same precedence: the
   persist step, the stream starter, the SDP builder, the Databricks AUTO CDC
   lowering, the Delta and memory merges, schema augmentation, drop-on-read and
@@ -207,17 +210,15 @@ One pure function, in a new `packages/kindling/provenance.py` (beside
 `current_timestamp()`, and raises if the DataFrame already has a column of that
 name. It is applied in three places:
 
-1. **Batch:** in the persist step, after the `persist.before_persist`
-   receivers (`simple_read_persist_strategy.py:300-308`) and before the write
-   branches, derived replace included (`:311-414`). Framework-owned, not a
-   signal receiver, so user handlers can't strip it. Receivers chaining
-   (`SignalEmitter.emit_chained`, commit `c2a218a` on `feat/surrogate-keys`)
-   makes the receivers compose with each other; the stamp does not depend on
-   it, since it is added after them. A non-SCD2 surrogate key aspect therefore
-   never sees the stamp, and keys never hash it.
-2. **Streaming:** on the transformed stream in `SimplePipeStreamStarter`, next
-   to the surrogate key call before `append_as_stream` / `merge_as_stream`
-   (`pipe_streaming.py:205-222`). `processed_at` is per micro-batch;
+1. **Batch:** in the persist step, after the chained `persist.before_persist`
+   receivers (`emit_chained`, `simple_read_persist_strategy.py:303-312`) and
+   **after** `apply_surrogate_keys` (`:317`), before the read-only check and
+   the write branches, derived replace included (`:319` on). Framework-owned,
+   not a signal receiver, so user handlers can't strip it. Coming after the
+   key step means a non-SCD2 key never hashes the stamp.
+2. **Streaming:** on the transformed stream in `SimplePipeStreamStarter`, after
+   the surrogate key call (`pipe_streaming.py:209-211`) and before
+   `merge_as_stream` / `append_as_stream` (`:224`, `:231`). `processed_at` is per micro-batch;
    `run_id` is the run that started the stream.
 3. **SDP/Lakeflow:** in the shared dataset builder, on the result of
    `dataset.execute(**input_dfs)` (`oss_engine.py:252`), which covers the OSS
@@ -237,27 +238,28 @@ Neither reaches the persist step today. Phase 1 gets them two ways:
 
 - **Batch:** captured from the `orchestrator.pipe_started` /
   `datapipes.before_pipe` signals (`generation_executor.py:1094`,
-  `data_pipes.py:854`), which carry the executor's run id, keyed by pipe id,
+  `data_pipes.py:855`), which carry the executor's run id, keyed by pipe id,
   as the watermark aspect keys its read-time capture by pipe
-  (`watermarking.py:602-681`). No interface change. `run_id` comes from the
+  (`watermarking.py:602-660`). No interface change. `run_id` comes from the
   runtime manifest.
 - **Streaming:** the signals don't cover it. `StreamingOrchestrator` calls
   `start_pipe_stream` without emitting either one, and emits
   `streaming.orchestrator_started` only after the queries have started
-  (`streaming_orchestrator.py:161,332`). The stream starter needs the identity
+  (`streaming_orchestrator.py:162,332`). The stream starter needs the identity
   handed to it before the stream starts, e.g. passed in by the orchestrator,
   separately from the batch capture.
 
 ### Schema
 
-An `augment_schema_for_provenance`, like `augment_schema_for_scd2` and the
-surrogate-key augmentation, so new tables get the column at creation and
+An `augment_schema_for_provenance`, like `augment_schema_for_scd2`
+(`data_entities.py:575`) and `augment_schema_for_surrogate_keys`
+(`surrogate_keys.py:656`), so new tables get the column at creation and
 `schema.drift: fail` and SDP schemas accept it.
 
 Existing tables gain the column through schema evolution on the next write.
-Append and SCD1 merges already evolve; the SCD2 merge now does too, for any
-batch column the table lacks (`_execute_scd2_merge` on `feat/scd-untracked`,
-PR #361), which removes the migration step the first revision expected.
+Append and SCD1 merges already evolve, and since 0.14.0 the SCD2 merge does
+too, for any batch column the table lacks (`_execute_scd2_merge`), which
+removes the migration step the first revision expected.
 Existing rows keep a null stamp until they are next written; null means
 "written before provenance was enabled". Because the column never counts as a
 change, adding it never re-versions an SCD2 table.
@@ -266,7 +268,7 @@ change, adding it never re-versions an SCD2 table.
 
 The provenance column is **dropped by default** when a downstream pipe reads
 the entity (the persist strategy's read step, the streaming read and the SDP
-builder's internal reads, `oss_engine.py:246-249`), with a per-input opt-out.
+builder's internal reads, `oss_engine.py:244-249`), with a per-input opt-out.
 Otherwise a downstream table can inherit provenance naming the wrong pipe, and
 map fields break `distinct` and `groupBy` in downstream pipes. The SCD2
 current companion is read the same way.
@@ -276,8 +278,8 @@ current companion is read the same way.
 1. **Pipe and run provenance:** settings block and tags, the parser and
    validation, the column builder in batch, streaming and SDP, drop-on-read,
    schema augmentation, and the column's place in the untracked class in both
-   providers' merges and the AUTO CDC lists. Builds on the untracked-columns
-   work (PR #361).
+   providers' merges and the AUTO CDC lists. Builds on the untracked column
+   class shipped in 0.14.0.
 2. **Input versions:** the version of each input read (Delta table version, or
    the watermark aspect's captured cursor). This is the recovery capability
    `governed_artifact_platform.md` needs, and the reason to keep the field in
@@ -285,11 +287,13 @@ current companion is read the same way.
 
 ## Interactions
 
-- **AUTO CDC.** When the entity has an allow-list (`scd.tracked`, lowered to
-  `track_history_column_list`, `engine.py:391-394`), keep it as is, since the
-  provenance column is already outside it. Only without an allow-list, add the
-  column to `track_history_except_column_list` (which becomes
-  `untracked + [sequence_by]` with PR #361). Passing both lists would fail
+- **AUTO CDC.** Both lists come from one function, `track_history_kwargs`
+  (`kindling_ext_databricks/auto_cdc.py:95`, used for change-feed and snapshot
+  flows at `engine.py:378` and `:397`). When the entity has an allow-list
+  (`scd.tracked`, lowered to `track_history_column_list`), keep it as is,
+  since the provenance column is already outside it. Only without an
+  allow-list, add the column to `track_history_except_column_list` (today
+  `untracked + [sequence_by]`). Passing both lists would fail
   declaration, as AUTO CDC accepts only one. On Lakeflow the column then means
   "the update that last applied a change to this version": AUTO CDC updates
   except-listed columns in place, and also does so when only provenance
@@ -299,9 +303,20 @@ current companion is read the same way.
   Append flows and materialized views have no such difference; a materialized
   view's rows carry the refresh that computed them.
 - **Surrogate keys.** Independent: keys are insert-only, provenance is
-  untracked and rewritten with its row. Surrogate keys are rejected in
-  SDP/Lakeflow declarations (`surrogate_keys_not_lowered`, commit `d80f9dc`);
-  provenance is not.
+  untracked and rewritten with its row. Three points of contact:
+  - order: the stamp is added after `apply_surrogate_keys`, so non-SCD2 keys
+    never hash it; SCD2 keys are minted inside the merge from `surrogate.from`
+    and effective_from, which never include it;
+  - custom generators: `KeyContext.columns` ("every data column after
+    transforms, no staging, temporal or key columns") must also leave out the
+    provenance column. Otherwise a generator that iterates `ctx.columns`
+    would hash a per-run value and mint a different key on every load. Pass
+    it through `KeyContext`'s existing `excluded_columns`
+    (`surrogate_keys.py:418`). `surrogate.from` already rejects it
+    (validation list above);
+  - SDP: surrogate keys are rejected in SDP/Lakeflow declarations
+    (`surrogate_keys_not_lowered`, `kindling_ext_sdp/declaration_engine.py:464`);
+    provenance is not.
 - **Several writers to one entity:** batch planning assumes one producer per
   entity and SDP rejects duplicates. Under fan-in (`fan_in_upsert_pipes.md`)
   the value is the last writer per row.
@@ -342,9 +357,10 @@ Still needed:
 8. Drop on read by default (recommended).
 9. Later, not now: stamping writes outside the persist step.
 
-Resolved since the first revision: the `before_persist` chaining issue (fixed
-by `emit_chained`, commit `c2a218a`); the migration step for existing SCD2
-tables (the SCD2 merge now evolves the schema); and the in-place vs frozen
+Resolved since the first revision, all shipped in 0.14.0: the
+`before_persist` chaining issue (`SignalEmitter.emit_chained`,
+`signaling.py:138`); the migration step for existing SCD2 tables (the SCD2
+merge evolves the schema); and the in-place vs frozen
 question (in place: the column is untracked and rewritten with its row).
 
 ## Size and risks
@@ -358,7 +374,8 @@ version, triggers no SCD1 update with `scd.untracked` and no SCD2 in-place
 update; an SCD2 close keeps the closed version's provenance; an SCD1 update
 and an SCD2 in-place update overwrite it; a new provenance column on an
 existing SCD2 table opens no versions; an entity opts out against the settings
-default.
+default; a custom generator's `KeyContext.columns` leaves out the provenance
+column.
 
 Risks: unclear stable sources for app name and environment; whether Lakeflow
 incremental refresh treats the stamp as non-deterministic (a declaration-time
