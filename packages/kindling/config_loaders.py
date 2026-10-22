@@ -41,8 +41,16 @@ def _remember_resolved_secret(value: Any) -> Any:
 
 
 def is_resolved_secret_value(value: Any) -> bool:
-    """Whether ``value`` is a secret resolved in this process (or still an
-    unresolved ``@secret`` reference)."""
+    """Whether ``value`` is, or contains, a secret resolved in this process
+    (or a still-unresolved ``@secret`` reference). Mappings and sequences
+    are searched recursively, as the loader resolves secrets inside them."""
+    if isinstance(value, dict) or hasattr(value, "items"):
+        try:
+            return any(is_resolved_secret_value(item) for _, item in value.items())
+        except Exception:
+            return False
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return any(is_resolved_secret_value(item) for item in value)
     if _is_unresolved_secret_reference(value):
         return True
     if value is None or not _RESOLVED_SECRET_DIGESTS:

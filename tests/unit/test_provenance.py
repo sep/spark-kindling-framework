@@ -111,6 +111,29 @@ class TestSelectedPipeTags:
         pipe = _pipe({"token": resolved, "owner": "sales"})
         assert selected_pipe_tags(pipe, entity) == (("owner", "sales"),)
 
+    @pytest.mark.parametrize(
+        "container",
+        [
+            lambda secret: {"user": "svc", "password": secret},
+            lambda secret: ["svc", secret],
+            lambda secret: {"nested": {"list": ["x", secret]}},
+        ],
+        ids=["dict", "list", "nested"],
+    )
+    def test_secrets_nested_in_a_tag_value_exclude_the_whole_tag(self, container):
+        """The loader resolves secrets inside dicts and lists too: a tag whose
+        value holds one anywhere is left out, not serialized into rows."""
+        provider = MagicMock()
+        provider.get_secret.return_value = "s3cr3t"
+        resolved = config_loaders.resolve_secret_value("@secret:scope:key", provider)
+        entity = _entity({"provenance.enabled": "true", "provenance.pipe_tags": "audit,owner"})
+        pipe = _pipe({"audit": container(resolved), "owner": "sales"})
+        assert selected_pipe_tags(pipe, entity) == (("owner", "sales"),)
+
+    def test_unresolved_reference_nested_in_a_tag_value_is_excluded(self):
+        entity = _entity({"provenance.enabled": "true", "provenance.pipe_tags": "audit"})
+        assert selected_pipe_tags(_pipe({"audit": {"p": "@secret:scope:key"}}), entity) == ()
+
     def test_unresolved_secret_references_are_excluded(self):
         entity = _entity({"provenance.enabled": "true", "provenance.pipe_tags": "token"})
         assert selected_pipe_tags(_pipe({"token": "@secret:scope:key"}), entity) == ()
