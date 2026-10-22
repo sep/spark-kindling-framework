@@ -56,7 +56,7 @@ def bump_version(current: str, bump_type: str) -> str:
 
     Args:
         current: Current version string (e.g., "0.4.1a1")
-        bump_type: One of: alpha, rc, release, patch, minor, major
+        bump_type: One of: alpha, rc, patch_rc, release, patch, minor, major
 
     Returns:
         New version string
@@ -82,6 +82,19 @@ def bump_version(current: str, bump_type: str) -> str:
         if parts["pre_type"]:
             return f"{parts['major']}.{parts['minor']}.{parts['patch']}rc1"
         return f"{parts['major']}.{parts['minor'] + 1}.0rc1"
+
+    elif bump_type == "patch_rc":
+        # A patch-line candidate: rcN -> rc(N+1); from a final version, the
+        # first candidate of the next patch (0.14.0 -> 0.14.1rc1). Before
+        # 1.0 new features ship in patches, breaking changes in a new minor
+        # (see docs/contributing/release_process.md).
+        if parts["pre_type"] == "rc":
+            return (
+                f"{parts['major']}.{parts['minor']}.{parts['patch']}rc{(parts['pre_num'] or 0) + 1}"
+            )
+        if parts["pre_type"]:
+            return f"{parts['major']}.{parts['minor']}.{parts['patch']}rc1"
+        return f"{parts['major']}.{parts['minor']}.{parts['patch'] + 1}rc1"
 
     elif bump_type == "release":
         # Finalize a prerelease: 0.14.0rc2 -> 0.14.0.
@@ -345,7 +358,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--type",
         default="alpha",
-        choices=["alpha", "patch", "minor", "major"],
+        choices=["alpha", "rc", "patch_rc", "release", "patch", "minor", "major"],
         help="Version bump type (default: alpha)",
     )
     parser.add_argument(
