@@ -228,3 +228,21 @@ def test_a_kept_input_stamp_collides_with_the_output_stamp(
     kept = strategy.create_pipe_entity_reader(keeping)(middle, False)
     with pytest.raises(ValueError, match="already has a column '__provenance'"):
         strategy.create_pipe_persist_activator(keeping)(kept)
+
+
+def test_batch_processed_at_is_frozen_at_write_time(spark_session, provider, signals, request):
+    """The memory provider stores a lazy plan and re-runs it on every read;
+    a batch stamp's processed_at is a literal, so reads never recompute it
+    (streaming keeps current_timestamp(), per micro-batch)."""
+    import time
+
+    source = _entity("bronze.src", {})
+    output = _entity(f"silver.out_{request.node.name}", {"provenance.enabled": "true"})
+    _strategy(provider, signals, [source, output]).create_pipe_persist_activator(
+        _pipe(output.entityid)
+    )(_df(spark_session, [("c1", "bronze")]))
+
+    (first,) = provider.read_entity(output).collect()
+    time.sleep(0.05)
+    (second,) = provider.read_entity(output).collect()
+    assert second["__provenance"]["processed_at"] == first["__provenance"]["processed_at"]

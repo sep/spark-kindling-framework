@@ -23,7 +23,7 @@ The stamp is data, not telemetry: nothing here emits spans or metrics.
 import fnmatch
 import threading
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Dict, Iterable, Optional, Tuple
@@ -152,6 +152,12 @@ def stamp_provenance(df: DataFrame, entity: EntityMetadata, stamp_factory) -> Da
     ``ProvenanceStamp``; it is only called for a stamped entity. Raises when
     ``df`` already has a column of that name (an upstream input kept its
     stamp, or the pipe built one): the stamp would silently replace it.
+
+    A batch stamp without ``processed_at`` gets the driver's current time as
+    a literal: a provider that stores a lazy plan (the memory provider's
+    temp view) re-runs it on every read, and ``current_timestamp()`` would
+    then change with each read. A stream keeps ``current_timestamp()``, so
+    each micro-batch carries its own time.
     """
     column = provenance_column(entity)
     if column is None:
@@ -163,7 +169,10 @@ def stamp_provenance(df: DataFrame, entity: EntityMetadata, stamp_factory) -> Da
             f"'{existing}', which provenance stamping writes. Drop it in the pipe, "
             "or rename the stamp with provenance.column"
         )
-    return df.withColumn(column, provenance_column_expr(stamp_factory()))
+    stamp = stamp_factory()
+    if stamp.processed_at is None and df.isStreaming is not True:
+        stamp = replace(stamp, processed_at=datetime.now(timezone.utc))
+    return df.withColumn(column, provenance_column_expr(stamp))
 
 
 def augment_schema_for_provenance(schema, entity: EntityMetadata):
