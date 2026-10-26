@@ -1050,26 +1050,31 @@ class DataAppManager(DataAppRunner):
             _installed_versions() if (pypi_dependencies or lake_requirements) else None
         )
 
-        # Step 1: Download lake wheels if needed
-        if lake_requirements:
-            temp_dir = tempfile.mkdtemp(prefix=f"app_{app_name}_")
-            wheels_cache_dir = self._download_lake_wheels(app_name, lake_requirements, temp_dir)
-
-        # Step 2: Install lake wheels
         lake_installed = False
-        if wheels_cache_dir and lake_requirements:
-            lake_installed = self._install_lake_wheels(wheels_cache_dir, lake_requirements)
+        try:
+            # Step 1: Download lake wheels if needed
+            if lake_requirements:
+                temp_dir = tempfile.mkdtemp(prefix=f"app_{app_name}_")
+                wheels_cache_dir = self._download_lake_wheels(app_name, lake_requirements, temp_dir)
 
-        # Step 3: Install PyPI dependencies
-        if pypi_dependencies:
-            self._install_pypi_dependencies(pypi_dependencies, wheels_cache_dir)
+            # Step 2: Install lake wheels
+            if wheels_cache_dir and lake_requirements:
+                lake_installed = self._install_lake_wheels(wheels_cache_dir, lake_requirements)
+
+            # Step 3: Install PyPI dependencies
+            if pypi_dependencies:
+                self._install_pypi_dependencies(pypi_dependencies, wheels_cache_dir)
+        finally:
+            # Also when a later step failed: what an earlier one already
+            # changed is exactly what diagnosing the failure needs.
+            if versions_before is not None:
+                _report_install_changes(
+                    self.logger, versions_before, f"app {app_name} dependencies"
+                )
 
         # Step 4: Import the lake packages and register their declarations --
         # only after every dependency is installed, since a declaration module
         # may import a library the app's requirements.txt provides.
-        if versions_before is not None:
-            _report_install_changes(self.logger, versions_before, f"app {app_name} dependencies")
-
         if lake_installed:
             self._import_installed_packages(lake_requirements)
 

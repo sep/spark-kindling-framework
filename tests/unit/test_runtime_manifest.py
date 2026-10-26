@@ -335,6 +335,38 @@ class TestAppInstalls:
         assert (manifest.app_name, manifest.app_version) == ("orders", "1.2.0")
 
 
+def test_a_failed_app_install_still_records_what_changed(monkeypatch):
+    """Lake wheels install, then the PyPI install fails: the wheels' changes
+    are still reported and recorded."""
+    from kindling import data_apps
+    from kindling.data_apps import DataAppManager
+
+    rm.begin_runtime_manifest()
+    versions = iter([{"pandas": "2.2.2"}, {"pandas": "2.2.2", "lake-pkg": "1.0"}])
+    monkeypatch.setattr(
+        bootstrap_module, "_installed_distribution_versions", lambda: next(versions)
+    )
+    manager = object.__new__(DataAppManager)
+    manager.config = _Config({})
+    manager.logger = MagicMock()
+    monkeypatch.setattr(
+        manager, "_download_lake_wheels", lambda *args: "/tmp/wheels", raising=False
+    )
+    monkeypatch.setattr(manager, "_install_lake_wheels", lambda *args: True, raising=False)
+
+    def failing_pypi(*args):
+        raise Exception("PyPI dependency installation failed")
+
+    monkeypatch.setattr(manager, "_install_pypi_dependencies", failing_pypi, raising=False)
+    monkeypatch.setattr(data_apps.tempfile, "mkdtemp", lambda prefix="": "/tmp/app")
+
+    with pytest.raises(Exception, match="PyPI dependency installation failed"):
+        manager._install_app_dependencies("orders", ["requests"], ["lake-pkg"])
+
+    (change,) = rm.get_runtime_manifest().package_changes
+    assert change == rm.PackageChange("lake-pkg", None, "1.0", "app orders dependencies")
+
+
 class TestProvenanceRunId:
     def _stamp(self, mode):
         from kindling.data_entities import EntityMetadata
