@@ -246,6 +246,9 @@ class TestBootstrapHooks:
             logger, {"pandas": ("2.2.2", frozenset())}, "spark-kindling-ext-x"
         )
         logger.warning.assert_called_once()
+        assert "replaced installed pandas 2.2.2 with 2.3.0" in logger.warning.call_args.args[0]
+        (added,), _ = logger.info.call_args
+        assert added == "Installing spark-kindling-ext-x added new-dep 1.0"
         assert [c.name for c in rm.get_runtime_manifest().package_changes] == ["new-dep", "pandas"]
 
     def test_complete_logs_the_manifest_line(self, monkeypatch):

@@ -1820,8 +1820,14 @@ def _emit_runtime_manifest_span(config_service) -> None:
 def _report_replaced_distributions(logger, before: Mapping[str, Any], package_spec: str) -> None:
     """Warn about each installed distribution an install changed the version
     of, so a runtime package replaced by an extension shows in the job log,
-    and record every addition and replacement in the runtime manifest."""
+    log each one it added, and record both in the runtime manifest."""
     after = _installed_distribution_versions()
+    added = sorted(name for name in after if name not in before)
+    if added:
+        logger.info(
+            f"Installing {package_spec} added "
+            + ", ".join(f"{name} {after[name]}" for name in added)
+        )
     try:
         from kindling.runtime_manifest import record_package_changes
 
