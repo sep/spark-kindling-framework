@@ -373,6 +373,21 @@ def _clear_config_env_overrides(request, monkeypatch):
             monkeypatch.delenv(key, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _reset_runtime_manifest():
+    """Start every test without a runtime manifest.
+
+    ``kindling.runtime_manifest`` keeps the current initialization's manifest
+    in a module global, so a test that runs ``initialize_framework`` would
+    otherwise hand its ``run_id`` to every later test in the process (the
+    single-process suite), e.g. into provenance stamps.
+    """
+    from kindling.runtime_manifest import reset_runtime_manifest
+
+    reset_runtime_manifest()
+    yield
+
+
 @pytest.fixture(scope="module", autouse=True)
 def _clear_delta_log_cache():
     """Empty Delta's process-wide DeltaLog cache after each test module.
