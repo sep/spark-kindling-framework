@@ -158,6 +158,29 @@ class TestPackageChanges:
         assert manifest.runtime_fingerprint != before[0]
         assert manifest.package_fingerprint != before[1]
 
+    def test_a_later_install_refreshes_every_package_derived_field(self):
+        """An app install that adds a key package the runtime lacked and
+        upgrades PySpark, Delta and an extension: the manifest reports the
+        environment after it, not the one at bootstrap."""
+        manifest = _completed(key_distributions=KEYS | {"pyarrow"})
+        before = (manifest.runtime_fingerprint, manifest.package_fingerprint)
+        assert "pyarrow" not in manifest.key_packages
+        after = {
+            **INSTALLED,
+            "pyarrow": "17.0.0",
+            "pyspark": "3.5.3",
+            "delta-spark": "3.3.3",
+            "spark-kindling-ext-sdp": "0.14.2",
+        }
+        rm.record_package_changes(INSTALLED, after, "app x dependencies")
+        assert manifest.key_packages["pyarrow"] == "17.0.0"
+        assert manifest.key_packages["pyspark"] == "3.5.3"
+        assert manifest.pyspark_version == "3.5.3"
+        assert manifest.delta_version == "3.3.3"
+        assert manifest.extensions == {"spark-kindling-ext-sdp": "0.14.2"}
+        assert manifest.runtime_fingerprint != before[0]
+        assert manifest.package_fingerprint != before[1]
+
     def test_changes_without_a_manifest_are_still_returned(self):
         assert rm.record_package_changes({}, {"a": "1"}, "x") == [
             rm.PackageChange("a", None, "1", "x")

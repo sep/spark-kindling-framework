@@ -32,6 +32,9 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 _LOCK = threading.Lock()
 _CURRENT: Optional["RuntimeManifest"] = None
+# The key distributions the manifest was completed with, so a later install
+# refreshes key_packages (including one it newly adds) the same way.
+_KEY_DISTRIBUTIONS: frozenset = frozenset()
 
 _EXTENSION_PREFIX = "spark-kindling-ext-"
 
@@ -168,9 +171,10 @@ def current_run_id() -> Optional[str]:
 
 def reset_runtime_manifest() -> None:
     """Forget the current manifest (tests)."""
-    global _CURRENT
+    global _CURRENT, _KEY_DISTRIBUTIONS
     with _LOCK:
         _CURRENT = None
+        _KEY_DISTRIBUTIONS = frozenset()
 
 
 def complete_runtime_manifest(
@@ -187,30 +191,38 @@ def complete_runtime_manifest(
     import resolves them); ``key_distributions`` are the runtime packages
     the bootstrap pins.
     """
+    global _KEY_DISTRIBUTIONS
     manifest = get_runtime_manifest()
     if manifest is None:
         return None
     with _LOCK:
+        _KEY_DISTRIBUTIONS = frozenset(key_distributions)
         if platform:
             manifest.platform = _text(platform)
-        manifest.pyspark_version = installed.get("pyspark")
-        manifest.delta_version = installed.get("delta-spark")
-        manifest.kindling_version = installed.get("spark-kindling")
-        manifest.extensions = {
-            name: version
-            for name, version in sorted(installed.items())
-            if name.startswith(_EXTENSION_PREFIX)
-        }
-        manifest.key_packages = {
-            name: installed[name] for name in sorted(key_distributions) if name in installed
-        }
         manifest.spark_version = _spark_version(spark, config_service)
         manifest.platform_runtime_version = _platform_runtime_version(config_service)
         manifest.spark_application_id = _spark_conf(spark, "spark.app.id")
         manifest.spark_connect = _is_spark_connect(spark)
-        manifest.runtime_fingerprint = _runtime_fingerprint(manifest)
-        manifest.package_fingerprint = _package_fingerprint(installed)
+        _apply_installed(manifest, installed)
     return manifest
+
+
+def _apply_installed(manifest: "RuntimeManifest", installed: Mapping[str, str]) -> None:
+    """Set every package-derived field from ``installed`` and recompute both
+    fingerprints (caller holds the lock)."""
+    manifest.pyspark_version = installed.get("pyspark")
+    manifest.delta_version = installed.get("delta-spark")
+    manifest.kindling_version = installed.get("spark-kindling")
+    manifest.extensions = {
+        name: version
+        for name, version in sorted(installed.items())
+        if name.startswith(_EXTENSION_PREFIX)
+    }
+    manifest.key_packages = {
+        name: installed[name] for name in sorted(_KEY_DISTRIBUTIONS) if name in installed
+    }
+    manifest.runtime_fingerprint = _runtime_fingerprint(manifest)
+    manifest.package_fingerprint = _package_fingerprint(installed)
 
 
 def record_package_changes(
@@ -219,8 +231,9 @@ def record_package_changes(
     """Record every distribution an install added or replaced.
 
     ``before`` and ``after`` map distribution names to versions. Returns the
-    changes (also when no manifest has begun). After the bootstrap completed
-    the manifest, the package fingerprint is refreshed.
+    changes (also when no manifest has begun). Once the bootstrap completed
+    the manifest, every package-derived field (versions, extensions, key
+    packages) and both fingerprints are refreshed from ``after``.
     """
     changes = [
         PackageChange(name=name, before=before.get(name), after=version, cause=cause)
@@ -232,11 +245,7 @@ def record_package_changes(
         with _LOCK:
             manifest.package_changes.extend(changes)
             if manifest.package_fingerprint is not None:
-                manifest.package_fingerprint = _package_fingerprint(after)
-            for change in changes:
-                if change.name in manifest.key_packages:
-                    manifest.key_packages[change.name] = change.after
-                    manifest.runtime_fingerprint = _runtime_fingerprint(manifest)
+                _apply_installed(manifest, after)
     return changes
 
 
