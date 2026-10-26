@@ -1769,10 +1769,69 @@ def _colocate_extended_packages(logger, before: Mapping[str, Any]) -> None:
                 search_path.insert(0, directory)
 
 
+def _complete_runtime_manifest(config_service, platform, logger) -> None:
+    """Fill in the runtime manifest once platform services exist and log it
+    on one INFO line. Never breaks bootstrap."""
+    try:
+        from kindling.runtime_manifest import complete_runtime_manifest
+
+        # The session platform init made, if any: never create one here.
+        spark = None
+        try:
+            from pyspark.sql import SparkSession
+
+            spark = SparkSession.getActiveSession()
+        except Exception:
+            spark = None
+        manifest = complete_runtime_manifest(
+            installed=_installed_distribution_versions(),
+            key_distributions=_RUNTIME_KEY_DISTRIBUTIONS,
+            spark=spark,
+            config_service=config_service,
+            platform=platform,
+        )
+        if manifest is not None:
+            logger.info(manifest.summary())
+    except Exception as manifest_error:
+        logger.warning(f"Runtime manifest could not be completed: {manifest_error}")
+
+
+def _emit_runtime_manifest_span(config_service) -> None:
+    """A scalar-only ``runtime_manifest`` span for this initialization."""
+    try:
+        from kindling.runtime_manifest import get_runtime_manifest
+        from kindling.spark_trace import SparkTraceProvider
+        from kindling.trace_ops import COMPONENT_BOOTSTRAP, tracing_gates
+
+        manifest = get_runtime_manifest()
+        if manifest is None or not tracing_gates(config_service).minimal:
+            return
+        tp = GlobalInjector.get(SparkTraceProvider)
+        with tp.span(
+            operation="runtime_manifest",
+            component=COMPONENT_BOOTSTRAP,
+            details=manifest.span_details(),
+        ):
+            pass
+    except Exception as span_error:
+        _BOOTSTRAP_LOGGER.debug("Runtime manifest span failed (non-fatal): %s", span_error)
+
+
 def _report_replaced_distributions(logger, before: Mapping[str, Any], package_spec: str) -> None:
     """Warn about each installed distribution an install changed the version
-    of, so a runtime package replaced by an extension shows in the job log."""
+    of, so a runtime package replaced by an extension shows in the job log,
+    and record every addition and replacement in the runtime manifest."""
     after = _installed_distribution_versions()
+    try:
+        from kindling.runtime_manifest import record_package_changes
+
+        record_package_changes(
+            {name: _distribution_version(entry) for name, entry in before.items()},
+            after,
+            package_spec,
+        )
+    except Exception as record_error:
+        _BOOTSTRAP_LOGGER.debug("Runtime manifest change capture failed: %s", record_error)
     for name in sorted(before):
         old_version = _distribution_version(before[name])
         new_version = after.get(name)
@@ -2596,6 +2655,13 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
     # retro-flushed bootstrap span tree. Short-circuited re-inits above
     # deliberately record nothing.
     _PHASE_RECORDER.reset(start_time=datetime.now())
+    # This initialization's runtime manifest (kindling.runtime_manifest):
+    # begun before any install so every package change is recorded.
+    from kindling.runtime_manifest import begin_runtime_manifest
+
+    begin_runtime_manifest(
+        kindling_version_requested=config.get("kindling_version"), app_name=app_name
+    )
 
     # Extract bootstrap settings
     artifacts_storage_path = config.get("artifacts_storage_path")
@@ -2927,6 +2993,9 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                 platformservice = initialize_platform_services("standalone", config_service, logger)
         logger.info("Platform services initialized")
 
+        with _bootstrap_phase("runtime_manifest"):
+            _complete_runtime_manifest(config_service, platform, logger)
+
         # Attach the watermark aspect: incremental reads and watermark
         # advancement hook into pipe execution via signals rather than being
         # woven into the read/persist strategy. Standalone/local execution
@@ -2950,12 +3019,18 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
 
             if not declaration_only:
                 # Execution ids for provenance stamps (kindling.provenance);
-                # every platform, since standalone runs stamp too.
+                # every platform, since standalone runs stamp too. The
+                # runtime manifest lists the executor runs made under it.
                 try:
                     from kindling.injection import GlobalInjector
                     from kindling.provenance import ProvenanceRunCapture
+                    from kindling.runtime_manifest import (
+                        RuntimeManifestExecutionRecorder,
+                    )
+                    from kindling.signaling import SignalProvider
 
                     GlobalInjector.get(ProvenanceRunCapture).register()
+                    RuntimeManifestExecutionRecorder(GlobalInjector.get(SignalProvider)).register()
                 except Exception as capture_error:
                     logger.warning(
                         "Provenance run capture not registered; provenance stamps "
@@ -3088,6 +3163,9 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
             # declaration time.
             logger.warning(f"Declaration derivation for '{target}' is unresolved: {reason}")
         logger.info("Framework initialization complete")
+        # Emitted now, not with the bootstrap span tree flushed after an
+        # auto-run app finishes: a killed run still leaves its versions.
+        _emit_runtime_manifest_span(config_service)
 
         # `app_name` scopes app-specific config overlays. In declaration-only
         # initialization it must not also imply "run this app".

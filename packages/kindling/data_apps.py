@@ -131,6 +131,32 @@ class AppDeploymentService(ABC):
         pass
 
 
+def _installed_versions() -> Dict[str, str]:
+    from kindling.bootstrap import _installed_distribution_versions
+
+    return _installed_distribution_versions()
+
+
+def _report_install_changes(logger, versions_before: Dict[str, str], cause: str) -> None:
+    """Report and record what an app's dependency install changed; never
+    fails the install."""
+    try:
+        from kindling.bootstrap import _report_replaced_distributions
+
+        _report_replaced_distributions(logger, versions_before, cause)
+    except Exception as report_error:
+        logger.debug(f"Could not report app dependency changes: {report_error}")
+
+
+def _record_app_in_manifest(app_name: str, app_version: Any) -> None:
+    try:
+        from kindling.runtime_manifest import record_app
+
+        record_app(app_name, str(app_version) if app_version is not None else None)
+    except Exception:
+        pass
+
+
 @dataclass
 class KDAManifest:
     """Manifest file for KDA packages"""
@@ -472,6 +498,9 @@ class DataAppManager(DataAppRunner):
                     f"pypi_deps={len(app_context.pypi_dependencies) if app_context.pypi_dependencies else 0}, "
                     f"lake_reqs={len(app_context.lake_requirements) if app_context.lake_requirements else 0}"
                 )
+
+                metadata = getattr(app_context.config, "metadata", None) or {}
+                _record_app_in_manifest(app_name, metadata.get("version"))
 
                 # Install dependencies
                 self.logger.info(f"Step 2: Installing dependencies for: {app_name}")
@@ -1007,9 +1036,19 @@ class DataAppManager(DataAppRunner):
     def _install_app_dependencies(
         self, app_name: str, pypi_dependencies: List[str], lake_requirements: List[str]
     ) -> Optional[str]:
-        """Install app dependencies (orchestrator method)"""
+        """Install app dependencies (orchestrator method).
+
+        Every distribution the install adds or replaces is reported and
+        recorded in the runtime manifest. With
+        ``kindling.apps.pin_runtime_packages: true`` the runtime's key
+        packages are pinned at their installed versions, as for extension
+        installs (opt-in: an app may need a newer one).
+        """
         temp_dir = None
         wheels_cache_dir = ""
+        versions_before = (
+            _installed_versions() if (pypi_dependencies or lake_requirements) else None
+        )
 
         # Step 1: Download lake wheels if needed
         if lake_requirements:
@@ -1028,6 +1067,9 @@ class DataAppManager(DataAppRunner):
         # Step 4: Import the lake packages and register their declarations --
         # only after every dependency is installed, since a declaration module
         # may import a library the app's requirements.txt provides.
+        if versions_before is not None:
+            _report_install_changes(self.logger, versions_before, f"app {app_name} dependencies")
+
         if lake_installed:
             self._import_installed_packages(lake_requirements)
 
@@ -1035,6 +1077,27 @@ class DataAppManager(DataAppRunner):
             self.logger.debug("No dependencies to install")
 
         return temp_dir
+
+    def _runtime_pin_args(self, work_dir: Optional[str]) -> List[str]:
+        """``-c <constraints>`` pinning the runtime's key packages at their
+        installed versions when ``kindling.apps.pin_runtime_packages`` is on;
+        otherwise nothing."""
+        enabled = self.config.get("kindling.apps.pin_runtime_packages", False)
+        if str(enabled).strip().lower() not in ("true", "1", "yes"):
+            return []
+        from kindling.bootstrap import (
+            _installed_distribution_versions,
+            _key_distribution_constraints,
+        )
+
+        constraints = _key_distribution_constraints(_installed_distribution_versions())
+        if not constraints:
+            return []
+        work_dir = work_dir or tempfile.mkdtemp(prefix="app_pins_")
+        path = os.path.join(work_dir, "runtime-constraints.txt")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("".join(f"{line}\n" for line in constraints))
+        return ["-c", path]
 
     def _install_lake_wheels(self, wheels_cache_dir: str, lake_requirements: List[str]) -> bool:
         """Install lake wheel packages; True when any wheel was installed."""
@@ -1053,6 +1116,7 @@ class DataAppManager(DataAppRunner):
             "--find-links",
             wheels_cache_dir,
             *DataAppConstants.PIP_COMMON_ARGS,
+            *self._runtime_pin_args(wheels_cache_dir),
         ]
 
         result = subprocess.run(pip_args, capture_output=True, text=True)
@@ -1100,6 +1164,7 @@ class DataAppManager(DataAppRunner):
             *pypi_dependencies,
             *DataAppConstants.PIP_COMMON_ARGS,
         ]
+        pip_args.extend(self._runtime_pin_args(wheels_cache_dir or None))
 
         if wheels_cache_dir:
             pip_args.extend(["--find-links", wheels_cache_dir])
