@@ -7,12 +7,20 @@ helpers really reach that state (a wrong py4j/reflection path fails
 silently, returning None).
 """
 
+import pytest
+
 from tests.spark_test_helper import (
     get_local_spark_session,
     release_stopped_sessions_pinned_by_threads,
+    spark_connect_mode,
 )
 
 
+@pytest.mark.skipif(
+    spark_connect_mode(),
+    reason="classic JVM only: a Spark Connect client's stop() does not stop the "
+    "server-side SparkContext this checks for",
+)
 def test_stopped_session_pinned_by_aqe_pool_threads_is_released():
     spark = get_local_spark_session("PinnedSessionRelease")
     left = spark.range(100000).withColumnRenamed("id", "k")
