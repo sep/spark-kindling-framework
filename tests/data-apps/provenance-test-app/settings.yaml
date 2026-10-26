@@ -1,0 +1,15 @@
+# Provenance stamping + runtime manifest system test app.
+# Stamping is turned on per entity (tags), not via kindling.provenance.*, so
+# the app is self-contained.
+
+kindling:
+  telemetry:
+    logging:
+      level: INFO
+      print: true
+    tracing:
+      print: false
+
+  bootstrap:
+    load_lake: true
+    load_workspace_packages: false

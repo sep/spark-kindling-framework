@@ -107,6 +107,9 @@ def test_persist_stamps_the_output(spark_session, provider, signals, request, mo
     pipe = _pipe(output.entityid, tags={"owner": "sales", "secret_ish": "x"})
     strategy = _strategy(provider, signals, [source, output])
 
+    from kindling.runtime_manifest import begin_runtime_manifest
+
+    run_id = begin_runtime_manifest().run_id
     capture = ProvenanceRunCapture(signals)
     capture.register()
     signals.create_signal("orchestrator.pipe_started").send(
@@ -124,7 +127,7 @@ def test_persist_stamps_the_output(spark_session, provider, signals, request, mo
     assert stamp["execution_id"] == "exec-1"
     assert stamp["persist_id"]
     assert stamp["mode"] == "batch"
-    assert stamp["run_id"] is None
+    assert stamp["run_id"] == run_id, "the initialization's runtime-manifest run_id"
     assert stamp["input_entity_ids"] == ["bronze.src"]
     assert stamp["tags"] == {"owner": "sales"}
     assert stamp["processed_at"] is not None

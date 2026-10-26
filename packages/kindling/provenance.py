@@ -301,14 +301,18 @@ def build_provenance_stamp(
 ) -> ProvenanceStamp:
     """The stamp for one write of ``pipe`` into ``entity``.
 
-    ``run_id`` (the runtime manifest's per-initialization id) is null until
-    that lands; ``execution_id`` is the executor's run id.
+    ``run_id`` is the runtime manifest's per-initialization id
+    (``kindling.runtime_manifest``); it stays null for a declared (SDP)
+    dataset, whose values are bound at declaration time, not by a run.
+    ``execution_id`` is the executor's run id.
     """
+    from kindling.runtime_manifest import current_run_id
+
     input_ids = getattr(pipe, "input_entity_ids", None)
     return ProvenanceStamp(
         pipe_id=_text(getattr(pipe, "pipeid", None)),
         pipe_name=_text(getattr(pipe, "name", None)),
-        run_id=None,
+        run_id=current_run_id() if mode != MODE_SDP else None,
         execution_id=_text(execution_id),
         persist_id=_text(persist_id),
         processed_at=processed_at,

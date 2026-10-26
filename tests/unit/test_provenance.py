@@ -157,7 +157,7 @@ class TestBuildStamp:
         )
         assert stamp.pipe_id == "silver.build_orders"
         assert stamp.pipe_name == "Build orders"
-        assert stamp.run_id is None  # until the runtime manifest lands
+        assert stamp.run_id is None  # no runtime manifest has begun in this test
         assert stamp.execution_id == "e-1"
         assert stamp.persist_id == "p-1"
         assert stamp.mode == "batch"

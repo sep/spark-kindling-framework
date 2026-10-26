@@ -81,6 +81,7 @@ Job-deployment (system-test / deployment API) keys:
 - `kindling.platform.name`: Platform name used by platform config files.
 - `kindling.platform.environment`: Environment label (used by platform code and diagnostics).
 - `kindling.apps.directory`: Subdirectory under artifacts used to discover data apps (default `data-apps`).
+- `kindling.apps.pin_runtime_packages` (default `false`): Pin the runtime's key packages (pyspark, pandas, pyarrow, ...) at their installed versions during an app's dependency install, as extension installs do. Off by default because an app may need a newer one; either way, every package an app install adds or replaces is logged and recorded in the runtime manifest (`kindling.runtime_manifest.get_runtime_manifest()`).
 - `kindling.temp_path`: Temp path root (preferred over `temp_path` when using YAML). In a settings file it affects only staging after the bootstrap has read settings, such as extension wheels; see [Databricks staging path](#databricks-staging-path).
 
 ### Bootstrap Behavior

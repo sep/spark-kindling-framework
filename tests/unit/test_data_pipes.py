@@ -1189,6 +1189,8 @@ class TestDataPipesExecuter:
         assert kwargs["pipe_ids"] == ["pipe1", "pipe2"]
         assert kwargs["pipe_count"] == 2
         assert "run_id" in kwargs
+        # The orchestrator's execution_started carries the run's executor id.
+        assert kwargs["delegated_to_orchestrator"] is True
 
     def test_run_datapipes_dag_accepts_dict_keys_view(self):
         """Production bug: callers routinely build the pipe list from
