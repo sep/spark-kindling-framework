@@ -4,8 +4,11 @@
 settings block with per-entity tag overrides; one untracked column, written
 with every row write. Refreshed 2026-10-21 against 0.14.0, where the untracked
 column class, chained `before_persist` receivers, SCD2 schema evolution and
-surrogate keys shipped). Design findings against the current write paths; no
-code changes yet.
+surrogate keys shipped). **Phase 1 shipped** in #365 (0.14.1): the settings
+block and tags, the column in batch, streaming and SDP writes, drop-on-read,
+schema augmentation, and the merge and AUTO CDC handling. `run_id` is filled
+from the runtime manifest (`runtime_manifest.md`) for batch and streaming
+stamps. Phase 2 (`input_versions`) is not started.
 **Created:** 2026-10-16
 **Related:** `governed_artifact_platform.md` (names provenance stamping as the
 small Kindling write-path feature its whole story leans on, and asks for it to
@@ -327,7 +330,7 @@ current companion is read the same way.
 
 ## Decisions
 
-Proposed in this revision, for confirmation:
+Confirmed (2026-10-19 to 2026-10-21) and shipped in phase 1:
 
 1. **Config model:** the `kindling.provenance.*` block, baked in as the
    lowest-precedence tag defaults, with per-entity tags overriding (above).
@@ -345,17 +348,26 @@ Proposed in this revision, for confirmation:
    insert-only tables are unaffected: each row is written once.
 4. **Eligibility of the settings default:** Delta and memory providers; not
    read-only, SQL, companion or `system.*` entities.
+5. **Name:** `provenance.*` tags, `kindling.provenance.*` settings and a
+   `__provenance` column, keeping `lineage.*` free for issue #8.
+6. **Run-id capture:** signal-keyed. `ProvenanceRunCapture` takes the
+   executor's run id from `orchestrator.pipe_started` / `datapipes.before_pipe`,
+   keyed by pipe id, and clears it when the pipe ends. Streams started by
+   `StreamingOrchestrator` had no such signal, so it emits
+   `streaming.pipe_starting` (and `streaming.pipe_start_failed`); their ids
+   last until the run ends, so recovery restarts keep them. No starter
+   signature change.
+7. **`tags` is a `map<string,string>`** of allow-listed pipe tags.
+8. **Drop on read by default,** with a pipe-level opt-out,
+   `provenance.keep_inputs: "<entity ids>"` (pipes have no per-input options).
 
-Still needed:
+Still open:
 
-5. Name: `provenance.*` and `__provenance` (keeping `lineage.*` free for
-   issue #8), given the ontology's different use of "Provenance".
-6. Run-id capture: signal-keyed (recommended for phase 1), an activator
-   signature change, or the execution-scoped token the watermark aspect
-   anticipates.
-7. Tags as a map (recommended) or typed fields.
-8. Drop on read by default (recommended).
 9. Later, not now: stamping writes outside the persist step.
+10. `kindling migrate` compares the declared schema only, so under
+    `schema.drift: fail` the first stamped write to an existing table fails
+    until the column is added (as for SCD2 temporal and surrogate key
+    columns).
 
 Resolved since the first revision, all shipped in 0.14.0: the
 `before_persist` chaining issue (`SignalEmitter.emit_chained`,
