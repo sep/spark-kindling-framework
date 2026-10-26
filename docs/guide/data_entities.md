@@ -1104,7 +1104,7 @@ rejected. Pipe tags that held a resolved secret are never copied.
 | Field | Value |
 |---|---|
 | `pipe_id`, `pipe_name` | The pipe that wrote the row |
-| `run_id` | The runtime manifest's run id; null until that lands |
+| `run_id` | The initialization's run id from the runtime manifest (`kindling.runtime_manifest`); null for SDP datasets, whose values are bound at declaration time |
 | `execution_id` | The executor's run id (one per `execute` / `run_datapipes` call, or per streaming orchestrator start); null outside an executor |
 | `persist_id` | The batch persist call; null for streaming and SDP |
 | `processed_at` | Write time (per micro-batch on a stream; the declaration time on SDP) |

@@ -6,6 +6,19 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- **Runtime manifest (phase 1).** Each `initialize_framework` builds a
+  `RuntimeManifest` (`kindling.runtime_manifest.get_runtime_manifest()`):
+  a per-initialization `run_id` and the executor run ids made under it, the
+  platform and runtime version, Spark/PySpark/Delta/Python versions, the
+  Kindling version requested (e.g. `latest`) and resolved, the loaded
+  extensions, the app, the key runtime packages, every package an install
+  added or replaced (with what caused it), and a runtime and a package
+  fingerprint. Bootstrap logs it on one INFO line and emits a scalar-only
+  `runtime_manifest` span right after initialization, before an auto-run
+  app. Batch and streaming provenance stamps now carry its `run_id`. App
+  dependency installs report what they changed; pinning the key packages
+  there is opt-in with `kindling.apps.pin_runtime_packages: true`.
+
 - **Provenance stamping (phase 1).** An output entity can carry a nullable
   `__provenance` struct column naming the pipe, run and inputs that wrote each
   row: `pipe_id`, `pipe_name`, `run_id` (null until the runtime manifest

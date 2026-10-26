@@ -1,7 +1,8 @@
 # Runtime Manifest
 
-**Status:** Proposed. Design findings against the current bootstrap; no code
-changes yet.
+**Status:** Phase 1 implemented (`kindling.runtime_manifest`), with `run_id`
+in provenance stamps. Phases 2 (packaged matrix, untested-runtime warning)
+and 3 (`system.runs`) not started.
 **Created:** 2026-10-16
 **Related:** `docs/reference/config_reference.md`
 (`kindling.runtime.features.*`, including the Databricks runtime version),
@@ -100,17 +101,34 @@ runs even with feature discovery off.
 2. Packaged matrix and the untested-runtime warning. **S**
 3. `system.runs`, and `run_id` passed to watermarks and provenance. **M**
 
-## Decisions needed
+## Decisions (2026-10-22)
 
-1. `system.runs` in core (opt-in), or telemetry only.
-2. Fingerprint scope: key packages, the full set, or both (recommended).
-   A configuration fingerprint is deferred because of the risk of leaking
-   secrets.
-3. Untested runtime: warn (recommended) or fail; ship the matrix in the wheel.
-4. A process-level `run_id` as the parent of pipe-run ids, passed to watermarks
-   and provenance.
-5. Whether app dependency installs get the same key-package pins and change
-   reporting (a behaviour change).
+1. **`system.runs` in core, opt-in** (phase 3), defined like
+   `system.watermarks` and off by default; rows join to provenance stamps on
+   `run_id`.
+2. **Fingerprints: both** the key packages (`runtime_fingerprint`) and the
+   full installed set (`package_fingerprint`). A configuration fingerprint
+   stays deferred (secrets).
+3. **Untested runtime: warn** (phase 2), with the matrix shipped in the wheel
+   and the CI check script importing it.
+4. **A process-level `run_id`** per initialization is the parent of the
+   executor run ids (listed in the manifest) and is carried by batch and
+   streaming provenance stamps (declared SDP stamps keep it null). Passing
+   it to the watermark `last_execution_id` belongs to phase 3.
+5. **App dependency installs: report now, pins opt-in.** Every change an
+   app install makes is recorded and logged; pinning the key packages there
+   is opt-in with `kindling.apps.pin_runtime_packages: true`, since an app
+   may need a newer one.
+
+Phase 1 as built: the manifest is begun before the dependency install (so
+every change is captured, with its cause), completed in a
+`runtime_manifest` bootstrap phase from installed distribution metadata,
+the session's `spark.version` / `spark.conf` and discovered features, and
+logged on one INFO line. The `runtime_manifest` span is emitted right after
+initialization, before an auto-run app, not with the bootstrap span tree
+that is flushed when the app ends. Executor run ids come from
+`orchestrator.execution_started`, `datapipes.before_run` and
+`streaming.orchestrator_started`.
 
 ## Unverified
 
