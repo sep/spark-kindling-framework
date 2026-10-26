@@ -593,6 +593,66 @@ def clear_delta_log_cache() -> Optional[int]:
         return None
 
 
+def release_stopped_sessions_pinned_by_threads() -> Optional[int]:
+    """Drop thread-local references to stopped SparkSessions in the live JVM.
+
+    Spark's AQE runs stage creation on a process-wide ``QueryStageCreator``
+    thread pool. A pool thread inherits the creating thread's active
+    session (an InheritableThreadLocal) and Spark restores that value after
+    every task, so a reused pool thread keeps a session reachable long after
+    ``SparkSession.stop()``, with its catalog, temp views and plans: in a
+    single-process run, one stopped session per such thread. Each AQE task
+    sets the session it needs itself, so clearing a *stopped* one is safe.
+
+    Returns the number of references cleared, or None when there is no
+    local JVM or reflection on java.lang is not permitted.
+    """
+    from pyspark import SparkContext
+
+    gateway = SparkContext._gateway
+    if gateway is None:
+        return None
+    try:
+        jvm = gateway.jvm
+        thread_class = jvm.java.lang.Class.forName("java.lang.Thread")
+        map_class = jvm.java.lang.Class.forName("java.lang.ThreadLocal$ThreadLocalMap")
+        entry_class = jvm.java.lang.Class.forName("java.lang.ThreadLocal$ThreadLocalMap$Entry")
+        session_class = jvm.java.lang.Class.forName(
+            "org.apache.spark.sql.SparkSession",
+            False,
+            jvm.java.lang.Thread.currentThread().getContextClassLoader(),
+        )
+        map_fields = [
+            thread_class.getDeclaredField("threadLocals"),
+            thread_class.getDeclaredField("inheritableThreadLocals"),
+        ]
+        table_field = map_class.getDeclaredField("table")
+        value_field = entry_class.getDeclaredField("value")
+        for field in (*map_fields, table_field, value_field):
+            field.setAccessible(True)
+
+        cleared = 0
+        for thread in jvm.java.lang.Thread.getAllStackTraces().keySet().toArray():
+            for map_field in map_fields:
+                thread_map = map_field.get(thread)
+                if thread_map is None:
+                    continue
+                for entry in table_field.get(thread_map) or []:
+                    if entry is None:
+                        continue
+                    value = value_field.get(entry)
+                    if (
+                        value is not None
+                        and session_class.isInstance(value)
+                        and value.sparkContext().isStopped()
+                    ):
+                        value_field.set(entry, None)
+                        cleared += 1
+        return cleared
+    except Exception:
+        return None
+
+
 def get_standalone_spark_session(app_name="KindlingTest"):
     """
     Create a standalone, Delta-configured Spark session (no cluster) for tests.

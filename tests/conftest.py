@@ -389,8 +389,21 @@ def _reset_runtime_manifest():
 
 
 @pytest.fixture(scope="module", autouse=True)
-def _clear_delta_log_cache():
-    """Empty Delta's process-wide DeltaLog cache after each test module.
+def _release_jvm_state_after_module():
+    """Release JVM state that outlives a test module's ``spark.stop()``.
+
+    In a single-process run (``poe test-all-ci``) the JVM lives on across
+    modules, and two things outlive each module's stopped session:
+
+    - Delta's static Guava cache of every table's DeltaLog and snapshot (up
+      to 10,000 entries, an hour after last access);
+    - stopped SparkSessions pinned by thread-locals of process-wide pool
+      threads (AQE's ``QueryStageCreator``, ``broadcast-exchange``), with
+      their catalogs, temp views and plans.
+
+    Together they grew the retained heap to ~900 MB of the 1 GB driver and
+    the suite failed with OutOfMemoryError. Runs after the module's own
+    fixtures are torn down; a no-op without a local JVM.
 
     Every module stops its own SparkSession, but in a single-process run
     (``poe test-all-ci``) the JVM lives on, and Delta keeps a static Guava
@@ -399,12 +412,15 @@ def _clear_delta_log_cache():
     table any test creates stayed in it for the rest of the run: retained
     heap grew to ~900 MB of the 1 GB driver and the suite failed with
     OutOfMemoryError. Runs after the module's own fixtures are torn down;
-    a no-op without a local JVM or without Delta on its classpath.
     """
     yield
-    from tests.spark_test_helper import clear_delta_log_cache
+    from tests.spark_test_helper import (
+        clear_delta_log_cache,
+        release_stopped_sessions_pinned_by_threads,
+    )
 
     clear_delta_log_cache()
+    release_stopped_sessions_pinned_by_threads()
 
 
 @pytest.fixture(scope="module")
