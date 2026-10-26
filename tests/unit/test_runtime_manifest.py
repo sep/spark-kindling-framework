@@ -232,6 +232,19 @@ class TestExecutionIds:
         signals.get_signal(signal).send(None, run_id="exec-2")
         assert rm.get_runtime_manifest().execution_ids == ["exec-1", "exec-2"]
 
+    def test_a_dag_run_is_listed_once(self):
+        """run_datapipes_dag emits before_run with its own id, then the
+        orchestrator emits execution_started with the run's executor id:
+        only that one is listed."""
+        rm.begin_runtime_manifest()
+        signals = BlinkerSignalProvider()
+        rm.RuntimeManifestExecutionRecorder(signals).register()
+        signals.get_signal("datapipes.before_run").send(
+            None, run_id="facade-id", delegated_to_orchestrator=True
+        )
+        signals.get_signal("orchestrator.execution_started").send(None, run_id="exec-1")
+        assert rm.get_runtime_manifest().execution_ids == ["exec-1"]
+
 
 class TestBootstrapHooks:
     def test_replaced_distributions_are_recorded(self, monkeypatch):

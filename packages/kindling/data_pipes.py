@@ -994,11 +994,15 @@ class DataPipesExecuter(DataPipesExecution, SignalEmitter):
             # (like the sequential path emits inside run_datapipes' override)
             # so before_run subscribers observe the same overridden entity
             # tags regardless of run mode.
+            # delegated_to_orchestrator: the run's executor id is the one
+            # ExecutionOrchestrator's orchestrator.execution_started carries,
+            # not this run_id (the runtime manifest records only that one).
             self.emit(
                 "datapipes.before_run",
                 pipe_ids=pipes,
                 pipe_count=len(pipes),
                 run_id=str(uuid.uuid4()),
+                delegated_to_orchestrator=True,
             )
 
             return orchestrator.execute(

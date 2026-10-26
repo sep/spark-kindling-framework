@@ -273,7 +273,9 @@ class RuntimeManifestExecutionRecorder:
     """Records the executor run ids made under this initialization, from
     the signals that announce a run: ``orchestrator.execution_started``
     (generation executor), ``datapipes.before_run`` (sequential executor)
-    and ``streaming.orchestrator_started``."""
+    and ``streaming.orchestrator_started``. A DAG-mode ``before_run``
+    (``delegated_to_orchestrator``) is skipped: that run's id is the one
+    ``orchestrator.execution_started`` carries."""
 
     _SIGNALS = (
         "orchestrator.execution_started",
@@ -294,8 +296,9 @@ class RuntimeManifestExecutionRecorder:
             signal.connect(self._on_run_started, weak=False)
         self._registered = True
 
-    def _on_run_started(self, sender, *, run_id=None, **kwargs):
-        record_execution_id(run_id)
+    def _on_run_started(self, sender, *, run_id=None, delegated_to_orchestrator=False, **kwargs):
+        if not delegated_to_orchestrator:
+            record_execution_id(run_id)
         return None
 
 
