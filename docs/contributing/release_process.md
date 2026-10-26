@@ -157,8 +157,9 @@ CLI (a unit test keeps the two in step), then bootstrap it on PyPI (below).
 ### Release candidate dry run
 
 Before a final release that changes packaging, tag a release candidate:
-`poe version --bump_type rc` (0.13.1 -> 0.14.0rc1, or rc1 -> rc2), commit,
-then `poe release 0.14.0rc1`. When the candidate checks out,
+`poe version --bump_type patch_rc` for a patch release (0.14.0 -> 0.14.1rc1)
+or `poe version --bump_type rc` for a new minor line (0.13.1 -> 0.14.0rc1;
+either one also takes rc1 -> rc2), commit, then `poe release 0.14.1rc1`. When the candidate checks out,
 `poe version --bump_type release` (0.14.0rc1 -> 0.14.0) prepares the final. When it lands, install it from TestPyPI in a
 scratch environment (TestPyPI does not carry the third-party dependencies, so
 keep PyPI as an extra index):
@@ -304,17 +305,26 @@ spark-kindling[synapse] @ https://github.com/sep/spark-kindling-framework/releas
 
 ### Semantic Versioning
 
-Follow [Semantic Versioning](https://semver.org/):
+Kindling follows [Semantic Versioning](https://semver.org/), shifted one
+place to the right until 1.0 (as Cargo reads `0.x` versions; semver allows
+anything before 1.0):
 
 ```
-MAJOR.MINOR.PATCH
+Before 1.0:  0.BREAKING.FEATURE-OR-FIX
+From 1.0:    MAJOR.MINOR.PATCH
 
-Examples:
-v0.1.0  - Initial release
-v0.1.1  - Bug fix (patch)
-v0.2.0  - New features (minor)
-v1.0.0  - Breaking changes (major)
+Examples (before 1.0):
+v0.14.1  - New features and fixes, backward compatible (patch)
+v0.15.0  - Breaking changes (minor)
 ```
+
+So an additive, opt-in feature ships in a patch release; a change that
+breaks a declaration, a tag, a config key, the CLI or stored data starts a
+new minor line. Extensions follow Kindling's major.minor (see
+[Build System](build_system.md)): a patch release leaves them alone, so when
+an extension's code changes, bump its patch version by hand in the release
+preparation, and raise its `spark-kindling>=` floor (and its floor on another
+extension it builds on) when it needs the new release.
 
 ### Pre-releases
 
@@ -357,6 +367,7 @@ poe version --bump_type minor   # X.Y.Z -> X.(Y+1).0
 poe version --bump_type major   # X.Y.Z -> (X+1).0.0
 poe version --bump_type alpha   # X.Y.Z -> X.Y.(Z+1)a1
 poe version --bump_type rc      # X.Y.Z -> X.(Y+1).0rc1; rcN -> rc(N+1)
+poe version --bump_type patch_rc  # X.Y.Z -> X.Y.(Z+1)rc1; rcN -> rc(N+1)
 poe version --bump_type release # X.Y.ZrcN -> X.Y.Z
 ```
 
