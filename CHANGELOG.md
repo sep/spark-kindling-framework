@@ -2,7 +2,7 @@
 
 All notable changes to spark-kindling are documented here.
 
-## Unreleased
+## [0.14.1] - 2026-10-27
 
 ### Added
 
@@ -21,8 +21,8 @@ All notable changes to spark-kindling are documented here.
 
 - **Provenance stamping (phase 1).** An output entity can carry a nullable
   `__provenance` struct column naming the pipe, run and inputs that wrote each
-  row: `pipe_id`, `pipe_name`, `run_id` (null until the runtime manifest
-  lands), `execution_id` (the executor's run id), `persist_id`,
+  row: `pipe_id`, `pipe_name`, `run_id` (the runtime manifest's; null for
+  SDP), `execution_id` (the executor's run id), `persist_id`,
   `processed_at`, `mode` (`batch`/`streaming`/`sdp`), app, environment,
   platform and Kindling version, `input_entity_ids`, `input_versions`
   (reserved, null), an allow-listed `tags` map and `schema_version`. Turn it
@@ -44,6 +44,17 @@ All notable changes to spark-kindling are documented here.
   secret are never copied into the stamp. `StreamingOrchestrator` emits new
   `streaming.pipe_starting` and `streaming.pipe_start_failed` signals around
   each pipe's start.
+
+### Changed
+
+- **Pre-1.0 versioning is shifted one place right**: a `0.MINOR` release may
+  break things, and a `0.x.PATCH` release brings features and fixes. This
+  release adds features as 0.14.1 for that reason. `poe version --bump_type
+  patch_rc` cuts a patch release candidate (0.14.0 -> 0.14.1rc1; rcN ->
+  rc(N+1)).
+- **The single-process test run no longer runs out of memory.** Tests now
+  release JVM state that outlived them: Delta's static `DeltaLog` cache, stopped
+  sessions held by AQE and broadcast pool threads, and each test's temp views.
 
 ### Fixed
 
