@@ -388,6 +388,33 @@ def _reset_runtime_manifest():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _release_jvm_state_after_test():
+    """Release what one test left in the module's shared SparkSession.
+
+    A module's session lives for all of its tests, and each memory-provider
+    write registers a temp view whose plan chains every earlier merge: in
+    test_scd_untracked_parity the session's catalog grew to ~300 MB of plans
+    over 66 tests, and the parallel integration lane ran out of heap. After
+    each test, the temp views it created are dropped (views that existed
+    before it, e.g. from module fixtures, are kept) and Delta's DeltaLog
+    cache is cleared (each test uses its own tables). A no-op without an
+    active local session.
+    """
+    from tests.spark_test_helper import (
+        active_temp_view_names,
+        clear_delta_log_cache,
+        drop_temp_views,
+    )
+
+    before = active_temp_view_names()
+    yield
+    after = active_temp_view_names()
+    if after:
+        drop_temp_views(after - (before or set()))
+    clear_delta_log_cache()
+
+
 @pytest.fixture(scope="module", autouse=True)
 def _release_jvm_state_after_module():
     """Release JVM state that outlives a test module's ``spark.stop()``.
