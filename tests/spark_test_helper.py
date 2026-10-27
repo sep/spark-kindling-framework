@@ -593,6 +593,35 @@ def clear_delta_log_cache() -> Optional[int]:
         return None
 
 
+def active_temp_view_names() -> Optional[set]:
+    """Temp view names of the active local SparkSession, or None when there
+    is none (or it can't be asked)."""
+    try:
+        from pyspark.sql import SparkSession
+
+        spark = SparkSession.getActiveSession()
+        if spark is None:
+            return None
+        rows = spark.sql("SHOW VIEWS").where("isTemporary").select("viewName").collect()
+        return {row["viewName"] for row in rows}
+    except Exception:
+        return None
+
+
+def drop_temp_views(names) -> int:
+    """Drop the named temp views from the active SparkSession; returns how
+    many were dropped."""
+    try:
+        from pyspark.sql import SparkSession
+
+        spark = SparkSession.getActiveSession()
+        if spark is None:
+            return 0
+        return sum(1 for name in names if spark.catalog.dropTempView(name))
+    except Exception:
+        return 0
+
+
 def release_stopped_sessions_pinned_by_threads() -> Optional[int]:
     """Drop thread-local references to stopped SparkSessions in the live JVM.
 
