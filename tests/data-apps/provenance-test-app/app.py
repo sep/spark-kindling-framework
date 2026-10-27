@@ -26,6 +26,7 @@ from kindling.injection import GlobalInjector, get_kindling_service
 from kindling.platform_provider import PlatformServiceProvider
 from kindling.runtime_manifest import get_runtime_manifest
 from kindling.spark_config import ConfigService
+from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
 from pyspark.sql.types import StringType, StructField, StructType
 
@@ -33,7 +34,16 @@ config_service = get_kindling_service(ConfigService)
 test_id = str(config_service.get("test_id") or "unknown").replace("-", "_")
 platform_service = get_kindling_service(PlatformServiceProvider).get_service()
 platform_name = platform_service.get_platform_name() if platform_service else "unknown"
-print(f"TEST_ID={test_id} status=STARTED platform={platform_name}", flush=True)
+logger = get_kindling_service(PythonLoggerProvider).get_logger("provenance-test-app")
+
+
+def _marker(line):
+    # Synapse only surfaces the driver log, not stdout; emit to both.
+    logger.warning(line)
+    print(line, flush=True)
+
+
+_marker(f"TEST_ID={test_id} status=STARTED platform={platform_name}")
 
 spark = get_or_create_spark_session()
 results = {}
@@ -43,7 +53,7 @@ def _check(name, passed, detail=""):
     results[name] = bool(passed)
     status = "PASSED" if passed else "FAILED"
     suffix = f" {detail}" if detail else ""
-    print(f"TEST_ID={test_id} test={name} status={status}{suffix}", flush=True)
+    _marker(f"TEST_ID={test_id} test={name} status={status}{suffix}")
 
 
 SCHEMA = StructType(
@@ -167,7 +177,7 @@ try:
         f"versions={len(versions)}",
     )
 except Exception as exc:  # noqa: BLE001 - reported through the markers
-    print(f"TEST_ID={test_id} error={exc}", flush=True)
+    _marker(f"TEST_ID={test_id} error={exc}")
     traceback.print_exc()
     exit_code = 1
 finally:
@@ -177,9 +187,9 @@ finally:
         try:
             spark.sql(f"DROP TABLE IF EXISTS {name_mapper.get_table_name(entity)}")
         except Exception as cleanup_exc:  # noqa: BLE001 - best effort
-            print(f"TEST_ID={test_id} table cleanup warning: {cleanup_exc}", flush=True)
+            _marker(f"TEST_ID={test_id} table cleanup warning: {cleanup_exc}")
 
 overall = bool(results) and all(results.values()) and exit_code == 0
-print(f"TEST_ID={test_id} status=COMPLETED result={'PASSED' if overall else 'FAILED'}", flush=True)
+_marker(f"TEST_ID={test_id} status=COMPLETED result={'PASSED' if overall else 'FAILED'}")
 if not overall:
     sys.exit(1)
