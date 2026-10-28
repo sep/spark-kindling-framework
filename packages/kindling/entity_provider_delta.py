@@ -2514,8 +2514,7 @@ class DeltaEntityProvider(
         start_time = time.time()
         self.emit("entity.before_read", entity_id=entity.entityid, entity_name=entity.name)
         if self._is_for_name_mode(table_ref.access_mode) and table_ref.table_name:
-            identifier = self._quote_table_identifier(table_ref.table_name)
-            df = self.spark.sql(f"SELECT * FROM {identifier} VERSION AS OF {int(version)}")
+            df = self.spark.read.option("versionAsOf", int(version)).table(table_ref.table_name)
         else:
             df = (
                 self.spark.read.format("delta")
