@@ -2,6 +2,22 @@
 
 All notable changes to spark-kindling are documented here.
 
+## Unreleased
+
+### Fixed
+
+- **`kindling migrate` no longer plans removing framework-owned columns.**
+  It compared tables with the declared schema only, so on an existing table
+  it planned a destructive removal of the SCD2 temporal columns
+  (`__effective_from`, `__effective_to`, `__is_current`), surrogate key columns
+  and the provenance column; `migrate apply --destructive` would have dropped
+  them. It now compares with the schema the framework creates. A missing
+  provenance column is planned as a safe addition, so `schema.drift: fail`
+  entities can turn provenance on. A missing SCD2 temporal or surrogate key
+  column is a plan error that asks for a rebuild, since adding it would leave
+  existing rows null. Plan errors are reported as "have plan errors" (was
+  "could not be inspected").
+
 ## [0.14.1] - 2026-10-27
 
 ### Added

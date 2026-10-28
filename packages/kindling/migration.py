@@ -41,7 +41,11 @@ from typing import Any, Dict, List, Optional
 
 from injector import inject
 from kindling.data_entities import DataEntityRegistry, EntityMetadata
-from kindling.entity_provider_delta import DeltaEntityProvider, DeltaTableReference
+from kindling.entity_provider_delta import (
+    DeltaEntityProvider,
+    DeltaTableReference,
+    entity_table_schema,
+)
 from kindling.injection import GlobalInjector
 from kindling.spark_log_provider import PythonLoggerProvider
 
@@ -376,14 +380,33 @@ class MigrationPlanner:
             spark = get_or_create_spark_session()
             live_schema = spark.read.format("delta").load(table_ref.table_path).schema
 
-        desired_schema = (
+        from kindling.data_entities import provenance_column
+
+        # Compare against the table the framework creates, so SCD2 temporal,
+        # surrogate key and provenance columns are never planned for removal.
+        declared_schema = (
             entity.schema if isinstance(entity.schema, StructType) else StructType(entity.schema)
         )
-        desired = {f.name: f for f in desired_schema.fields}
+        declared = {f.name for f in declared_schema.fields}
+        desired = {f.name: f for f in entity_table_schema(entity).fields}
         actual = {f.name: f for f in live_schema.fields}
 
-        # Columns to add (safe)
+        # Columns to add (safe). A missing provenance column is added (null
+        # means "written before provenance"); missing SCD2 temporal or
+        # surrogate key columns would leave every existing row null, which
+        # merges and insert-only keys never repair, so the table needs a
+        # rebuild instead.
         to_add = [name for name in desired if name not in actual]
+        unfillable = [
+            name for name in to_add if name not in declared and name != provenance_column(entity)
+        ]
+        if unfillable:
+            status.error = (
+                f"the table lacks framework-owned columns {', '.join(unfillable)} "
+                "(SCD2 temporal or surrogate key columns); adding them would leave "
+                "existing rows null. Rebuild the table from its source."
+            )
+            return
         if to_add:
             status.changes.append(
                 EntityMigrationChange(
@@ -582,7 +605,7 @@ class MigrationApplier:
                 changes that cannot be auto-cast.
 
         Raises:
-            RuntimeError: If the plan contains inspection errors. Applying a
+            RuntimeError: If the plan contains errors. Applying a
                 partial plan silently leaves the application in a mixed state;
                 resolve the plan errors (or unregister the entities) first.
         """
@@ -592,8 +615,8 @@ class MigrationApplier:
         if errored:
             details = "; ".join(f"{s.entity.entityid}: {s.error}" for s in errored)
             raise RuntimeError(
-                f"Refusing to apply: {len(errored)} entity/entities could not be "
-                f"inspected during planning ({details})."
+                f"Refusing to apply: {len(errored)} entity/entities have plan "
+                f"errors ({details})."
             )
 
         for status in plan.statuses:
@@ -697,14 +720,7 @@ class MigrationApplier:
 
         elif change.kind == ChangeKind.ADD_COLUMNS:
             self._logger.info(f"Adding columns to {entity.entityid}: {change.columns_to_add}")
-            from pyspark.sql.types import StructType
-
-            desired_schema = (
-                entity.schema
-                if isinstance(entity.schema, StructType)
-                else StructType(entity.schema)
-            )
-            desired = {f.name: f for f in desired_schema.fields}
+            desired = {f.name: f for f in entity_table_schema(entity).fields}
             col_defs = ", ".join(
                 f"`{name}` {desired[name].dataType.simpleString()}"
                 for name in change.columns_to_add
@@ -874,11 +890,8 @@ class MigrationApplier:
         user_transforms: Dict[str, object],
     ):
         from pyspark.sql import functions as F
-        from pyspark.sql.types import StructType
 
-        desired_schema = (
-            entity.schema if isinstance(entity.schema, StructType) else StructType(entity.schema)
-        )
+        desired_schema = entity_table_schema(entity)
         result = df
 
         for change in changes:

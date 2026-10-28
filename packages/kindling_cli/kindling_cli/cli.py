@@ -1759,7 +1759,7 @@ def migrate_plan(
     if plan.errors:
         plan.print_summary()
         raise click.ClickException(
-            f"{len(plan.errors)} entity/entities could not be inspected (see above)."
+            f"{len(plan.errors)} entity/entities have plan errors (see above)."
         )
 
     if not plan.has_changes:
@@ -1822,12 +1822,12 @@ def migrate_apply(
     plan = svc.plan()
 
     # Fail before applying anything: partially applying a plan with
-    # inspection errors leaves the application in a mixed state. Checked
+    # errors leaves the application in a mixed state. Checked
     # before the up-to-date short-circuit for the same reason as in plan.
     if plan.errors:
         plan.print_summary()
         raise click.ClickException(
-            f"{len(plan.errors)} entity/entities could not be inspected (see above). "
+            f"{len(plan.errors)} entity/entities have plan errors (see above). "
             "Refusing to apply a partial plan."
         )
 

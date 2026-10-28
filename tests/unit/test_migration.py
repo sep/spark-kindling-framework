@@ -14,7 +14,6 @@ Tests cover:
 from unittest.mock import MagicMock, call, patch
 
 import pytest
-
 from kindling.data_entities import EntityMetadata, SqlSource
 from kindling.migration import (
     BackupStrategy,
@@ -344,6 +343,58 @@ class TestMigrationPlannerSchemaDiff:
         status = EntityMigrationStatus(entity=entity)
         planner._diff_schema(entity, table_ref, status)
         assert len(status.changes) == 0
+
+    def _diff_against(self, entity, live_schema):
+        planner = self._make_planner()
+        status = EntityMigrationStatus(entity=entity)
+        spark_mock = MagicMock()
+        spark_mock.read.table.return_value.schema = live_schema
+        with patch("kindling.spark_session.get_or_create_spark_session", return_value=spark_mock):
+            planner._diff_schema(entity, self._make_table_ref(), status)
+        return status
+
+    def test_framework_columns_in_the_table_are_not_removed(self):
+        from kindling.entity_provider_delta import entity_table_schema
+        from pyspark.sql.types import LongType
+
+        entity = _entity(schema=_make_struct(("id", LongType())))
+        entity.tags = {
+            "scd.type": "2",
+            "surrogate.column": "id_sk",
+            "provenance.enabled": "true",
+        }
+
+        status = self._diff_against(entity, entity_table_schema(entity))
+
+        assert status.error is None
+        assert status.changes == []
+
+    def test_missing_provenance_column_is_a_safe_add(self):
+        from pyspark.sql.types import LongType
+
+        live = _make_struct(("id", LongType()))
+        entity = _entity(schema=live)
+        entity.tags = {"provenance.enabled": "true"}
+
+        status = self._diff_against(entity, live)
+
+        (change,) = status.changes
+        assert change.kind == ChangeKind.ADD_COLUMNS
+        assert change.destructiveness == ChangeDestructiveness.SAFE
+        assert change.columns_to_add == ["__provenance"]
+
+    def test_missing_scd2_or_key_columns_are_a_plan_error(self):
+        from pyspark.sql.types import LongType
+
+        live = _make_struct(("id", LongType()))
+        entity = _entity(schema=live)
+        entity.tags = {"scd.type": "2", "surrogate.column": "id_sk"}
+
+        status = self._diff_against(entity, live)
+
+        assert status.changes == []
+        assert "__effective_from" in status.error and "id_sk" in status.error
+        assert "Rebuild the table" in status.error
 
 
 # ---------------------------------------------------------------------------
@@ -1080,6 +1131,30 @@ class TestMigrationApplierClusterChange:
 
         spark_mock.sql.assert_called_once_with(
             "ALTER TABLE test.entity CLUSTER BY (`region`, `year`)"
+        )
+
+    def test_adds_the_provenance_column_with_its_struct_type(self):
+        from kindling.provenance import provenance_struct_type
+        from pyspark.sql.types import LongType
+
+        applier = self._make_applier()
+        entity = _entity(schema=_make_struct(("id", LongType())))
+        entity.tags = {"provenance.enabled": "true"}
+        change = EntityMigrationChange(
+            entity=entity,
+            kind=ChangeKind.ADD_COLUMNS,
+            destructiveness=ChangeDestructiveness.SAFE,
+            detail="add columns: __provenance",
+            columns_to_add=["__provenance"],
+        )
+
+        spark_mock = MagicMock()
+        with patch("kindling.spark_session.get_or_create_spark_session", return_value=spark_mock):
+            applier._apply_safe_delta_change(entity, self._make_table_ref(), change)
+
+        spark_mock.sql.assert_called_once_with(
+            "ALTER TABLE test.entity ADD COLUMNS "
+            f"(`__provenance` {provenance_struct_type().simpleString()})"
         )
 
     def test_applies_cluster_by_none_when_removing_all(self):
