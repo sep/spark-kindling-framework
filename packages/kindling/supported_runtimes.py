@@ -178,7 +178,8 @@ def match_runtime(
     """Compare the running runtime with ``SUPPORTED_RUNTIMES``.
 
     The candidates are the tested runtimes for ``platform``; on a platform
-    that reports its version (Databricks), only those of that version. The
+    that reports its version (Databricks), only those of that version (a
+    version that isn't listed, or doesn't parse, is untested). The
     closest candidate (fewest major.minor differences, then fewest
     differences) is the match. Only the packages a tested runtime ships are
     compared, and a package that isn't installed is skipped. Versions are
@@ -190,9 +191,11 @@ def match_runtime(
     if not platform or platform in _UNCHECKED_PLATFORMS:
         return RuntimeMatch(status="unchecked")
     candidates = [r for r in SUPPORTED_RUNTIMES if r.platform == platform]
-    label = _version_label(runtime_version)
-    if label is not None and any(r.runtime_version for r in candidates):
-        candidates = [r for r in candidates if r.runtime_version == label]
+    if (runtime_version or "").strip() and any(r.runtime_version for r in candidates):
+        # A reported version must be a listed one; an unparseable label
+        # (Databricks serverless "client.1.13") is untested, not a package match.
+        label = _version_label(runtime_version)
+        candidates = [r for r in candidates if label is not None and r.runtime_version == label]
     if not candidates:
         return RuntimeMatch(status="untested")
 

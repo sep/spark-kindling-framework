@@ -63,6 +63,12 @@ def test_another_databricks_runtime_is_untested():
     assert "databricks 16.4.x-scala2.12" in match.describe("databricks", "16.4.x-scala2.12")
 
 
+@pytest.mark.parametrize("runtime_version", ["client.1.13", "serverless"])
+def test_an_unparseable_databricks_version_is_untested(runtime_version):
+    match = match_runtime("databricks", runtime_version, {"pyspark": "4.0.0"}, "3.12.3")
+    assert match.label() == "untested" and match.should_warn
+
+
 def test_databricks_without_a_version_matches_by_packages():
     assert match_runtime("databricks", None, {}, "3.12.3").label() == "tested:dbr17.3"
 
