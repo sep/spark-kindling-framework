@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 import uuid
 from contextlib import nullcontext
@@ -7,6 +8,7 @@ from pathlib import Path
 
 from kindling.data_entities import *
 from kindling.data_pipes import *
+from kindling.entity_provider import VersionedReadableEntityProvider
 from kindling.entity_provider_csv import (
     FixtureCSVEntityProvider,
     fixture_csv_has_data_rows,
@@ -137,10 +139,16 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
         self.logger = lp.get_logger("SimpleReadPersistStrategy")
         self._trace_gates = tracing_gates(config)
         self._config = config
+        # pipe id -> {input entity id: version read}, for the stamp's
+        # input_versions; reset each time a pipe execution starts reading.
+        self._input_versions: Dict[str, Dict[str, str]] = {}
+        self._input_versions_lock = threading.Lock()
         self._init_signal_emitter(signal_provider)
 
     def create_pipe_entity_reader(self, pipe):
         strategy = self
+        with self._input_versions_lock:
+            self._input_versions.pop(pipe.pipeid, None)
 
         def entity_reader(entity, usewm):
             if not strategy._trace_gates.minimal:
@@ -178,8 +186,12 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
         if details is not None:
             details["resolved"] = resolved is not None
 
+        record_versions = self._records_input_versions(pipe)
+        version = None
         if resolved is not None:
             df = resolved.df
+            # A watermarked read's cursor is the version it covers.
+            version = getattr(resolved, "version", None)
         elif _is_local_execution():
             # [implementer] tests/entities/ auto-discovery convention — ki-bsi
             # Priority: explicit --source > kindling.yaml env mapping > fixture CSV > registry
@@ -202,10 +214,14 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                 df = FixtureCSVEntityProvider(fixture_path).read_entity(entity)
             else:
                 provider = self.provider_registry.get_provider_for_entity(entity)
-                df = provider.read_entity(entity)
+                df, version = self._provider_read(provider, entity, record_versions)
         else:
             provider = self.provider_registry.get_provider_for_entity(entity)
-            df = provider.read_entity(entity)
+            df, version = self._provider_read(provider, entity, record_versions)
+
+        if record_versions and version is not None:
+            with self._input_versions_lock:
+                self._input_versions.setdefault(pipe.pipeid, {})[entity.entityid] = str(version)
 
         # An input's provenance column names the pipe that wrote it, not this
         # one: dropped unless the pipe keeps it (provenance.keep_inputs).
@@ -224,6 +240,27 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
             )
 
         return df
+
+    def _recorded_input_versions(self, pipe_id: str) -> Dict[str, str]:
+        with self._input_versions_lock:
+            return dict(self._input_versions.get(pipe_id, {}))
+
+    def _records_input_versions(self, pipe) -> bool:
+        """Whether the pipe's output is stamped, so its reads record the
+        version of each input (provenance ``input_versions``)."""
+        try:
+            output = self.der.get_entity_definition(pipe.output_entity_id)
+            return output is not None and provenance_column(output) is not None
+        except Exception:
+            return False
+
+    @staticmethod
+    def _provider_read(provider, entity, record_versions: bool):
+        """``(df, version)``: a versioned provider reads pinned at a version
+        when the output is stamped; otherwise a plain read and None."""
+        if record_versions and isinstance(provider, VersionedReadableEntityProvider):
+            return provider.read_entity_versioned(entity)
+        return provider.read_entity(entity), None
 
     def create_pipe_persist_activator(self, pipe):
         # Capture self for use in closure
@@ -338,6 +375,7 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
                     mode=MODE_BATCH,
                     persist_id=persist_id,
                     execution_id=current_execution_id(pipe.pipeid),
+                    input_versions=self._recorded_input_versions(pipe.pipeid),
                     config_service=self._config,
                 ),
             )

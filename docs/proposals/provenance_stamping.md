@@ -8,7 +8,9 @@ surrogate keys shipped). **Phase 1 shipped** in #365 (0.14.1): the settings
 block and tags, the column in batch, streaming and SDP writes, drop-on-read,
 schema augmentation, and the merge and AUTO CDC handling. `run_id` is filled
 from the runtime manifest (`runtime_manifest.md`) for batch and streaming
-stamps. Phase 2 (`input_versions`) is not started.
+stamps. **Phase 2 (`input_versions`)** implemented for batch writes:
+watermarked inputs record their cursor, Delta inputs are read pinned at the
+version they record.
 **Created:** 2026-10-16
 **Related:** `governed_artifact_platform.md` (names provenance stamping as the
 small Kindling write-path feature its whole story leans on, and asks for it to
@@ -360,6 +362,19 @@ Confirmed (2026-10-19 to 2026-10-21) and shipped in phase 1:
 7. **`tags` is a `map<string,string>`** of allow-listed pipe tags.
 8. **Drop on read by default,** with a pipe-level opt-out,
    `provenance.keep_inputs: "<entity ids>"` (pipes have no per-input options).
+
+Confirmed 2026-10-28 for phase 2:
+
+- **Exact input versions.** A watermarked input records the cursor its read
+  covers. A plain Delta input is read at a looked-up version (time travel:
+  `versionAsOf`, or `VERSION AS OF` for a catalog table), so the stamp names
+  exactly the snapshot read even when a commit lands before the write; a
+  failed lookup gives a plain read and no version, never a guess. Other
+  providers record nothing. The capability is
+  `VersionedReadableEntityProvider.read_entity_versioned`.
+- **Whenever the output is stamped, batch only.** No new setting; reads pin
+  only for a stamped output. Streaming and SDP stamps keep `input_versions`
+  null (per-micro-batch source offsets are separate work).
 
 Still open:
 

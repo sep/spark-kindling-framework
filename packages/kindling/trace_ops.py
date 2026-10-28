@@ -59,6 +59,7 @@ TRACED_PROVIDER_OPS = (
     "read_entity_changes",
     "read_entity_since_version",
     "read_entity_as_of",
+    "read_entity_versioned",
     "write_to_entity",
     "append_to_entity",
     "merge_to_entity",

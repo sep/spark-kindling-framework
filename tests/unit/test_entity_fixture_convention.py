@@ -10,6 +10,7 @@ Covers:
   read directly with such a file
 """
 
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -255,6 +256,8 @@ class TestCreatePipeEntityReaderFixtureConvention:
         strategy._signal_provider = signal_provider
         strategy._listeners = {}
         strategy._trace_gates = tracing_gates(None)
+        strategy._input_versions = {}
+        strategy._input_versions_lock = threading.Lock()
         return strategy
 
     def test_fixture_csv_used_when_present_and_local(self, tmp_path):

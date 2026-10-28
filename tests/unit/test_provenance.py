@@ -140,6 +140,20 @@ class TestSelectedPipeTags:
 
 
 class TestBuildStamp:
+    @pytest.mark.parametrize(
+        "versions, expected",
+        [
+            (None, None),
+            ({}, None),
+            ({"bronze.b": None}, None),
+            ({"bronze.b": 3, "bronze.a": "12"}, (("bronze.a", "12"), ("bronze.b", "3"))),
+        ],
+    )
+    def test_input_versions_are_sorted_strings_or_null(self, versions, expected):
+        entity = _entity({"provenance.enabled": "true"})
+        stamp = build_provenance_stamp(_pipe({}), entity, mode=MODE_BATCH, input_versions=versions)
+        assert stamp.input_versions == expected
+
     def test_values_from_pipe_and_context(self):
         config_service = MagicMock()
         config_service.get.side_effect = lambda key, default=None: {

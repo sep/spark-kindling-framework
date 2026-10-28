@@ -3,7 +3,7 @@ import time
 from abc import ABC, abstractmethod
 from enum import Enum
 from functools import reduce
-from typing import Callable, Dict, Literal, Optional, Type
+from typing import Callable, Dict, Literal, Optional, Tuple, Type
 
 import pyspark.sql.utils
 from delta.tables import DeltaTable
@@ -38,6 +38,7 @@ from .entity_provider import (
     StreamableEntityProvider,
     StreamMergeableEntityProvider,
     StreamWritableEntityProvider,
+    VersionedReadableEntityProvider,
     WritableEntityProvider,
 )
 
@@ -854,6 +855,7 @@ class DeltaEntityProvider(
     BaseEntityProvider,
     DestinationEnsuringProvider,
     IncrementalReadableEntityProvider,
+    VersionedReadableEntityProvider,
     StreamableEntityProvider,
     WritableEntityProvider,
     ReplaceWritableEntityProvider,
@@ -1950,6 +1952,17 @@ class DeltaEntityProvider(
             self.logger.warning(f"Version lookup failed for {table_ref.table_name}: {e}")
             return 0
 
+    def _current_table_version(self, table_ref: DeltaTableReference) -> Optional[int]:
+        """The table's latest version, or None when there is no table or the
+        lookup fails (unlike ``_get_table_version``, never 0 as a stand-in)."""
+        try:
+            if not self._check_table_exists(table_ref):
+                return None
+            return int(table_ref.get_delta_table().history(1).select("version").collect()[0][0])
+        except Exception as e:
+            self.logger.warning(f"Version lookup failed for {table_ref.table_name}: {e}")
+            return None
+
     def _build_merge_condition(self, alias1: str, alias2: str, cols: list[str]) -> str:
         """Build merge condition for Delta table operations"""
         return reduce(
@@ -2476,6 +2489,34 @@ class DeltaEntityProvider(
         )
 
         return df
+
+    def read_entity_versioned(self, entity) -> Tuple[DataFrame, Optional[str]]:
+        """Read the full table at its current version, pinned with time
+        travel, and return that version. A failed version lookup gives a
+        plain read and None."""
+        table_ref = self._get_table_reference(entity)
+        version = self._current_table_version(table_ref)
+        if version is None:
+            return self.read_entity(entity), None
+
+        start_time = time.time()
+        self.emit("entity.before_read", entity_id=entity.entityid, entity_name=entity.name)
+        if self._is_for_name_mode(table_ref.access_mode) and table_ref.table_name:
+            identifier = self._quote_table_identifier(table_ref.table_name)
+            df = self.spark.sql(f"SELECT * FROM {identifier} VERSION AS OF {int(version)}")
+        else:
+            df = (
+                self.spark.read.format("delta")
+                .option("versionAsOf", int(version))
+                .load(table_ref.get_read_path())
+            )
+        self.emit(
+            "entity.after_read",
+            entity_id=entity.entityid,
+            entity_name=entity.name,
+            duration_seconds=time.time() - start_time,
+        )
+        return df, str(version)
 
     def read_entity_as_stream(self, entity, format=None, options=None) -> DataFrame:
         """Read entity as a streaming DataFrame.

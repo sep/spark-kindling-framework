@@ -435,6 +435,28 @@ class IncrementalReadableEntityProvider(ABC):
         pass
 
 
+class VersionedReadableEntityProvider(ABC):
+    """
+    Optional interface for providers whose entities have versions and can be
+    read at one (Delta: the table version).
+
+    Provenance stamping uses it to record the version of each input a pipe
+    read (``input_versions``).
+    """
+
+    @abstractmethod
+    def read_entity_versioned(
+        self, entity_metadata: EntityMetadata
+    ) -> "tuple[DataFrame, Optional[str]]":
+        """Read the entity at its current version; return ``(df, version)``.
+
+        ``df`` is exactly the entity at ``version``, even if new versions
+        land before the plan runs. When the version can't be determined,
+        return a plain read and ``None``: never a guessed version.
+        """
+        pass
+
+
 # Type aliases for checking capabilities
 def is_streamable(provider: BaseEntityProvider) -> bool:
     """Check if provider supports streaming reads."""
