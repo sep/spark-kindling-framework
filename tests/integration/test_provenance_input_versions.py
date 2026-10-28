@@ -252,3 +252,29 @@ def test_a_catalog_table_is_read_pinned(spark, temp_dir, monkeypatch):
         assert [row["customer_id"] for row in df.collect()] == ["c1"]
     finally:
         spark.sql(f"DROP TABLE IF EXISTS {table}")
+
+
+def test_an_initial_watermarked_load_is_pinned_at_its_cursor(spark, provider, signals):
+    """Through the real watermark resolution: WatermarkAspect -> Delta
+    read_entity_changes(entity, None). A commit between the read and the
+    write must not ride along with the version the cursor names."""
+    from kindling.watermarking import WatermarkAspect, WatermarkService
+
+    source, output = _entity("bronze.src_wm_init"), _entity("silver.out_wm_init", STAMPED)
+    _write_versions(spark, provider, source, [("c1", "new")])
+    version = provider.get_entity_version(source)
+    wms = MagicMock(spec=WatermarkService)
+    wms.read_changes.side_effect = lambda entity, pipe: provider.read_entity_changes(entity, None)
+    lp = MagicMock(spec=PythonLoggerProvider)
+    lp.get_logger.return_value = MagicMock()
+    WatermarkAspect(wms=wms, lp=lp, signal_provider=signals).register()
+    pipe = _pipe(source, output)
+    strategy = _strategy(provider, signals, [source, output])
+
+    df = strategy.create_pipe_entity_reader(pipe)(source, True)
+    _write_versions(spark, provider, source, [("c2", "new")])
+    strategy.create_pipe_persist_activator(pipe)(df.drop("SourceVersion", "SourceTimestamp"))
+
+    stamps = _stamps(provider, output)
+    assert set(stamps) == {"c1"}, "the initial load holds exactly the version its cursor names"
+    assert stamps["c1"]["input_versions"] == {source.entityid: str(version)}
