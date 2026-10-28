@@ -1,8 +1,9 @@
 # Runtime Manifest
 
-**Status:** Phases 1 (`kindling.runtime_manifest`, with `run_id` in
-provenance stamps) and 2 (`kindling.supported_runtimes`, the untested-runtime
-warning) implemented. Phase 3 (`system.runs`) not started.
+**Status:** Implemented: phase 1 (`kindling.runtime_manifest`, with `run_id`
+in provenance stamps), phase 2 (`kindling.supported_runtimes`, the
+untested-runtime warning) and phase 3 (`system.runs`, the executor run id as
+the watermark `last_execution_id`).
 **Created:** 2026-10-16
 **Related:** `docs/reference/config_reference.md`
 (`kindling.runtime.features.*`, including the Databricks runtime version),
@@ -147,6 +148,20 @@ that is flushed when the app ends. Executor run ids come from
    (standalone: recorded, never warned). The result is in the manifest
    (`runtime_match`), the INFO line and the span. The provenance system test
    asserts every CI platform is recognized (`tested` or `partial`).
+
+## Decisions (2026-10-28, phase 3)
+
+1. **Start and end rows.** With `kindling.runs.enabled: true`, bootstrap
+   inserts the `system.runs` row when initialization completes (`running`)
+   and merges the end into it when an auto-run app ends (`succeeded` /
+   `failed`, `ended_at`, `error`, the executor run ids). A killed run keeps
+   `running`; a session without an auto-run app keeps its start row.
+2. **`kindling.runs.enabled`**, a settings block of its own: rows are data,
+   not telemetry. Defined like `system.watermarks` (a Delta entity merged on
+   `run_id` through the same entity provider); a failed write is a warning.
+3. **Watermarks carry the executor run id** as `last_execution_id` (a fresh
+   id only outside an executor), so a watermark joins to the run record and
+   to the rows its persist stamped.
 
 ## Unverified
 

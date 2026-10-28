@@ -98,6 +98,28 @@ class TestHappyPath:
         assert args[1] == pipe.pipeid
         assert args[2] == "7"  # the cursor captured at read time
 
+    @pytest.mark.parametrize("captured", ["exec-123", None])
+    def test_the_watermark_carries_the_executor_run_id(
+        self, aspect, wms, signal_provider, monkeypatch, captured
+    ):
+        monkeypatch.setattr("kindling.provenance.current_execution_id", lambda pipe_id: captured)
+        pipe = _pipe()
+        _emit(
+            signal_provider,
+            "read.resolve_read",
+            entity=_entity("bronze.src"),
+            pipe=pipe,
+            pipe_id=pipe.pipeid,
+            use_watermark=True,
+        )
+        _emit(signal_provider, "persist.after_persist", pipe_id=pipe.pipeid, persist_id="x")
+
+        execution_id = wms.save_cursor.call_args[0][3]
+        if captured:
+            assert execution_id == captured
+        else:
+            assert execution_id and execution_id != "exec-123"  # a fresh id
+
     def test_non_integer_cursor_round_trips_opaquely(self, aspect, wms, signal_provider):
         """A REST-style timestamp cursor is stored verbatim — the aspect
         never interprets cursor contents."""

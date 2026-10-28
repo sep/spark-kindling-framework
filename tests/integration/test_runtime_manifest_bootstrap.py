@@ -45,3 +45,55 @@ def test_initialize_builds_the_manifest_and_lists_executor_runs() -> None:
         """)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "MANIFEST_OK Runtime manifest: run_id=" in result.stdout
+
+
+@pytest.mark.requires_spark
+def test_runs_enabled_records_one_row_per_initialization(tmp_path) -> None:
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(
+        "kindling:\n"
+        "  runs:\n"
+        "    enabled: true\n"
+        "  delta:\n"
+        "    access_mode: storage\n"
+        "  storage:\n"
+        f"    table_root: {str(tmp_path / 'tables')!r}\n",
+        encoding="utf-8",
+    )
+    runs_path = tmp_path / "tables" / "system" / "runs"
+    result = _run_fresh_python(f"""
+        from kindling.bootstrap import _record_run, initialize_framework
+        from kindling.injection import GlobalInjector
+        from kindling.runtime_manifest import get_runtime_manifest
+        from kindling.spark_config import ConfigService
+        from kindling.spark_session import get_or_create_spark_session
+
+        initialize_framework({{
+            "platform": "standalone",
+            "environment": "local",
+            "config_files": [{str(settings)!r}],
+        }})
+        spark = get_or_create_spark_session()
+        manifest = get_runtime_manifest()
+
+        def rows():
+            return spark.read.format("delta").load({str(runs_path)!r}).collect()
+
+        (start,) = rows()
+        assert start["run_id"] == manifest.run_id, start
+        assert (start["status"], start["ended_at"]) == ("running", None), start
+        assert start["platform"] == "standalone" and start["runtime_match"] == "unchecked"
+
+        class _Logger:
+            def warning(self, message):
+                raise AssertionError(message)
+
+        _record_run(GlobalInjector.get(ConfigService), _Logger(), "succeeded")
+        (end,) = rows()
+        assert end["run_id"] == manifest.run_id
+        assert end["status"] == "succeeded" and end["ended_at"] is not None, end
+        assert end["started_at"] == start["started_at"]
+        print("RUNS_OK")
+        """)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "RUNS_OK" in result.stdout

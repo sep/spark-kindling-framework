@@ -286,6 +286,20 @@ Design-time CLI tracing (no ConfigService exists before an app loads) is
 env-gated instead: `KINDLING_TRACE=1` enables `kindling.cli` spans and
 `KINDLING_KINDLING__TELEMETRY__TRACING__PRINT=true` prints them.
 
+### Run records
+
+- `kindling.runs.enabled` (default `false`): Record each initialization in
+  the `system.runs` Delta table (stored like `system.watermarks`). Bootstrap
+  inserts the row when initialization completes (`status` `running`) and
+  updates it when an auto-run app ends (`succeeded` or `failed`, with
+  `ended_at`, `error` and the executor run ids). A killed run keeps
+  `running`. Columns: `run_id`, `started_at`, `ended_at`, `status`, `error`,
+  app name and version, platform and runtime version, Spark, Python and
+  Kindling versions, `runtime_match`, both fingerprints, `execution_ids` and
+  the full runtime manifest as JSON (`manifest`). Rows join to provenance
+  stamps on `run_id`. A failed write is logged as a warning and never stops
+  the run.
+
 ### Provenance
 
 Row-level provenance stamping (see "Provenance Stamping" in

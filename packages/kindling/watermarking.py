@@ -645,9 +645,14 @@ class WatermarkAspect(SignalEmitter):
         pending_sources = self._pending.get(pipe_id)
         if pending_sources is None:
             return None
+        from kindling.provenance import current_execution_id
+
+        # The executor's run id links the watermark to the run (and to the
+        # rows it stamped); a fresh id only outside an executor.
+        execution_id = current_execution_id(pipe_id) or str(uuid.uuid4())
         for source_entity_id, cursor in list(pending_sources.items()):
             try:
-                self.wms.save_cursor(source_entity_id, pipe_id, cursor, str(uuid.uuid4()))
+                self.wms.save_cursor(source_entity_id, pipe_id, cursor, execution_id)
             except Exception as exc:
                 self._failed_saves.setdefault(pipe_id, set()).add(source_entity_id)
                 self.logger.exception(
