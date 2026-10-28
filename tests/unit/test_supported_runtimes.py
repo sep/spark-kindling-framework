@@ -67,9 +67,11 @@ def test_databricks_without_a_version_matches_by_packages():
     assert match_runtime("databricks", None, {}, "3.12.3").label() == "tested:dbr17.3"
 
 
-@pytest.mark.parametrize("platform", ["standalone", None, ""])
-def test_standalone_and_unknown_are_unchecked(platform):
-    match = match_runtime(platform, None, {"pyspark": "9.9.9"}, "3.8.0")
+# Not "platform": tests/system/conftest.py turns a "platform" parameter into
+# a marker, which breaks collection in the single-process run.
+@pytest.mark.parametrize("platform_name", ["standalone", None, ""])
+def test_standalone_and_unknown_are_unchecked(platform_name):
+    match = match_runtime(platform_name, None, {"pyspark": "9.9.9"}, "3.8.0")
     assert match.label() == "unchecked" and not match.should_warn
 
 
