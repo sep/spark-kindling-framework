@@ -186,7 +186,7 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
         if details is not None:
             details["resolved"] = resolved is not None
 
-        record_versions = self._records_input_versions(pipe)
+        record_versions = self.records_input_versions(pipe)
         version = None
         if resolved is not None:
             df = resolved.df
@@ -245,7 +245,18 @@ class SimpleReadPersistStrategy(EntityReadPersistStrategy, SignalEmitter):
         with self._input_versions_lock:
             return dict(self._input_versions.get(pipe_id, {}))
 
-    def _records_input_versions(self, pipe) -> bool:
+    def recorded_input_version(self, pipe_id: str, entity_id: str) -> Optional[str]:
+        """The version the pipe's current execution recorded for an input."""
+        with self._input_versions_lock:
+            return self._input_versions.get(pipe_id, {}).get(entity_id)
+
+    def record_input_version(self, pipe_id: str, entity_id: str, version: str) -> None:
+        """Record an input version for a pipe that reuses a frame read by
+        another pipe (the generation executor's shared-input cache)."""
+        with self._input_versions_lock:
+            self._input_versions.setdefault(pipe_id, {})[entity_id] = str(version)
+
+    def records_input_versions(self, pipe) -> bool:
         """Whether the pipe's output is stamped, so its reads record the
         version of each input (provenance ``input_versions``)."""
         try:
