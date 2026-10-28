@@ -396,6 +396,27 @@ class TestMigrationPlannerSchemaDiff:
         assert "__effective_from" in status.error and "id_sk" in status.error
         assert "Rebuild the table" in status.error
 
+    def test_declared_scd2_or_key_columns_missing_from_the_table_are_a_plan_error(self):
+        """Declaring the temporal or key columns doesn't make them fillable."""
+        from pyspark.sql.types import BooleanType, LongType, StringType, TimestampType
+
+        live = _make_struct(("id", LongType()))
+        entity = _entity(
+            schema=_make_struct(
+                ("id", LongType()),
+                ("ID_SK", StringType()),
+                ("__effective_from", TimestampType()),
+                ("__effective_to", TimestampType()),
+                ("__is_current", BooleanType()),
+            )
+        )
+        entity.tags = {"scd.type": "2", "surrogate.column": "id_sk"}
+
+        status = self._diff_against(entity, live)
+
+        assert status.changes == []
+        assert "__effective_from" in status.error and "ID_SK" in status.error
+
 
 # ---------------------------------------------------------------------------
 # MigrationApplier transform logic
