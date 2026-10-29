@@ -17,6 +17,21 @@ All notable changes to spark-kindling are documented here.
   package or Python differs from the closest tested runtime at major.minor,
   naming the packages. Vendor builds compare by their base release, conda
   date-versioned builds are skipped, and standalone is never warned about.
+- **`system.runs` (runtime manifest phase 3).** With `kindling.runs.enabled:
+  true`, each initialization gets a row in the `system.runs` Delta table
+  (stored like `system.watermarks`): inserted as `running` when
+  initialization completes and updated to `succeeded` or `failed` (end time,
+  error, executor run ids) when an auto-run app ends. It holds the app,
+  platform, runtime and version fields, `runtime_match`, both fingerprints
+  and the full runtime manifest as JSON, and joins to provenance stamps on
+  `run_id`. Off by default; a failed write is only a warning.
+
+### Changed
+
+- **Watermarks record the executor run id.** The watermark aspect saves the
+  executor's run id (the provenance stamps' `execution_id`) as
+  `last_execution_id`, instead of a fresh uuid that linked to nothing. A
+  save outside an executor still gets a fresh id.
 
 ### Fixed
 
