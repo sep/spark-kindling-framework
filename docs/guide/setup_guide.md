@@ -64,6 +64,24 @@ pip install "spark-kindling[standalone] @ $BASE/spark_kindling-$V-py3-none-any.w
     "$BASE/spark_kindling_cli-$V-py3-none-any.whl"
 ```
 
+With the GitHub CLI (`gh`, logged in), download that release's wheels and
+install the files instead:
+
+```bash
+V=0.14.0
+gh release download v$V --repo sep/spark-kindling-framework --dir dist \
+    --pattern "spark_kindling-$V-*.whl" \
+    --pattern "spark_kindling_sdk-$V-*.whl" \
+    --pattern "spark_kindling_cli-$V-*.whl"
+pip install "dist/spark_kindling-$V-py3-none-any.whl[standalone]" \
+    dist/spark_kindling_sdk-$V-py3-none-any.whl \
+    dist/spark_kindling_cli-$V-py3-none-any.whl
+```
+
+For the latest release, leave out the tag and use unversioned patterns, as in
+[Local Python First](local_python_first.md). The URL forms are for where `gh`
+isn't available, such as a notebook's `%pip install` or a cluster.
+
 `kindling env update` / `env add` / `env bootstrap` fall back to these URLs on
 their own when a version is not on PyPI; `--source github` forces them.
 

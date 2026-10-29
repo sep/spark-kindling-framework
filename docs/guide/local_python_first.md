@@ -162,6 +162,17 @@ pip install "spark-kindling-cli @ ${CURRENT_CLI_URL}"
 pip install "spark-kindling-sdk @ ${CURRENT_SDK_URL}"
 ```
 
+With the GitHub CLI (`gh`, logged in), one command fetches the latest
+release's wheels (prereleases are skipped):
+
+```bash
+gh release download --repo sep/spark-kindling-framework --dir dist \
+    --pattern 'spark_kindling-*.whl' \
+    --pattern 'spark_kindling_cli-*.whl' \
+    --pattern 'spark_kindling_sdk-*.whl'
+pip install "$(ls dist/spark_kindling-*.whl)[standalone]" dist/spark_kindling_cli-*.whl dist/spark_kindling_sdk-*.whl
+```
+
 For framework development:
 
 ```bash
