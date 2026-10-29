@@ -1117,6 +1117,9 @@ rejected. Pipe tags that held a resolved secret are never copied.
 
 Fields are only ever added. Existing rows of an existing table get a null
 stamp ("written before provenance was enabled") until they are next written.
+An existing table gains the column on its next write, except under
+`schema.drift: fail`, which refuses that write until `kindling migrate apply`
+has added the column.
 
 ### Overwrite overwrites
 

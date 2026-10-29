@@ -63,6 +63,14 @@ Show pending schema changes for all registered entities without applying them.
 Flags destructive changes (type changes, column removal, partition changes) so
 you can review before applying.
 
+The plan compares each table with the schema the framework creates for the
+entity: the declared columns plus any SCD2 temporal, surrogate key and
+provenance columns, so those are never planned for removal. A missing
+provenance column is a safe addition (existing rows get a null stamp). A
+missing SCD2 temporal or surrogate key column is a plan error instead: added
+as nulls, it would leave every existing row without SCD2 state or a key, so
+the table must be rebuilt from its source.
+
 ### `migrate apply`
 
 Apply pending schema migrations.
