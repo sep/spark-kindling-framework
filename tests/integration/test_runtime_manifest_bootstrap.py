@@ -97,3 +97,34 @@ def test_runs_enabled_records_one_row_per_initialization(tmp_path) -> None:
         """)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "RUNS_OK" in result.stdout
+
+
+@pytest.mark.requires_spark
+def test_declaration_only_records_no_run(tmp_path) -> None:
+    """Declaration-only initialization has no runtime side effects, so it
+    writes no system.runs row even with kindling.runs.enabled on."""
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(
+        "kindling:\n"
+        "  runs:\n"
+        "    enabled: true\n"
+        "  delta:\n"
+        "    access_mode: storage\n"
+        "  storage:\n"
+        f"    table_root: {str(tmp_path / 'tables')!r}\n",
+        encoding="utf-8",
+    )
+    result = _run_fresh_python(f"""
+        from kindling.bootstrap import initialize_framework
+
+        initialize_framework({{
+            "platform": "standalone",
+            "environment": "local",
+            "declaration_only": True,
+            "config_files": [{str(settings)!r}],
+        }})
+        print("DECLARED_OK")
+        """)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "DECLARED_OK" in result.stdout
+    assert not (tmp_path / "tables" / "system" / "runs").exists()

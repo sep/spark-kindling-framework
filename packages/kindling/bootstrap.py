@@ -3192,7 +3192,9 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         # Emitted now, not with the bootstrap span tree flushed after an
         # auto-run app finishes: a killed run still leaves its versions.
         _emit_runtime_manifest_span(config_service)
-        _record_run(config_service, logger, "running")
+        # A run record is a Delta write: declaration-only has no side effects.
+        if not declaration_only:
+            _record_run(config_service, logger, "running")
 
         # `app_name` scopes app-specific config overlays. In declaration-only
         # initialization it must not also imply "run this app".
