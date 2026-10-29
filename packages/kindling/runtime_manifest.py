@@ -13,6 +13,11 @@ made, and two fingerprints:
 - ``package_fingerprint``: the whole installed set; it changes when any
   install replaces anything.
 
+It also records how the runtime compares with the ones Kindling is
+system-tested on (``runtime_match``, from ``kindling.supported_runtimes``);
+bootstrap warns when it is untested or differs from the closest one at
+major.minor.
+
 Bootstrap logs it on one INFO line and emits a scalar-only
 ``runtime_manifest`` span right after initialization, before an app runs.
 Provenance stamps carry its ``run_id``. Every field is best effort: a value
@@ -29,6 +34,8 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional
+
+from kindling.supported_runtimes import RuntimeMatch, match_runtime
 
 _LOCK = threading.Lock()
 _CURRENT: Optional["RuntimeManifest"] = None
@@ -75,6 +82,8 @@ class RuntimeManifest:
     package_changes: List[PackageChange] = field(default_factory=list)
     runtime_fingerprint: Optional[str] = None
     package_fingerprint: Optional[str] = None
+    # How this runtime compares with the system-tested ones.
+    runtime_match: Optional[RuntimeMatch] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """The manifest as JSON-serializable data."""
@@ -104,6 +113,7 @@ class RuntimeManifest:
             f"extensions=[{extensions}]",
             f"app={self.app_name or '-'}{('@' + self.app_version) if self.app_version else ''}",
             f"package_changes={len(self.package_changes)}",
+            f"runtime_match={self.runtime_match.label() if self.runtime_match else '?'}",
             f"runtime_fingerprint={(self.runtime_fingerprint or '?')[:12]}",
             f"package_fingerprint={(self.package_fingerprint or '?')[:12]}",
         ]
@@ -130,6 +140,8 @@ class RuntimeManifest:
             "package_change_count": str(len(self.package_changes)),
             "runtime_fingerprint": self.runtime_fingerprint,
             "package_fingerprint": self.package_fingerprint,
+            "runtime_match": self.runtime_match.status if self.runtime_match else None,
+            "tested_runtime": self.runtime_match.runtime if self.runtime_match else None,
         }
         return {key: value for key, value in details.items() if value is not None}
 
@@ -223,6 +235,12 @@ def _apply_installed(manifest: "RuntimeManifest", installed: Mapping[str, str]) 
     }
     manifest.runtime_fingerprint = _runtime_fingerprint(manifest)
     manifest.package_fingerprint = _package_fingerprint(installed)
+    manifest.runtime_match = match_runtime(
+        manifest.platform,
+        manifest.platform_runtime_version,
+        manifest.key_packages,
+        manifest.python_version,
+    )
 
 
 def record_package_changes(

@@ -12,14 +12,15 @@ fails when a runtime would need one of them replaced.
 
     poe check-extension-runtimes [--extension otel_azure] [--runtime dbr17.3]
 
-RUNTIMES lists the key packages (the bootstrap's _RUNTIME_KEY_DISTRIBUTIONS)
-each runtime ships, from its release notes; update it when a supported
-runtime changes.
+The runtimes and the key packages each ships come from
+kindling.supported_runtimes (packages/kindling/supported_runtimes.py), the
+list of runtimes Kindling is system-tested on; update it there.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import subprocess
 import sys
 import tempfile
@@ -33,71 +34,20 @@ except ModuleNotFoundError:  # Python 3.10
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS_DIR = REPO_ROOT / "packages" / "extensions"
 
+
+def _load_supported_runtimes():
+    """kindling.supported_runtimes, loaded by file path so this check never
+    imports Kindling (or Spark)."""
+    path = REPO_ROOT / "packages" / "kindling" / "supported_runtimes.py"
+    spec = importlib.util.spec_from_file_location("_kindling_supported_runtimes", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses resolve their module
+    spec.loader.exec_module(module)
+    return module.SUPPORTED_RUNTIMES
+
+
 RUNTIMES = {
-    # Databricks Runtime 17.3 LTS (Python 3.12.3)
-    "dbr17.3": (
-        "3.12",
-        {
-            "azure-core": "1.34.0",
-            "azure-identity": "1.20.0",
-            "msal": "1.32.3",
-            "numpy": "2.1.3",
-            "opentelemetry-api": "1.32.1",
-            "opentelemetry-sdk": "1.32.1",
-            "opentelemetry-semantic-conventions": "0.53b1",
-            "pandas": "2.2.3",
-            "protobuf": "5.29.4",
-            # Spark is bundled with the runtime, not a pip install; these
-            # are the versions it provides (Apache Spark 4.0.0).
-            "py4j": "0.10.9.9",
-            "pyarrow": "19.0.1",
-            "pyspark": "4.0.0",
-            "typing-extensions": "4.12.2",
-        },
-    ),
-    # Fabric Runtime 1.3 (Spark 3.5, Python 3.11). azure-identity and msal
-    # ship as conda builds versioned 2023.12.01; the pip releases of that
-    # date stand in for them.
-    "fabric1.3": (
-        "3.11",
-        {
-            "azure-core": "1.30.2",
-            "azure-identity": "1.15.0",
-            "msal": "1.26.0",
-            "numpy": "1.26.4",
-            "pandas": "2.1.4",
-            "protobuf": "3.20.3",
-            "py4j": "0.10.9.7",
-            "pyarrow": "14.0.2",
-            # The runtime ships a vendor build (3.5.1.5.4.20240407, not on PyPI);
-            # its public base release stands in for it.
-            "pyspark": "3.5.1",
-            "typing-extensions": "4.9.0",
-        },
-    ),
-    # Azure Synapse Runtime for Apache Spark 3.5 (Python 3.11). msal ships
-    # as a conda build versioned 2026.06.01; 1.34.0 stands in for it.
-    "synapse3.5": (
-        "3.11",
-        {
-            "azure-core": "1.38.2",
-            "azure-identity": "1.17.0",
-            "azure-monitor-opentelemetry": "1.8.2",
-            "msal": "1.34.0",
-            "numpy": "1.26.4",
-            "opentelemetry-api": "1.44.0",
-            "opentelemetry-sdk": "1.44.0",
-            "opentelemetry-semantic-conventions": "0.65b0",
-            "pandas": "2.3.3",
-            "protobuf": "6.33.5",
-            "py4j": "0.10.9.7",
-            "pyarrow": "23.0.1",
-            # The runtime ships a vendor build (3.5.1.5.4.20240407, not on PyPI);
-            # its public base release stands in for it.
-            "pyspark": "3.5.1",
-            "typing-extensions": "4.16.0",
-        },
-    ),
+    runtime.name: (runtime.python, dict(runtime.packages)) for runtime in _load_supported_runtimes()
 }
 
 

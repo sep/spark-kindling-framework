@@ -17,6 +17,46 @@ All notable changes to spark-kindling are documented here.
   stamped. Providers can offer versioned reads with the new
   `VersionedReadableEntityProvider` interface; `ResolvedRead` gains an
   optional `version`.
+- **Untested-runtime warning (runtime manifest phase 2).** The runtimes
+  Kindling is system-tested on (Databricks Runtime 17.3 LTS, Fabric Runtime
+  1.3, Azure Synapse Spark 3.5) and the key packages each ships now live in
+  the wheel as `kindling.supported_runtimes`; the CI extension check reads the
+  same list. At startup the runtime manifest records how the running runtime
+  compares (`runtime_match`: `tested`, `partial`, `untested` or `unchecked`),
+  shown on the manifest's INFO line and span. Bootstrap warns on an untested
+  runtime (another DBR version, serverless, another platform) and when a key
+  package or Python differs from the closest tested runtime at major.minor,
+  naming the packages. Vendor builds compare by their base release, conda
+  date-versioned builds are skipped, and standalone is never warned about.
+- **`system.runs` (runtime manifest phase 3).** With `kindling.runs.enabled:
+  true`, each initialization gets a row in the `system.runs` Delta table
+  (stored like `system.watermarks`): inserted as `running` when
+  initialization completes and updated to `succeeded` or `failed` (end time,
+  error, executor run ids) when an auto-run app ends. It holds the app,
+  platform, runtime and version fields, `runtime_match`, both fingerprints
+  and the full runtime manifest as JSON, and joins to provenance stamps on
+  `run_id`. Off by default; a failed write is only a warning.
+
+### Changed
+
+- **Watermarks record the executor run id.** The watermark aspect saves the
+  executor's run id (the provenance stamps' `execution_id`) as
+  `last_execution_id`, instead of a fresh uuid that linked to nothing. A
+  save outside an executor still gets a fresh id.
+
+### Fixed
+
+- **`kindling migrate` no longer plans removing framework-owned columns.**
+  It compared tables with the declared schema only, so on an existing table
+  it planned a destructive removal of the SCD2 temporal columns
+  (`__effective_from`, `__effective_to`, `__is_current`), surrogate key columns
+  and the provenance column; `migrate apply --destructive` would have dropped
+  them. It now compares with the schema the framework creates. A missing
+  provenance column is planned as a safe addition, so `schema.drift: fail`
+  entities can turn provenance on. A missing SCD2 temporal or surrogate key
+  column is a plan error that asks for a rebuild, since adding it would leave
+  existing rows null. Plan errors are reported as "have plan errors" (was
+  "could not be inspected").
 
 ## [0.14.1] - 2026-10-27
 

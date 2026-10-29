@@ -5438,7 +5438,7 @@ def test_migrate_plan_fails_on_errors_even_without_changes(tmp_path, monkeypatch
     _make_fake_migrate_modules(monkeypatch, has_changes=False, has_errors=True)
     result = CliRunner().invoke(cli, ["migrate", "plan", "--app", "app.py"])
     assert result.exit_code != 0
-    assert "could not be inspected" in result.output
+    assert "have plan errors" in result.output
     assert "up to date" not in result.output
 
 

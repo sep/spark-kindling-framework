@@ -1,8 +1,9 @@
 # Runtime Manifest
 
-**Status:** Phase 1 implemented (`kindling.runtime_manifest`), with `run_id`
-in provenance stamps. Phases 2 (packaged matrix, untested-runtime warning)
-and 3 (`system.runs`) not started.
+**Status:** Implemented: phase 1 (`kindling.runtime_manifest`, with `run_id`
+in provenance stamps), phase 2 (`kindling.supported_runtimes`, the
+untested-runtime warning) and phase 3 (`system.runs`, the executor run id as
+the watermark `last_execution_id`).
 **Created:** 2026-10-16
 **Related:** `docs/reference/config_reference.md`
 (`kindling.runtime.features.*`, including the Databricks runtime version),
@@ -129,6 +130,38 @@ initialization, before an auto-run app, not with the bootstrap span tree
 that is flushed when the app ends. Executor run ids come from
 `orchestrator.execution_started`, `datapipes.before_run` and
 `streaming.orchestrator_started`.
+
+## Decisions (2026-10-28, phase 2)
+
+1. **The matrix is the system-tested runtimes**: `kindling.supported_runtimes`
+   lists the runtimes the system tests run on (DBR 17.3 LTS, Fabric 1.3,
+   Synapse 3.5) and the key packages each ships. The CI extension check loads
+   it by file path, so it never imports Kindling or Spark.
+2. **Match by platform and packages.** Fabric and Synapse report no runtime
+   version, so the candidates are the platform's entries (on Databricks, only
+   those of the reported DBR version) and the closest wins: fewest
+   major.minor differences, then fewest differences. Only the packages an
+   entry ships are compared; a missing package is skipped; a vendor build
+   compares by its base release and a conda date-versioned build is skipped.
+3. **Warn at major.minor.** `tested` (patch differences recorded only),
+   `partial` (warns, naming the packages), `untested` (warns), `unchecked`
+   (standalone: recorded, never warned). The result is in the manifest
+   (`runtime_match`), the INFO line and the span. The provenance system test
+   asserts every CI platform is recognized (`tested` or `partial`).
+
+## Decisions (2026-10-28, phase 3)
+
+1. **Start and end rows.** With `kindling.runs.enabled: true`, bootstrap
+   inserts the `system.runs` row when initialization completes (`running`)
+   and merges the end into it when an auto-run app ends (`succeeded` /
+   `failed`, `ended_at`, `error`, the executor run ids). A killed run keeps
+   `running`; a session without an auto-run app keeps its start row.
+2. **`kindling.runs.enabled`**, a settings block of its own: rows are data,
+   not telemetry. Defined like `system.watermarks` (a Delta entity merged on
+   `run_id` through the same entity provider); a failed write is a warning.
+3. **Watermarks carry the executor run id** as `last_execution_id` (a fresh
+   id only outside an executor), so a watermark joins to the run record and
+   to the rows its persist stamped.
 
 ## Unverified
 

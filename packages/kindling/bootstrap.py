@@ -1792,8 +1792,28 @@ def _complete_runtime_manifest(config_service, platform, logger) -> None:
         )
         if manifest is not None:
             logger.info(manifest.summary())
+            _warn_untested_runtime(manifest, logger)
     except Exception as manifest_error:
         logger.warning(f"Runtime manifest could not be completed: {manifest_error}")
+
+
+def _warn_untested_runtime(manifest, logger) -> None:
+    """Warn when the runtime is not one Kindling is system-tested on, or
+    differs from the closest one at major.minor."""
+    match = manifest.runtime_match
+    if match is not None and match.should_warn:
+        logger.warning(match.describe(manifest.platform, manifest.platform_runtime_version))
+
+
+def _record_run(config_service, logger, status: str, error: Optional[str] = None) -> None:
+    """Upsert this initialization's ``system.runs`` row when
+    ``kindling.runs.enabled`` is on. Never breaks bootstrap."""
+    try:
+        from kindling.run_records import record_run
+
+        record_run(config_service, status, error=error, logger=logger)
+    except Exception as record_error:
+        logger.warning(f"Could not record the run in system.runs: {record_error}")
 
 
 def _emit_runtime_manifest_span(config_service) -> None:
@@ -3172,6 +3192,9 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
         # Emitted now, not with the bootstrap span tree flushed after an
         # auto-run app finishes: a killed run still leaves its versions.
         _emit_runtime_manifest_span(config_service)
+        # A run record is a Delta write: declaration-only has no side effects.
+        if not declaration_only:
+            _record_run(config_service, logger, "running")
 
         # `app_name` scopes app-specific config overlays. In declaration-only
         # initialization it must not also imply "run this app".
@@ -3183,8 +3206,10 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                     logger.debug(f"Got DataAppRunner: {type(runner).__name__}")
                     runner.run_app(app_name)
                     logger.warning(f"App '{app_name}' completed successfully")
+                    _record_run(config_service, logger, "succeeded")
                 except Exception as app_error:
                     logger.exception(f"App execution failed: {str(app_error)}")
+                    _record_run(config_service, logger, "failed", error=str(app_error))
                     raise
 
         return platformservice

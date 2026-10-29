@@ -808,6 +808,18 @@ def _resolve_merge_strategy_name(scd_config: SCDConfig, entity) -> str:
     return "scd1"
 
 
+def entity_table_schema(entity) -> StructType:
+    """The table schema the framework creates for ``entity``: declared
+    columns, SCD2 temporal columns, then any surrogate key columns not
+    declared, then the provenance column when the entity is stamped."""
+    from kindling.provenance import augment_schema_for_provenance
+    from kindling.surrogate_keys import augment_schema_for_surrogate_keys
+
+    schema = augment_schema_for_scd2(entity.schema, scd_config_from_tags(entity))
+    schema = augment_schema_for_surrogate_keys(schema, entity)
+    return augment_schema_for_provenance(schema, entity)
+
+
 def _enforce_schema_drift_for_batch(
     df: DataFrame, entity, delta_table: DeltaTable, policy: str
 ) -> None:
@@ -1820,15 +1832,8 @@ class DeltaEntityProvider(
         return augment_schema_for_scd2(schema, cfg)
 
     def _augment_entity_schema(self, entity) -> StructType:
-        """The table schema to create: declared columns, SCD2 temporal columns,
-        then any surrogate key columns not declared, then the provenance
-        column when the entity is stamped."""
-        from kindling.provenance import augment_schema_for_provenance
-        from kindling.surrogate_keys import augment_schema_for_surrogate_keys
-
-        schema = self._augment_schema_for_scd2(entity.schema, scd_config_from_tags(entity))
-        schema = augment_schema_for_surrogate_keys(schema, entity)
-        return augment_schema_for_provenance(schema, entity)
+        """The table schema to create (see ``entity_table_schema``)."""
+        return entity_table_schema(entity)
 
     def _delta_sql_identifier(self, table_ref: DeltaTableReference) -> Optional[str]:
         if self._is_for_name_mode(table_ref.access_mode) and table_ref.table_name:

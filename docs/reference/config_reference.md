@@ -47,7 +47,7 @@ These are read from the bootstrap config dict and/or job parameters passed to th
 - `workspace_id`: Workspace identifier used for workspace-specific config selection.
 - `use_lake_packages`: If true, load Kindling and extensions from artifacts storage (instead of local environment). Defaults to `false` when `platform` is `standalone`, `true` otherwise. This does not opt out of configuration discovery; use `discover_config_files` for that. Artifact-backed package loading also makes configuration discovery strict because both paths require storage utilities.
 - `discover_config_files`: Boolean; controls whether `artifacts_storage_path` is used to discover the canonical config hierarchy. Defaults to `true` when `artifacts_storage_path` is set. An explicit `true` requires storage utilities; the implicit default degrades to explicit `config_files` only when storage utilities are unavailable and `use_lake_packages` is not requiring artifact-backed loading.
-- `declaration_only`: Boolean; initialize enough framework state to resolve configuration and declarations without runtime side effects. Suppresses bootstrap dependency installation, watermark aspect registration, workspace package loading, and `app_name` auto-run. If real platform-service construction fails during declaration-only initialization, Kindling warns and falls back to the standalone service for declaration-time operations. Used by Databricks Lakeflow declaration.
+- `declaration_only`: Boolean; initialize enough framework state to resolve configuration and declarations without runtime side effects. Suppresses bootstrap dependency installation, watermark aspect registration, workspace package loading, the `system.runs` record, and `app_name` auto-run. If real platform-service construction fails during declaration-only initialization, Kindling warns and falls back to the standalone service for declaration-time operations. Used by Databricks Lakeflow declaration.
 - `load_workspace_packages`: If true, load workspace packages (notebooks) after platform init.
   (`load_local_packages` still accepted as a deprecated alias.)
 - `temp_path`: Temporary file path root used during wheel/extension install; `kindling.temp_path` is the YAML equivalent. On Databricks, staging of the Kindling wheel and the settings files happens before any settings file is read, so the path for that staging must come from the job parameters: `--param kindling.temp_path=/Volumes/<catalog>/<schema>/<volume>/...`, or the `CONFIG__platform_databricks__kindling__temp_path` (or `CONFIG__kindling__temp_path`) variable that `kindling app run` sends as one. With neither, that staging uses `dbfs:/tmp` (DBFS root) and the bootstrap warns, because workspaces that restrict DBFS root access fail at that step. See [Databricks staging path](#databricks-staging-path).
@@ -285,6 +285,20 @@ Legacy/compat keys (translated into flat keys):
 Design-time CLI tracing (no ConfigService exists before an app loads) is
 env-gated instead: `KINDLING_TRACE=1` enables `kindling.cli` spans and
 `KINDLING_KINDLING__TELEMETRY__TRACING__PRINT=true` prints them.
+
+### Run records
+
+- `kindling.runs.enabled` (default `false`): Record each initialization in
+  the `system.runs` Delta table (stored like `system.watermarks`). Bootstrap
+  inserts the row when initialization completes (`status` `running`) and
+  updates it when an auto-run app ends (`succeeded` or `failed`, with
+  `ended_at`, `error` and the executor run ids). A killed run keeps
+  `running`. Columns: `run_id`, `started_at`, `ended_at`, `status`, `error`,
+  app name and version, platform and runtime version, Spark, Python and
+  Kindling versions, `runtime_match`, both fingerprints, `execution_ids` and
+  the full runtime manifest as JSON (`manifest`). Rows join to provenance
+  stamps on `run_id`. A failed write is logged as a warning and never stops
+  the run.
 
 ### Provenance
 
