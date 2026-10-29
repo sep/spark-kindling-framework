@@ -29,6 +29,7 @@ from tests.system.test_helpers import (
 APP_NAME = "provenance-test-app"
 EXPECTED_TESTS = [
     "runtime_manifest_populated",
+    "runtime_is_system_tested",
     "provenance_stamped",
     "provenance_only_difference_no_version",
     "scd2_close_keeps_stamp",

@@ -4,6 +4,20 @@ All notable changes to spark-kindling are documented here.
 
 ## Unreleased
 
+### Added
+
+- **Untested-runtime warning (runtime manifest phase 2).** The runtimes
+  Kindling is system-tested on (Databricks Runtime 17.3 LTS, Fabric Runtime
+  1.3, Azure Synapse Spark 3.5) and the key packages each ships now live in
+  the wheel as `kindling.supported_runtimes`; the CI extension check reads the
+  same list. At startup the runtime manifest records how the running runtime
+  compares (`runtime_match`: `tested`, `partial`, `untested` or `unchecked`),
+  shown on the manifest's INFO line and span. Bootstrap warns on an untested
+  runtime (another DBR version, serverless, another platform) and when a key
+  package or Python differs from the closest tested runtime at major.minor,
+  naming the packages. Vendor builds compare by their base release, conda
+  date-versioned builds are skipped, and standalone is never warned about.
+
 ### Fixed
 
 - **`kindling migrate` no longer plans removing framework-owned columns.**

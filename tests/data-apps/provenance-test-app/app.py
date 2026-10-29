@@ -6,6 +6,9 @@ provenance stamping on, on whatever platform the job runs, and checks:
 
 - runtime_manifest_populated: bootstrap built the runtime manifest
   (run_id, platform, Kindling version, fingerprints);
+- runtime_is_system_tested: the runtime manifest recognizes this platform
+  runtime as one Kindling is system-tested on (tested, or partial when a key
+  package moved at major.minor; never untested; unchecked on standalone);
 - provenance_stamped: every output row carries the stamp of the pipe that
   wrote it, with the manifest's run_id and the executor's execution id;
 - provenance_only_difference_no_version: re-running the pipe on unchanged
@@ -126,6 +129,20 @@ try:
         and manifest.runtime_fingerprint
         and manifest.package_fingerprint,
         manifest.summary() if manifest is not None else "no manifest",
+    )
+    match = manifest.runtime_match if manifest is not None else None
+    _check(
+        "runtime_is_system_tested",
+        match is not None
+        and match.status
+        in (("unchecked",) if platform_name == "standalone" else ("tested", "partial")),
+        f"runtime_match={match.label() if match else None}"
+        + (
+            " differences="
+            + ",".join(f"{d.name}:{d.installed}(tested {d.tested})" for d in match.differences)
+            if match and match.differences
+            else ""
+        ),
     )
 
     source_provider.merge_to_entity(

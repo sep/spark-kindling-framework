@@ -1792,8 +1792,17 @@ def _complete_runtime_manifest(config_service, platform, logger) -> None:
         )
         if manifest is not None:
             logger.info(manifest.summary())
+            _warn_untested_runtime(manifest, logger)
     except Exception as manifest_error:
         logger.warning(f"Runtime manifest could not be completed: {manifest_error}")
+
+
+def _warn_untested_runtime(manifest, logger) -> None:
+    """Warn when the runtime is not one Kindling is system-tested on, or
+    differs from the closest one at major.minor."""
+    match = manifest.runtime_match
+    if match is not None and match.should_warn:
+        logger.warning(match.describe(manifest.platform, manifest.platform_runtime_version))
 
 
 def _emit_runtime_manifest_span(config_service) -> None:

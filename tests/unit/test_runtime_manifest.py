@@ -202,8 +202,22 @@ class TestSummaryAndSpan:
             "extensions=[sdp=0.14.1]",
             "app=orders@1.2.0",
             f"runtime_fingerprint={manifest.runtime_fingerprint[:12]}",
+            "runtime_match=untested",
         ):
             assert expected in line, expected
+
+    def test_the_runtime_match_is_recorded(self):
+        # DBR 17.3 ships Spark 4.0; INSTALLED has pyspark 3.5.1.
+        manifest = _completed(
+            config_service=_Config(
+                {"kindling.runtime.features.databricks.runtime_version": "17.3.x-scala2.13"}
+            )
+        )
+        assert manifest.runtime_match.label() == "partial:dbr17.3"
+        assert "pyspark 3.5.1 (tested 4.0.0)" in manifest.runtime_match.describe("databricks", None)
+        assert manifest.to_dict()["runtime_match"]["status"] == "partial"
+        details = manifest.span_details()
+        assert (details["runtime_match"], details["tested_runtime"]) == ("partial", "dbr17.3")
 
     def test_span_details_are_scalar_strings(self):
         details = _completed().span_details()
@@ -272,6 +286,22 @@ class TestBootstrapHooks:
         (line,), _ = logger.info.call_args
         assert line.startswith("Runtime manifest: run_id=")
         assert "platform=standalone" in line
+
+    def test_an_untested_runtime_warns(self, monkeypatch):
+        rm.begin_runtime_manifest()
+        monkeypatch.setattr(bootstrap_module, "_installed_distribution_versions", lambda: INSTALLED)
+        config = _Config({"kindling.runtime.features.databricks.runtime_version": "15.4"})
+        logger = MagicMock()
+        bootstrap_module._complete_runtime_manifest(config, "databricks", logger)
+        (message,), _ = logger.warning.call_args
+        assert message.startswith("Untested runtime: databricks 15.4")
+
+    def test_standalone_never_warns(self, monkeypatch):
+        rm.begin_runtime_manifest()
+        monkeypatch.setattr(bootstrap_module, "_installed_distribution_versions", lambda: INSTALLED)
+        logger = MagicMock()
+        bootstrap_module._complete_runtime_manifest(_Config(), "standalone", logger)
+        logger.warning.assert_not_called()
 
     def test_complete_never_breaks_bootstrap(self, monkeypatch):
         rm.begin_runtime_manifest()
