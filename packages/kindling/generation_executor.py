@@ -692,6 +692,9 @@ class GenerationExecutor(SignalEmitter):
         self._auto_cache_enabled = False
         self._cache_recommendations: Dict[str, str] = {}
         self._cached_entities: Dict[str, Any] = {}
+        # entity id -> the input version recorded when the cached frame was
+        # read (provenance input_versions), for every pipe that reuses it.
+        self._cached_versions: Dict[str, Optional[str]] = {}
         self._cache_hits_by_entity: Dict[str, int] = {}
         self._cache_misses_by_entity: Dict[str, int] = {}
         self._cache_hits = 0
@@ -1202,6 +1205,7 @@ class GenerationExecutor(SignalEmitter):
                 entity_reader=entity_reader,
                 use_watermark=pipe.use_watermark and entity_id in driving,
                 run_id=run_id,
+                pipe=pipe,
             )
 
         if driving_reads_all_empty(pipe, input_entities):
@@ -1221,15 +1225,30 @@ class GenerationExecutor(SignalEmitter):
         entity_reader: Callable[[Any, bool], Any],
         use_watermark: bool,
         run_id: str,
+        pipe: Optional[PipeMetadata] = None,
     ) -> Any:
-        """Read an input entity with shared-entity cache tracking."""
+        """Read an input entity with shared-entity cache tracking.
+
+        A reused frame brings the input version recorded when it was read
+        (provenance ``input_versions``) to the consuming pipe. A pipe whose
+        output is stamped reads for itself when the cached frame has no
+        version, so its stamp is never missing the input."""
         entity = self.entity_registry.get_entity_definition(entity_id)
 
         if not self._cache_enabled or entity_id not in self._cache_recommendations:
             return entity_reader(entity, use_watermark)
 
+        strategy = self.persist_strategy
         with self._cache_lock:
+            cached_version = self._cached_versions.get(entity_id)
+            if entity_id in self._cached_entities and pipe is not None and cached_version is None:
+                records = getattr(strategy, "records_input_versions", None)
+                if callable(records) and records(pipe):
+                    return entity_reader(entity, use_watermark)
             if entity_id in self._cached_entities:
+                record = getattr(strategy, "record_input_version", None)
+                if pipe is not None and cached_version is not None and callable(record):
+                    record(pipe.pipeid, entity_id, cached_version)
                 self._cache_hits += 1
                 self._cache_hits_by_entity[entity_id] = (
                     self._cache_hits_by_entity.get(entity_id, 0) + 1
@@ -1244,6 +1263,12 @@ class GenerationExecutor(SignalEmitter):
 
             frame = entity_reader(entity, use_watermark)
             self._cached_entities[entity_id] = frame
+            recorded = getattr(strategy, "recorded_input_version", None)
+            self._cached_versions[entity_id] = (
+                recorded(pipe.pipeid, entity_id)
+                if pipe is not None and callable(recorded)
+                else None
+            )
             self._cache_misses += 1
             self._cache_misses_by_entity[entity_id] = (
                 self._cache_misses_by_entity.get(entity_id, 0) + 1

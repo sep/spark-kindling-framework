@@ -612,6 +612,70 @@ class TestBatchExecution:
         signal_provider.get_signal.assert_any_call("orchestrator.cache_hit")
         signal_provider.get_signal.assert_any_call("orchestrator.cache_miss")
 
+    class _VersionStrategy:
+        """Records an input version per pipe read, as SimpleReadPersistStrategy does."""
+
+        def __init__(self, version, stamped):
+            self.version, self.stamped = version, stamped
+            self.reads, self.recorded = [], {}
+
+        def create_pipe_entity_reader(self, pipe):
+            def reader(entity, usewm):
+                self.reads.append(pipe.pipeid)
+                if self.version is not None:
+                    self.recorded[(pipe.pipeid, entity.entityid)] = self.version
+                return Mock()
+
+            return reader
+
+        def create_pipe_persist_activator(self, pipe):
+            return Mock()
+
+        def recorded_input_version(self, pipe_id, entity_id):
+            return self.recorded.get((pipe_id, entity_id))
+
+        def record_input_version(self, pipe_id, entity_id, version):
+            self.recorded[(pipe_id, entity_id)] = version
+
+        def records_input_versions(self, pipe):
+            return self.stamped
+
+    @pytest.mark.parametrize(
+        "version, stamped, reads, versions",
+        [
+            # The reused frame brings its version to the second pipe.
+            ("5", True, 1, {"pipe1": "5", "pipe2": "5"}),
+            # No version to share and a stamped consumer: it reads for itself.
+            (None, True, 2, {}),
+            # No version, unstamped consumers: plain reuse.
+            (None, False, 1, {}),
+        ],
+    )
+    def test_shared_input_cache_carries_the_input_version(
+        self, executor, pipes_registry, entity_registry, version, stamped, reads, versions
+    ):
+        pipe1 = make_pipe("pipe1", inputs=["entity.shared"], output="entity.out1")
+        pipe2 = make_pipe("pipe2", inputs=["entity.shared"], output="entity.out2")
+        pipes_registry.get_pipe_definition.side_effect = lambda pid: {
+            "pipe1": pipe1,
+            "pipe2": pipe2,
+        }[pid]
+        entity_registry.get_entity_definition.side_effect = lambda eid: Mock(entityid=eid)
+        strategy = self._VersionStrategy(version, stamped)
+        executor.persist_strategy = strategy
+
+        plan = ExecutionPlan(
+            pipe_ids=["pipe1", "pipe2"],
+            generations=[Generation(number=0, pipe_ids=["pipe1", "pipe2"], dependencies=[])],
+            graph=make_graph_with_shared_input(),
+            strategy="batch",
+            metadata={"cache_recommendations": {"entity.shared": "MEMORY_AND_DISK"}},
+        )
+
+        assert executor.execute(plan).success_count == 2
+        assert len(strategy.reads) == reads
+        assert {p: v for (p, _), v in strategy.recorded.items()} == versions
+
     def test_batch_auto_cache_persists_and_unpersists_shared_frame(
         self, executor, pipes_registry, persist_strategy, entity_registry
     ):

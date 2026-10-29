@@ -469,9 +469,11 @@ class ResolvedRead:
     ownership of the read. ``df`` may be None, meaning "resolved: no new
     data" for one source contributing to the pipe's skip decision — distinct
     from no handler resolving at all, which falls through to an ordinary full
-    provider read."""
+    provider read. ``version`` is the cursor the read covers (the input's
+    version for provenance ``input_versions``), when known."""
 
     df: Optional[DataFrame]
+    version: Optional[str] = None
 
 
 @GlobalInjector.singleton_autobind()
@@ -639,7 +641,7 @@ class WatermarkAspect(SignalEmitter):
             pending_sources[entity.entityid] = cursor
         else:
             self._clear_capture(pipe.pipeid, entity.entityid)
-        return ResolvedRead(df=df)
+        return ResolvedRead(df=df, version=cursor)
 
     def _on_after_persist(self, sender, *, pipe_id=None, persist_id=None, **kwargs):
         pending_sources = self._pending.get(pipe_id)

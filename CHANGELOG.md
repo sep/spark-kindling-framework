@@ -6,6 +6,17 @@ All notable changes to spark-kindling are documented here.
 
 ### Added
 
+- **Provenance `input_versions` (phase 2).** A stamped batch write records
+  the version of each input its pipe read, in the stamp's `input_versions`
+  map. A watermarked input records the cursor its read covers. A Delta input
+  is read pinned at the table version it records (time travel), so the
+  stamp names exactly the snapshot the pipe read, even when a commit lands
+  before the write; if the version lookup fails, the input is read normally
+  and left out. Inputs of other providers are left out, and streaming and
+  SDP stamps keep the map null. Reads only pin when the pipe's output is
+  stamped. Providers can offer versioned reads with the new
+  `VersionedReadableEntityProvider` interface; `ResolvedRead` gains an
+  optional `version`.
 - **Untested-runtime warning (runtime manifest phase 2).** The runtimes
   Kindling is system-tested on (Databricks Runtime 17.3 LTS, Fabric Runtime
   1.3, Azure Synapse Spark 3.5) and the key packages each ships now live in

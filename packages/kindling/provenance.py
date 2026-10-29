@@ -26,7 +26,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 from injector import inject
 from kindling.data_entities import (
@@ -103,6 +103,8 @@ class ProvenanceStamp:
     platform: Optional[str] = None
     kindling_version: Optional[str] = None
     input_entity_ids: Tuple[str, ...] = ()
+    #: (entity id, version read) pairs; None: no version known (a null map).
+    input_versions: Optional[Tuple[Tuple[str, str], ...]] = None
     tags: Tuple[Tuple[str, str], ...] = ()
 
 
@@ -124,6 +126,11 @@ def provenance_column_expr(stamp: ProvenanceStamp) -> Column:
         if stamp.input_entity_ids
         else F.array()
     ).cast(ArrayType(StringType(), True))
+    input_versions = (
+        F.create_map(*[F.lit(part) for pair in stamp.input_versions for part in pair])
+        if stamp.input_versions
+        else F.lit(None)
+    ).cast(_STRING_MAP)
     tag_args = [F.lit(part) for pair in stamp.tags for part in pair]
     tags = (F.create_map(*tag_args) if tag_args else F.create_map()).cast(_STRING_MAP)
     fields = [_string_lit(getattr(stamp, name)).alias(name) for name in _STRING_FIELDS]
@@ -132,7 +139,7 @@ def provenance_column_expr(stamp: ProvenanceStamp) -> Column:
     fields.extend(
         [
             input_ids.alias("input_entity_ids"),
-            F.lit(None).cast(_STRING_MAP).alias("input_versions"),
+            input_versions.alias("input_versions"),
             tags.alias("tags"),
             F.lit(PROVENANCE_SCHEMA_VERSION).cast(IntegerType()).alias("schema_version"),
         ]
@@ -297,6 +304,7 @@ def build_provenance_stamp(
     persist_id: Optional[str] = None,
     execution_id: Optional[str] = None,
     processed_at: Optional[datetime] = None,
+    input_versions: Optional[Mapping[str, str]] = None,
     config_service=None,
 ) -> ProvenanceStamp:
     """The stamp for one write of ``pipe`` into ``entity``.
@@ -304,7 +312,8 @@ def build_provenance_stamp(
     ``run_id`` is the runtime manifest's per-initialization id
     (``kindling.runtime_manifest``); it stays null for a declared (SDP)
     dataset, whose values are bound at declaration time, not by a run.
-    ``execution_id`` is the executor's run id.
+    ``execution_id`` is the executor's run id. ``input_versions`` maps an
+    input entity id to the version the write read (batch only).
     """
     from kindling.runtime_manifest import current_run_id
 
@@ -321,6 +330,12 @@ def build_provenance_stamp(
             tuple(str(entity_id) for entity_id in input_ids)
             if isinstance(input_ids, (list, tuple))
             else ()
+        ),
+        input_versions=(
+            tuple(sorted((str(k), str(v)) for k, v in input_versions.items() if v is not None))
+            or None
+            if input_versions
+            else None
         ),
         tags=selected_pipe_tags(pipe, entity),
         **_runtime_identity(config_service),

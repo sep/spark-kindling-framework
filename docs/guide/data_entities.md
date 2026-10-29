@@ -1111,7 +1111,7 @@ rejected. Pipe tags that held a resolved secret are never copied.
 | `mode` | `batch`, `streaming` or `sdp` |
 | `app_name`, `environment`, `platform`, `kindling_version` | Best effort; null when unknown |
 | `input_entity_ids` | The pipe's inputs |
-| `input_versions` | Reserved for the version of each input read; null for now |
+| `input_versions` | Batch writes: the version of each input read (`map<entity id, version>`). A watermarked input records the watermark cursor its read covers; a Delta input is read pinned at the table version it records, so the version names exactly the data read. Other providers' inputs are absent; null when no input has a version, and for streaming and SDP |
 | `tags` | The allow-listed pipe tags (`map<string,string>`) |
 | `schema_version` | `1` |
 
