@@ -58,8 +58,12 @@ def _adls_credential_configured() -> bool:
 def _is_auth_failure(error: Exception) -> bool:
     # azure-core's ClientAuthenticationError (azure-identity's
     # CredentialUnavailableError subclasses it), matched by name so this
-    # module doesn't need azure-core.
-    return any(cls.__name__ == "ClientAuthenticationError" for cls in type(error).__mro__)
+    # module doesn't need azure-core. A storage account's own 401/403 raises
+    # it too, but with a response: that's one account rejecting the request,
+    # not a credential chain that can't get a token here.
+    return getattr(error, "response", None) is None and any(
+        cls.__name__ == "ClientAuthenticationError" for cls in type(error).__mro__
+    )
 
 
 def _resolve_dbutils():

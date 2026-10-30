@@ -24,6 +24,10 @@ DIR = "abfss://artifacts@account.dfs.core.windows.net/data-apps/app/"
 class ClientAuthenticationError(Exception):
     """Stands in for azure.core.exceptions.ClientAuthenticationError."""
 
+    def __init__(self, message, response=None):
+        super().__init__(message)
+        self.response = response
+
 
 class CredentialUnavailableError(ClientAuthenticationError):
     """Stands in for azure.identity.CredentialUnavailableError."""
@@ -147,6 +151,19 @@ class TestAuthenticationFailure:
             with pytest.raises(Exception, match="connection reset"):
                 svc.read(PATH)
         assert adls.call_count == 2
+
+    def test_a_storage_account_rejection_is_not_remembered(self, dbutils, adls):
+        dbutils.fs.head.side_effect = Exception("PERMISSION_DENIED")
+        _download_failing_with(
+            adls,
+            ClientAuthenticationError("AuthorizationFailure", response=MagicMock(status_code=403)),
+        )
+        svc = _service()
+
+        for _ in range(2):
+            with pytest.raises(ClientAuthenticationError):
+                svc.read(PATH)
+        assert adls.call_count == 2, "one account's 403 must not block the SDK for others"
 
     def test_a_storage_key_still_reaches_the_adls_sdk(self, dbutils, adls, monkeypatch):
         platform_databricks._adls_auth_failure = ClientAuthenticationError("earlier")
