@@ -56,7 +56,10 @@ All notable changes to spark-kindling are documented here.
   that wait to each app run: about 5.5 minutes for a typical app. A missing
   file or directory is now reported at once, and after one ADLS SDK
   authentication failure the fallback is skipped for the rest of the process
-  (unless a storage key is set).
+  (unless a storage key is set). `list()` cross-checks an `abfss://` listing
+  with the ADLS SDK only when a storage key or an Azure client credential is
+  configured, so listings (file ingestion, app dependencies) no longer pay
+  that wait either.
 - **`kindling migrate` no longer plans removing framework-owned columns.**
   It compared tables with the declared schema only, so on an existing table
   it planned a destructive removal of the SCD2 temporal columns

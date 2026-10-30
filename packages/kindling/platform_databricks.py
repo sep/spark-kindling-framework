@@ -39,6 +39,22 @@ def _is_not_found_error(error: Exception) -> bool:
     )
 
 
+def _adls_credential_configured() -> bool:
+    """Whether the ADLS SDK has a credential besides managed identity: a
+    storage key, or the environment variables DefaultAzureCredential's
+    environment and workload identity credentials read."""
+    return any(
+        all(os.getenv(name) for name in names)
+        for names in (
+            ("AZURE_STORAGE_KEY",),
+            ("AZURE_STORAGE_ACCOUNT_KEY",),
+            ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"),
+            ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_CERTIFICATE_PATH"),
+            ("AZURE_FEDERATED_TOKEN_FILE",),
+        )
+    )
+
+
 def _is_auth_failure(error: Exception) -> bool:
     # azure-core's ClientAuthenticationError (azure-identity's
     # CredentialUnavailableError subclasses it), matched by name so this
@@ -595,10 +611,13 @@ class DatabricksService(PlatformService):
                 files = dbutils.fs.ls(path)
                 result = [f.name for f in files]
                 if result or not path.startswith("abfss://"):
-                    if result and path.startswith("abfss://"):
+                    if result and path.startswith("abfss://") and _adls_credential_configured():
                         # Cross-check with ADLS SDK to detect listing discrepancies.
                         # dbutils.fs.ls() on UC clusters can return stale results for
                         # recently-uploaded files due to caching or access-layer differences.
+                        # Only with a configured credential: otherwise the SDK can
+                        # only try managed identity, which a cluster normally lacks,
+                        # and waits out its retries (about 80 seconds) to find that.
                         try:
                             account_url, container, remote_path = self._parse_abfss(path)
                             remote_path = remote_path.rstrip("/")

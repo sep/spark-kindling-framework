@@ -58,10 +58,27 @@ def adls(monkeypatch):
     module = types.ModuleType("azure.storage.filedatalake")
     module.DataLakeServiceClient = MagicMock(name="DataLakeServiceClient")
     monkeypatch.setitem(sys.modules, "azure.storage.filedatalake", module)
-    monkeypatch.delenv("AZURE_STORAGE_KEY", raising=False)
-    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT_KEY", raising=False)
+    for name in (
+        "AZURE_STORAGE_KEY",
+        "AZURE_STORAGE_ACCOUNT_KEY",
+        "AZURE_TENANT_ID",
+        "AZURE_CLIENT_ID",
+        "AZURE_CLIENT_SECRET",
+        "AZURE_CLIENT_CERTIFICATE_PATH",
+        "AZURE_FEDERATED_TOKEN_FILE",
+    ):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(DatabricksService, "_adls_credential", lambda self: object())
     return module.DataLakeServiceClient
+
+
+def _entries(*names):
+    entries = []
+    for name in names:
+        entry = MagicMock()
+        entry.name = name
+        entries.append(entry)
+    return entries
 
 
 def _not_found():
@@ -139,3 +156,38 @@ class TestAuthenticationFailure:
         file_client.return_value.download_file.return_value.readall.return_value = b"ok"
 
         assert _service().read(PATH) == "ok"
+
+
+class TestListCrossCheck:
+    """list() cross-checks a dbutils listing of an abfss:// directory with the
+    ADLS SDK (dbutils can list stale results on UC clusters), but only with a
+    configured credential: without one, the SDK's first call waits out the
+    managed identity retries."""
+
+    def test_no_cross_check_without_a_configured_credential(self, dbutils, adls):
+        dbutils.fs.ls.return_value = _entries("a.whl", "b.whl")
+
+        assert _service().list(DIR) == ["a.whl", "b.whl"]
+        adls.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"AZURE_STORAGE_KEY": "key"},
+            {"AZURE_TENANT_ID": "t", "AZURE_CLIENT_ID": "c", "AZURE_CLIENT_SECRET": "s"},
+        ],
+    )
+    def test_a_configured_credential_replaces_a_stale_listing(
+        self, dbutils, adls, monkeypatch, env
+    ):
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        dbutils.fs.ls.return_value = _entries("a.whl")
+        sdk_paths = []
+        for name in ("a.whl", "b.whl"):
+            item = MagicMock(is_directory=False)
+            item.name = f"data-apps/app/{name}"
+            sdk_paths.append(item)
+        adls.return_value.get_file_system_client.return_value.get_paths.return_value = sdk_paths
+
+        assert _service().list(DIR) == ["a.whl", "b.whl"]
