@@ -20,6 +20,51 @@ _dbutils_runtime_bridge_cache = None
 _dbutils_runtime_bridge_attempted = False
 _dbutils_bridge_logger = logging.getLogger("kindling.platform_databricks")
 
+# The first ADLS SDK authentication failure in this process. A cluster with no
+# Azure credential fails every ADLS SDK call the same way, each after waiting
+# out the credential chain's managed identity retries (about 80 seconds).
+_adls_auth_failure: Optional[Exception] = None
+
+# How dbutils reports a missing path (a Java FileNotFoundException via py4j).
+_NOT_FOUND_MARKERS = (
+    "FileNotFoundException",
+    "The specified path does not exist",
+    "No such file or directory",
+)
+
+
+def _is_not_found_error(error: Exception) -> bool:
+    return isinstance(error, FileNotFoundError) or any(
+        marker in str(error) for marker in _NOT_FOUND_MARKERS
+    )
+
+
+def _adls_credential_configured() -> bool:
+    """Whether the ADLS SDK has a credential besides managed identity: a
+    storage key, or the environment variables DefaultAzureCredential's
+    environment and workload identity credentials read."""
+    return any(
+        all(os.getenv(name) for name in names)
+        for names in (
+            ("AZURE_STORAGE_KEY",),
+            ("AZURE_STORAGE_ACCOUNT_KEY",),
+            ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"),
+            ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_CERTIFICATE_PATH"),
+            ("AZURE_FEDERATED_TOKEN_FILE",),
+        )
+    )
+
+
+def _is_auth_failure(error: Exception) -> bool:
+    # azure-core's ClientAuthenticationError (azure-identity's
+    # CredentialUnavailableError subclasses it), matched by name so this
+    # module doesn't need azure-core. A storage account's own 401/403 raises
+    # it too, but with a response: that's one account rejecting the request,
+    # not a credential chain that can't get a token here.
+    return getattr(error, "response", None) is None and any(
+        cls.__name__ == "ClientAuthenticationError" for cls in type(error).__mro__
+    )
+
 
 def _resolve_dbutils():
     """Best-effort dbutils handle: notebook global first, SDK runtime bridge second.
@@ -402,12 +447,30 @@ class DatabricksService(PlatformService):
         return DefaultAzureCredential()
 
     def _adls_fs_client(self, account_url: str, container: str):
-        """Return a DataLake FileSystemClient."""
+        """Return a DataLake FileSystemClient.
+
+        Raises at once when an ADLS SDK call in this process has already
+        failed to authenticate and no storage key is set: it would fail the
+        same way, after the credential chain's retries.
+        """
         from azure.storage.filedatalake import DataLakeServiceClient
 
+        credential = self._adls_credential()
+        if _adls_auth_failure is not None and not isinstance(credential, str):
+            raise RuntimeError(f"ADLS SDK cannot authenticate here: {_adls_auth_failure}")
         return DataLakeServiceClient(
-            account_url=account_url, credential=self._adls_credential()
+            account_url=account_url, credential=credential
         ).get_file_system_client(container)
+
+    def _note_adls_failure(self, error: Exception) -> None:
+        """Remember the first ADLS SDK authentication failure in this process."""
+        global _adls_auth_failure
+        if _adls_auth_failure is None and _is_auth_failure(error):
+            _adls_auth_failure = error
+            self.logger.warning(
+                "The ADLS SDK fallback cannot authenticate on this cluster; skipping it "
+                f"for the rest of this process: {str(error).splitlines()[0]}"
+            )
 
     @staticmethod
     def _parse_abfss(path: str):
@@ -482,6 +545,7 @@ class DatabricksService(PlatformService):
                     f.write(fs_client.get_file_client(remote_path).download_file().readall())
                 return
             except Exception as exc:
+                self._note_adls_failure(exc)
                 raise Exception(f"All copy strategies failed for {source}: {exc}") from exc
 
         if not dbutils:
@@ -496,13 +560,21 @@ class DatabricksService(PlatformService):
             if dbutils:
                 try:
                     return dbutils.fs.head(path, 1024 * 1024 * 10)  # 10MB max
-                except Exception:
-                    pass  # fall through to ADLS SDK
+                except Exception as exc:
+                    # A missing file (an optional app file, say) is missing
+                    # through the ADLS SDK too.
+                    if _is_not_found_error(exc):
+                        raise FileNotFoundError(path) from exc
+                    # Anything else falls through to the ADLS SDK
 
             if path.startswith("abfss://"):
                 account_url, container, remote_path = self._parse_abfss(path)
-                fs_client = self._adls_fs_client(account_url, container)
-                data = fs_client.get_file_client(remote_path).download_file().readall()
+                try:
+                    fs_client = self._adls_fs_client(account_url, container)
+                    data = fs_client.get_file_client(remote_path).download_file().readall()
+                except Exception as exc:
+                    self._note_adls_failure(exc)
+                    raise
                 return data.decode(encoding) if encoding else data
 
         # For local paths, use standard file operations
@@ -543,10 +615,13 @@ class DatabricksService(PlatformService):
                 files = dbutils.fs.ls(path)
                 result = [f.name for f in files]
                 if result or not path.startswith("abfss://"):
-                    if result and path.startswith("abfss://"):
+                    if result and path.startswith("abfss://") and _adls_credential_configured():
                         # Cross-check with ADLS SDK to detect listing discrepancies.
                         # dbutils.fs.ls() on UC clusters can return stale results for
                         # recently-uploaded files due to caching or access-layer differences.
+                        # Only with a configured credential: otherwise the SDK can
+                        # only try managed identity, which a cluster normally lacks,
+                        # and waits out its retries (about 80 seconds) to find that.
                         try:
                             account_url, container, remote_path = self._parse_abfss(path)
                             remote_path = remote_path.rstrip("/")
@@ -564,11 +639,14 @@ class DatabricksService(PlatformService):
                                 )
                                 return sdk_result
                         except Exception as exc:
+                            self._note_adls_failure(exc)
                             self.logger.debug(f"[list] SDK cross-check failed (non-fatal): {exc}")
                     return result
                 # Empty result for ABFS — may be UC access issue; fall through to SDK
-            except Exception:
-                pass  # fall through to ADLS SDK
+            except Exception as exc:
+                if _is_not_found_error(exc):
+                    return []
+                # Anything else falls through to the ADLS SDK
 
         if path.startswith("abfss://"):
             try:
@@ -581,6 +659,7 @@ class DatabricksService(PlatformService):
                     if not item.is_directory
                 ]
             except Exception as exc:
+                self._note_adls_failure(exc)
                 self.logger.warning(f"ADLS list failed for {path}: {exc}")
                 return []
 
