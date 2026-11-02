@@ -678,6 +678,8 @@ jobs:
   start-databricks-cluster:
     name: Start Databricks Cluster
     runs-on: ubuntu-latest
+    # Best effort: the system-test preflight starts the cluster anyway.
+    continue-on-error: true
     needs: [classify-changes, build-ci-image]
     container:
       image: ${{ needs.build-ci-image.outputs.image }}

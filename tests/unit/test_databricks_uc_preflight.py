@@ -45,3 +45,13 @@ def test_start_cluster_never_raises(capsys):
     preflight.start_cluster(client, "c1")
 
     assert "Could not start Databricks cluster c1: 403 Forbidden" in capsys.readouterr().out
+
+
+def test_cluster_warm_up_job_cannot_fail_ci():
+    import yaml
+
+    workflow = yaml.safe_load(
+        (_SCRIPT_PATH.parents[1] / ".github" / "workflows" / "ci.yml").read_text()
+    )
+
+    assert workflow["jobs"]["start-databricks-cluster"]["continue-on-error"] is True
