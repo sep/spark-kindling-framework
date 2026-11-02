@@ -64,9 +64,12 @@ def _config_the_bootstrap_receives(config_overrides):
         ("@secret my-secret", "@secret my-secret"),
         ('{"k": "v w"}', {"k": "v w"}),
         ("  padded value ", "  padded value "),
+        ("customer's data", "customer's data"),
+        ("customer's", "customer's"),
+        (["it's", "b"], ["it's", "b"]),
     ],
 )
-def test_values_with_spaces_reach_the_bootstrap_whole(value, expected):
+def test_values_reach_the_bootstrap_whole(value, expected):
     assert _config_the_bootstrap_receives({"some_setting": value})["some_setting"] == expected
 
 

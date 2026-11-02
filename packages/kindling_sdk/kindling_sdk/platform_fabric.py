@@ -1,7 +1,6 @@
 import base64
 import json
 import os
-import shlex
 import subprocess
 import sys
 import time
@@ -607,13 +606,10 @@ class FabricAPI(PlatformAPI):
             bootstrap_params.update(flatten_dict(overrides))
 
         # Build command line args using config:key=value convention. Fabric
-        # passes quotes through literally (the bootstrap strips an outer pair)
-        # and splits on whitespace regardless, hence _without_whitespace.
+        # splits on whitespace and does no shell unquoting, so arguments are
+        # not shell-quoted; _without_whitespace keeps each one in one piece.
         config_args = " ".join(
-            [
-                shlex.quote(f"config:{k}={_without_whitespace(str(v))}")
-                for k, v in bootstrap_params.items()
-            ]
+            [f"config:{k}={_without_whitespace(str(v))}" for k, v in bootstrap_params.items()]
         )
 
         # Combine with any additional command line args
