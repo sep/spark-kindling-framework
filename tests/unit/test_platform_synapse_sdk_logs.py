@@ -77,3 +77,61 @@ def test_make_request_retries_on_synapse_throttling(monkeypatch):
     assert response is success
     assert request_mock.call_count == 2
     sleep_mock.assert_called_with(1.0)
+
+
+class _FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def _stream_after_completion(monkeypatch, log_lines):
+    """Seconds stream_stdout_logs spends after the job is already COMPLETED."""
+    clock = _FakeClock()
+    monkeypatch.setattr("kindling_sdk.platform_synapse.time.time", clock.time)
+    monkeypatch.setattr("kindling_sdk.platform_synapse.time.sleep", clock.sleep)
+
+    api = SynapseAPI.__new__(SynapseAPI)
+    api._diag_root_missing = set()
+    api.get_job_status = MagicMock(return_value={"status": "COMPLETED", "app_id": "app_1"})
+    chunks = iter([(log_lines, len(log_lines))])
+    api._read_stdout_chunk_synapse = MagicMock(
+        side_effect=lambda run_id, app_id, offset: next(chunks, ([], offset))
+    )
+
+    start = clock.now
+    lines = api.stream_stdout_logs("job", "42", poll_interval=10.0)
+    assert lines == log_lines
+    return clock.now - start
+
+
+def test_stream_stops_once_the_bootstrap_reports_the_app_finished(monkeypatch):
+    # The fi-static app prints no TEST_ID marker; its log ends with the
+    # bootstrap's own completion line.
+    log = [
+        "🚀 BOOTSTRAP FUNCTION CALLED - 2026-11-02 18:50:46.486",
+        "[stderr] INFO KindlingBootstrap: INFO: (KindlingBootstrap) Auto-running app: fi",
+        "[stderr] WARN KindlingBootstrap: WARN: (KindlingBootstrap) App 'fi' completed successfully",
+    ]
+
+    assert _stream_after_completion(monkeypatch, log) < 60
+
+
+def test_stream_stops_once_the_bootstrap_reports_the_app_failed(monkeypatch):
+    log = [
+        "[stderr] ERROR KindlingBootstrap: ERROR: (KindlingBootstrap) App execution failed: boom",
+    ]
+
+    assert _stream_after_completion(monkeypatch, log) < 60
+
+
+def test_stream_waits_for_app_output_after_only_the_batch_payload(monkeypatch):
+    # Batch payload lines alone don't show the app's log has materialized yet.
+    log = ["stdout: ", "stderr: ", "YARN Diagnostics: "]
+
+    assert _stream_after_completion(monkeypatch, log) >= 600

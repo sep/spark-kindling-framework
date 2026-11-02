@@ -1497,9 +1497,20 @@ class SynapseAPI(PlatformAPI):
 
                         if not seen_useful and all_logs:
                             # Wait for actual app output (TEST_ID markers) instead of exiting just
-                            # because we got minimal batch payload logs.
+                            # because we got minimal batch payload logs. The bootstrap's own
+                            # end-of-app line counts too: an app that prints no TEST_ID would
+                            # otherwise sit out the whole grace period after it finished.
                             upper = "\n".join(all_logs[-200:]).upper()
-                            if "TEST_ID=" in upper or "BOOTSTRAP SCRIPT" in upper:
+                            if any(
+                                marker in upper
+                                for marker in (
+                                    "TEST_ID=",
+                                    "BOOTSTRAP SCRIPT",
+                                    "COMPLETED SUCCESSFULLY",
+                                    "APP EXECUTION FAILED",
+                                    "FRAMEWORK INITIALIZATION FAILED",
+                                )
+                            ):
                                 seen_useful = True
 
                         # If we've seen useful output, allow an early exit once logs have stopped changing.
