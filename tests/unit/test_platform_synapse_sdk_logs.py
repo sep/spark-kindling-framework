@@ -90,8 +90,11 @@ class _FakeClock:
         self.now += seconds
 
 
-def _stream_after_completion(monkeypatch, log_lines):
-    """Seconds stream_stdout_logs spends after the job is already COMPLETED."""
+def _stream_after_completion(monkeypatch, log_lines, later_chunks=()):
+    """Seconds stream_stdout_logs spends after the job is already COMPLETED.
+
+    later_chunks: lines each later poll returns ([] for a poll with nothing new).
+    """
     clock = _FakeClock()
     monkeypatch.setattr("kindling_sdk.platform_synapse.time.time", clock.time)
     monkeypatch.setattr("kindling_sdk.platform_synapse.time.sleep", clock.sleep)
@@ -99,14 +102,16 @@ def _stream_after_completion(monkeypatch, log_lines):
     api = SynapseAPI.__new__(SynapseAPI)
     api._diag_root_missing = set()
     api.get_job_status = MagicMock(return_value={"status": "COMPLETED", "app_id": "app_1"})
-    chunks = iter([(log_lines, len(log_lines))])
+    chunks = iter([log_lines, *later_chunks])
     api._read_stdout_chunk_synapse = MagicMock(
-        side_effect=lambda run_id, app_id, offset: next(chunks, ([], offset))
+        side_effect=lambda run_id, app_id, offset: (lambda new: (new, offset + len(new)))(
+            next(chunks, [])
+        )
     )
 
     start = clock.now
     lines = api.stream_stdout_logs("job", "42", poll_interval=10.0)
-    assert lines == log_lines
+    assert lines == [line for chunk in (log_lines, *later_chunks) for line in chunk]
     return clock.now - start
 
 
@@ -135,3 +140,12 @@ def test_stream_waits_for_app_output_after_only_the_batch_payload(monkeypatch):
     log = ["stdout: ", "stderr: ", "YARN Diagnostics: "]
 
     assert _stream_after_completion(monkeypatch, log) >= 600
+
+
+def test_stream_keeps_waiting_past_other_completed_successfully_lines(monkeypatch):
+    # A pip install also "completes successfully"; the app's own output arrives later.
+    log = ["[stderr] INFO: (PipManager) Pip command completed successfully in 4.2s"]
+    later = [[], [], [], ["WARN: (KindlingBootstrap) App 'fi' completed successfully"]]
+
+    # The assertion inside the helper: every line, the late one included, was read.
+    _stream_after_completion(monkeypatch, log, later)
