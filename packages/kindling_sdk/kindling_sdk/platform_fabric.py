@@ -49,6 +49,27 @@ def _emit_stream_progress(message: str) -> None:
 
 
 @PlatformAPIRegistry.register("fabric")
+def _without_whitespace(value: str) -> str:
+    """A config:key=value argument value that survives Fabric's argument split.
+
+    Fabric splits a Spark job definition's commandLineArguments on whitespace
+    and keeps quote characters literally, so a value with a space arrives as
+    broken pieces the bootstrap ignores. Such a value goes as JSON with its
+    spaces escaped (\\u0020), which the bootstrap decodes: a JSON object or
+    array as itself, anything else as a quoted JSON string.
+    """
+    if not any(char.isspace() for char in value):
+        return value
+    stripped = value.strip()
+    if stripped[:1] in ("{", "["):
+        try:
+            compact = json.dumps(json.loads(stripped), separators=(",", ":"))
+            return compact.replace(" ", "\\u0020")
+        except ValueError:
+            pass
+    return json.dumps(value).replace(" ", "\\u0020")
+
+
 class FabricAPI(PlatformAPI):
     """
     Microsoft Fabric REST API client for remote operations.
@@ -583,10 +604,14 @@ class FabricAPI(PlatformAPI):
 
             bootstrap_params.update(flatten_dict(overrides))
 
-        # Build command line args using config:key=value convention.
-        # Quote each arg so values with spaces (e.g. "@secret my-secret") survive transport.
+        # Build command line args using config:key=value convention. Fabric
+        # passes quotes through literally (the bootstrap strips an outer pair)
+        # and splits on whitespace regardless, hence _without_whitespace.
         config_args = " ".join(
-            [shlex.quote(f"config:{k}={v}") for k, v in bootstrap_params.items()]
+            [
+                shlex.quote(f"config:{k}={_without_whitespace(str(v))}")
+                for k, v in bootstrap_params.items()
+            ]
         )
 
         # Combine with any additional command line args
