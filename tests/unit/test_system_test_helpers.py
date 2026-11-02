@@ -181,6 +181,8 @@ def test_apply_env_config_overrides_disables_the_fabric_intelligent_cache(monkey
     # the bootstrap parses config:spark_configs={...} back into a dict.
     assert isinstance(spark_configs, str)
     assert json.loads(spark_configs) == {"spark.synapse.vegas.useCache": "false"}
+    # Fabric splits the job's command line on whitespace, quoting or not.
+    assert spark_configs.split() == [spark_configs]
 
 
 @pytest.mark.parametrize("platform", ["synapse", "databricks"])

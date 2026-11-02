@@ -485,11 +485,15 @@ def apply_env_config_overrides(job_config: Dict[str, Any], platform_name: str) -
     # spent about 220 s of its 240 s there. Fabric job definitions take no
     # sparkConf, so turn the cache off through Kindling's spark_configs. A JSON
     # string, not a dict: the Fabric SDK flattens nested overrides into dotted
-    # keys, which would split the Spark conf key apart.
+    # keys, which would split the Spark conf key apart. Compact, with no spaces:
+    # Fabric splits commandLineArguments on whitespace despite the SDK's quoting,
+    # and the bootstrap ignores the broken halves.
     overrides = merged_config.get("config_overrides") or {}
     if platform_name == "fabric" and "spark_configs" not in overrides:
         overrides = dict(overrides)
-        overrides["spark_configs"] = json.dumps({"spark.synapse.vegas.useCache": "false"})
+        overrides["spark_configs"] = json.dumps(
+            {"spark.synapse.vegas.useCache": "false"}, separators=(",", ":")
+        )
         merged_config["config_overrides"] = overrides
 
     return merged_config
