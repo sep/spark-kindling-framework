@@ -60,6 +60,13 @@ All notable changes to spark-kindling are documented here.
   with the ADLS SDK only when a storage key or an Azure client credential is
   configured, so listings (file ingestion, app dependencies) no longer pay
   that wait either.
+- **Streaming a Synapse job's logs no longer waits 10 minutes after the job
+  ends.** Once a batch finished, the SDK's `stream_stdout_logs` waited up to
+  600 seconds for the app's own output to appear, stopping early only on a
+  `TEST_ID=` or `BOOTSTRAP SCRIPT` line. An app that logs neither waited the
+  full 600 seconds, even with the bootstrap's completion line already read.
+  The bootstrap's "App '...' completed successfully" line and its failure
+  lines now end the wait too.
 - **`kindling migrate` no longer plans removing framework-owned columns.**
   It compared tables with the declared schema only, so on an existing table
   it planned a destructive removal of the SCD2 temporal columns

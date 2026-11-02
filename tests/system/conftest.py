@@ -17,6 +17,28 @@ import pytest
 # All supported platforms - single source of truth
 ALL_PLATFORMS = ["fabric", "databricks", "synapse"]
 ALL_CLOUDS = ["azure", "aws", "gcp"]
+
+# System-test modules, about longest test first (CI timings, all three
+# platforms). xdist hands tests out in collection order, so starting these
+# first keeps a long test from starting last and running on alone. Unlisted
+# modules follow in their usual order; add a new long test here.
+_LONGEST_FIRST = [
+    "test_streaming_pipes_orchestrator",
+    "test_streaming_pipes_auto",
+    "test_file_ingestion_static_values",
+    "test_provenance_runtime_manifest",
+    "test_streaming_orchestrator",
+    "test_migration",
+    "test_lake_wheel_bfs",
+    "test_lake_package_registration",
+    # One long test and two short ones.
+    "test_streaming_system",
+    # Long, but runs on Databricks only.
+    "test_delta_merge_spark_connect",
+    "test_name_mapper",
+    "test_view_and_csv_roundtrip",
+]
+
 _KINDLING_SYSTEM_CONFIG = None
 _KINDLING_SYSTEM_HEARTBEAT_STOP = None
 _KINDLING_SYSTEM_HEARTBEAT_THREAD = None
@@ -296,6 +318,9 @@ def pytest_collection_modifyitems(config, items):
                         "Set SYNAPSE_WORKSPACE_NAME env var."
                     )
                 )
+
+    rank = {module: i for i, module in enumerate(_LONGEST_FIRST)}
+    items.sort(key=lambda item: rank.get(item.path.stem, len(rank)))
 
     config._kindling_system_total_items = len(items)
 

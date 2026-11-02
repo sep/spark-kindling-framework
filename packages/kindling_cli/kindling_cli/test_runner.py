@@ -85,7 +85,9 @@ def resolve_workers(platform: Optional[str], explicit_workers: Optional[str], ci
 
     if ci:
         default_workers_by_platform = {
-            "synapse": "3",
+            # The Synapse test pool (6 Small nodes, 24 vCores) fits 4 batches
+            # of a 2-core driver and one 2-core executor without queueing.
+            "synapse": "4",
             "fabric": "4",
             "databricks": "4",
         }
