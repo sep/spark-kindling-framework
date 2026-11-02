@@ -14,15 +14,6 @@ Pipeline: bronze stream → silver stream → gold stream (joined with static lo
 import sys
 import time
 
-from pyspark.sql.functions import col, current_timestamp
-from pyspark.sql.types import (
-    IntegerType,
-    StringType,
-    StructField,
-    StructType,
-    TimestampType,
-)
-
 from kindling.data_entities import DataEntities, DataEntityRegistry
 from kindling.data_pipes import DataPipes
 from kindling.execution_orchestrator import ExecutionOrchestrator
@@ -31,6 +22,14 @@ from kindling.platform_provider import PlatformServiceProvider
 from kindling.spark_config import ConfigService
 from kindling.spark_log_provider import PythonLoggerProvider
 from kindling.spark_session import get_or_create_spark_session
+from pyspark.sql.functions import col, current_timestamp
+from pyspark.sql.types import (
+    IntegerType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
+)
 
 # ---- Init ----
 
@@ -605,21 +604,22 @@ try:
                 streaming_queries.append(q)
 
     # ---- Helper: Wait for queries to process data ----
-    def wait_for_query_progress(queries, expected_rows, timeout_seconds=60, poll_interval=2):
-        """Monitor streaming queries and wait until they've processed expected rows.
+    def wait_for_query_progress(
+        queries, output_entities, expected_rows, timeout_seconds=60, poll_interval=2
+    ):
+        """Wait until every output entity holds expected_rows rows.
+
+        Counts the output tables rather than streaming progress: a query's
+        lastProgress numInputRows covers one micro-batch only (about 20 rows
+        here), so comparing it with the cumulative total never passed and
+        every run waited out the full timeout. Summing progress doesn't work
+        either, because silver_to_gold also reads the lookup rows.
 
         A query going inactive mid-run is a hard failure, not "nothing left
         to check" -- surface its exception immediately and stop waiting.
-        Silently `continue`-ing past a dead query (the previous behavior)
-        let the other, still-active queries' progress alone satisfy
-        `all_processed`, so a query that died on its very first micro-batch
-        was falsely reported as "processed" in a fraction of a second,
-        masking the real failure behind a confusing downstream
-        zero-rows-written symptom instead of the actual exception.
         """
         start_time = time.time()
         while time.time() - start_time < timeout_seconds:
-            all_processed = True
             for q in queries:
                 if not q.isActive:
                     exc = q.exception()
@@ -627,28 +627,11 @@ try:
                     logger.error(msg)
                     print(msg, flush=True)
                     return False
-                progress = q.lastProgress
-                if progress:
-                    # dict.get(key, default) only applies the default when
-                    # the key is ABSENT -- Spark's streaming progress can
-                    # legitimately report numInputRows as an explicit None
-                    # (e.g. a "no new data" trigger), which .get(..., 0)
-                    # passes through unchanged, blowing up the < comparison
-                    # below with "TypeError: '<' not supported between
-                    # instances of 'NoneType' and 'int'". Coalesce
-                    # explicitly instead of relying on the default.
-                    num_input = progress.get("numInputRows")
-                    if num_input is None:
-                        num_input = 0
-                    msg = f"TEST_ID={test_id} query={q.id} batch={progress.get('batchId')} input_rows={num_input}"
-                    logger.debug(msg)
-                    # Check if this query has processed enough data
-                    if num_input < expected_rows:
-                        all_processed = False
-                else:
-                    all_processed = False
 
-            if all_processed:
+            if all(
+                entity_provider.read_entity(entity).count() >= expected_rows
+                for entity in output_entities
+            ):
                 msg = f"TEST_ID={test_id} queries_processed=true elapsed={time.time() - start_time:.1f}s"
                 logger.info(msg)
                 print(msg)
@@ -698,7 +681,10 @@ try:
     print(msg)
 
     queries_processed = wait_for_query_progress(
-        streaming_queries, expected_rows=total_rows, timeout_seconds=60
+        streaming_queries,
+        [silver_entity, gold_entity],
+        expected_rows=total_rows,
+        timeout_seconds=60,
     )
     if not queries_processed:
         msg = f"TEST_ID={test_id} warning=queries_did_not_process_all_data"

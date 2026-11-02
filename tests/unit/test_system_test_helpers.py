@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -168,6 +169,44 @@ def test_apply_env_config_overrides_explicitly_enables_azure_monitor_for_non_dat
     )
     assert kindling["telemetry"]["azure_monitor"]["enable_logging"] is True
     assert kindling["telemetry"]["azure_monitor"]["enable_tracing"] is True
+
+
+def test_apply_env_config_overrides_disables_the_fabric_intelligent_cache(monkeypatch):
+    _clear_config_env(monkeypatch)
+
+    merged = apply_env_config_overrides({"job_name": "job", "test_id": "abc123"}, "fabric")
+
+    spark_configs = merged["config_overrides"]["spark_configs"]
+    # A string, so the Fabric SDK's override flattening leaves the dotted key whole;
+    # the bootstrap parses config:spark_configs={...} back into a dict.
+    assert isinstance(spark_configs, str)
+    assert json.loads(spark_configs) == {"spark.synapse.vegas.useCache": "false"}
+    # Fabric splits the job's command line on whitespace, quoting or not.
+    assert spark_configs.split() == [spark_configs]
+
+
+@pytest.mark.parametrize("platform", ["synapse", "databricks"])
+def test_apply_env_config_overrides_leaves_other_platforms_spark_configs_alone(
+    monkeypatch, platform
+):
+    _clear_config_env(monkeypatch)
+    monkeypatch.setenv("KINDLING_DATABRICKS_SYSTEM_TEST_MODE", "uc")
+
+    merged = apply_env_config_overrides({"job_name": "job", "test_id": "abc123"}, platform)
+
+    assert "spark_configs" not in merged["config_overrides"]
+
+
+def test_apply_env_config_overrides_keeps_a_jobs_own_fabric_spark_configs(monkeypatch):
+    _clear_config_env(monkeypatch)
+    own = {"spark.sql.shuffle.partitions": "4"}
+
+    merged = apply_env_config_overrides(
+        {"job_name": "job", "test_id": "abc123", "config_overrides": {"spark_configs": own}},
+        "fabric",
+    )
+
+    assert merged["config_overrides"]["spark_configs"] == own
 
 
 def test_find_fatal_system_test_log_lines_detects_extension_install_failures():
