@@ -1,4 +1,3 @@
-import json
 import os
 
 import pytest
@@ -176,13 +175,7 @@ def test_apply_env_config_overrides_disables_the_fabric_intelligent_cache(monkey
 
     merged = apply_env_config_overrides({"job_name": "job", "test_id": "abc123"}, "fabric")
 
-    spark_configs = merged["config_overrides"]["spark_configs"]
-    # A string, so the Fabric SDK's override flattening leaves the dotted key whole;
-    # the bootstrap parses config:spark_configs={...} back into a dict.
-    assert isinstance(spark_configs, str)
-    assert json.loads(spark_configs) == {"spark.synapse.vegas.useCache": "false"}
-    # Fabric splits the job's command line on whitespace, quoting or not.
-    assert spark_configs.split() == [spark_configs]
+    assert merged["config_overrides"]["spark_configs"] == {"spark.synapse.vegas.useCache": "false"}
 
 
 @pytest.mark.parametrize("platform", ["synapse", "databricks"])

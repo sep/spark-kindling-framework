@@ -596,7 +596,9 @@ class FabricAPI(PlatformAPI):
                 items = []
                 for k, v in d.items():
                     new_key = f"{parent_key}.{k}" if parent_key else k
-                    if isinstance(v, dict):
+                    # spark_configs keys are Spark conf names with dots in
+                    # them: flattened, spark.x.y would nest as spark -> x -> y.
+                    if isinstance(v, dict) and new_key != "spark_configs":
                         items.extend(flatten_dict(v, new_key).items())
                     else:
                         items.append((new_key, serialize_config_value(v)))

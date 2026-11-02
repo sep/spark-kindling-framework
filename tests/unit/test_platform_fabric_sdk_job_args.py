@@ -79,3 +79,14 @@ def test_values_without_spaces_are_sent_unchanged():
 
     assert "config:some_setting=6e206823" in args.split()
     assert "config:flag=true" in args.split()
+
+
+def test_spark_configs_keep_their_dotted_keys_whole():
+    config = _config_the_bootstrap_receives(
+        {"spark_configs": {"spark.synapse.vegas.useCache": "false", "spark.sql.x": "a b"}}
+    )
+
+    assert config["spark_configs"] == {
+        "spark.synapse.vegas.useCache": "false",
+        "spark.sql.x": "a b",
+    }
