@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from kindling_sdk.platform_fabric import FabricAPI
+from kindling_sdk.platform_provider import PlatformAPIRegistry
 
 _BOOTSTRAP = Path(__file__).resolve().parents[2] / "runtime" / "scripts" / "kindling_bootstrap.py"
 
@@ -90,3 +91,7 @@ def test_spark_configs_keep_their_dotted_keys_whole():
         "spark.synapse.vegas.useCache": "false",
         "spark.sql.x": "a b",
     }
+
+
+def test_fabric_is_registered_as_the_fabric_platform_api():
+    assert PlatformAPIRegistry.get("fabric") is FabricAPI

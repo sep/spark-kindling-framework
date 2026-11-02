@@ -48,7 +48,6 @@ def _emit_stream_progress(message: str) -> None:
         heartbeat_file.write(message + "\n")
 
 
-@PlatformAPIRegistry.register("fabric")
 def _without_whitespace(value: str) -> str:
     """A config:key=value argument value that survives Fabric's argument split.
 
@@ -70,6 +69,7 @@ def _without_whitespace(value: str) -> str:
     return json.dumps(value).replace(" ", "\\u0020")
 
 
+@PlatformAPIRegistry.register("fabric")
 class FabricAPI(PlatformAPI):
     """
     Microsoft Fabric REST API client for remote operations.
