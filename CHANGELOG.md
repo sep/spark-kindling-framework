@@ -46,6 +46,20 @@ All notable changes to spark-kindling are documented here.
 
 ### Fixed
 
+- **Databricks apps no longer stall about 80 seconds per missing optional
+  file.** When `dbutils` couldn't read an `abfss://` file, the Databricks
+  platform fell back to the ADLS SDK, even when the file simply didn't exist.
+  On a cluster with no Azure credential, that fallback's
+  `DefaultAzureCredential` waits out its managed identity retries (about 80
+  seconds) before failing, so every optional file an app doesn't ship (app
+  manifest, settings overlays, `requirements.txt`, `lake-reqs.txt`) added
+  that wait to each app run: about 5.5 minutes for a typical app. A missing
+  file or directory is now reported at once, and after one ADLS SDK
+  authentication failure the fallback is skipped for the rest of the process
+  (unless a storage key is set). `list()` cross-checks an `abfss://` listing
+  with the ADLS SDK only when a storage key or an Azure client credential is
+  configured, so listings (file ingestion, app dependencies) no longer pay
+  that wait either.
 - **`kindling migrate` no longer plans removing framework-owned columns.**
   It compared tables with the declared schema only, so on an existing table
   it planned a destructive removal of the SCD2 temporal columns
