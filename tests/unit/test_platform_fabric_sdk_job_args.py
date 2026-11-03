@@ -100,6 +100,9 @@ def test_fabric_is_registered_as_the_fabric_platform_api():
     assert PlatformAPIRegistry.get("fabric") is FabricAPI
 
 
+_SESSION = {"livy_id": "livy", "app_id": "app"}
+
+
 class _FakeClock:
     def __init__(self):
         self.now = 1000.0
@@ -111,7 +114,7 @@ class _FakeClock:
         self.now += seconds
 
 
-def _stream_after_completion(monkeypatch, chunks):
+def _stream_after_completion(monkeypatch, chunks, session=_SESSION):
     """Seconds FabricAPI.stream_stdout_logs spends once the job is COMPLETED,
     each poll returning the next chunk of lines ([] when nothing is new)."""
     clock = _FakeClock()
@@ -120,7 +123,7 @@ def _stream_after_completion(monkeypatch, chunks):
 
     api = _fabric_api()
     api.get_job_status = MagicMock(return_value={"status": "COMPLETED"})
-    api.get_livy_session_info = MagicMock(return_value=None)
+    api.get_livy_session_info = MagicMock(return_value=session)
     pending = iter(chunks)
     api._read_stdout_chunk = MagicMock(
         side_effect=lambda job_id, run_id, session, offset: (lambda new: (new, offset + len(new)))(
@@ -130,7 +133,9 @@ def _stream_after_completion(monkeypatch, chunks):
 
     start = clock.now
     lines = api.stream_stdout_logs("job", "run", poll_interval=10.0)
-    assert lines == [line for chunk in chunks for line in chunk]
+    assert lines == [
+        line for chunk in chunks[: api._read_stdout_chunk.call_count] for line in chunk
+    ]
     return clock.now - start
 
 
@@ -158,3 +163,11 @@ def test_stream_gives_up_after_the_grace_period(monkeypatch):
     seconds = _stream_after_completion(monkeypatch, [["TEST_ID=t1 status=STARTED"]])
 
     assert seconds == FabricAPI.TERMINAL_LOG_GRACE_SECONDS
+
+
+def test_stream_skips_the_grace_period_without_a_livy_session(monkeypatch):
+    """A job that finishes during the stdout warmup has no cached session,
+    and none can be found once it's done: both reads need one."""
+    seconds = _stream_after_completion(monkeypatch, [["never read"]], session=None)
+
+    assert seconds == 0

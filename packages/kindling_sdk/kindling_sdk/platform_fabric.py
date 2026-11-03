@@ -1505,11 +1505,17 @@ class FabricAPI(PlatformAPI):
                     _emit_stream_progress(f"✅ Job {status.lower()} - doing final log read")
                     if not session_info:
                         session_info = self.get_livy_session_info(job_id, run_id)
+                    if not session_info:
+                        # Both stdout reads need a Livy session; waiting out the
+                        # grace period would read nothing.
+                        _emit_stream_progress(
+                            "⚠️  No Livy session - skipping the final stdout read"
+                        )
                     # stdout can lag the terminal state by tens of seconds: keep
                     # reading until the bootstrap reports the app's end, or the
                     # grace period runs out.
                     grace_deadline = time.time() + self.TERMINAL_LOG_GRACE_SECONDS
-                    while True:
+                    while session_info:
                         new_logs, last_byte_offset = self._read_stdout_chunk(
                             job_id, run_id, session_info, last_byte_offset
                         )
