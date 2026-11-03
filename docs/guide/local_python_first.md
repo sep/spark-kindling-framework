@@ -114,10 +114,10 @@ dev = [
     "spark-kindling==X.Y.Z",
     "spark-kindling-sdk==X.Y.Z",
     "spark-kindling-cli==X.Y.Z",
-    "pyspark>=3.4.0,<4.0.0",
-    "delta-spark>=2.4.0,<4.0.0",
-    "pandas>=2.0.0",
-    "pyarrow>=12.0.0",
+    "pyspark>=3.4.0,<5.0.0",
+    "delta-spark>=2.4.0,<5.0.0",
+    "pandas>=2.2.0",
+    "pyarrow>=15.0.0",
 ]
 ```
 

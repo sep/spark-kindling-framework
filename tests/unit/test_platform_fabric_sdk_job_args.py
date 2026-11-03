@@ -98,3 +98,76 @@ def test_spark_configs_keep_their_dotted_keys_whole():
 
 def test_fabric_is_registered_as_the_fabric_platform_api():
     assert PlatformAPIRegistry.get("fabric") is FabricAPI
+
+
+_SESSION = {"livy_id": "livy", "app_id": "app"}
+
+
+class _FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def _stream_after_completion(monkeypatch, chunks, session=_SESSION):
+    """Seconds FabricAPI.stream_stdout_logs spends once the job is COMPLETED,
+    each poll returning the next chunk of lines ([] when nothing is new)."""
+    clock = _FakeClock()
+    monkeypatch.setattr("kindling_sdk.platform_fabric.time.time", clock.time)
+    monkeypatch.setattr("kindling_sdk.platform_fabric.time.sleep", clock.sleep)
+
+    api = _fabric_api()
+    api.get_job_status = MagicMock(return_value={"status": "COMPLETED"})
+    api.get_livy_session_info = MagicMock(return_value=session)
+    pending = iter(chunks)
+    api._read_stdout_chunk = MagicMock(
+        side_effect=lambda job_id, run_id, session, offset: (lambda new: (new, offset + len(new)))(
+            next(pending, [])
+        )
+    )
+
+    start = clock.now
+    lines = api.stream_stdout_logs("job", "run", poll_interval=10.0)
+    assert lines == [
+        line for chunk in chunks[: api._read_stdout_chunk.call_count] for line in chunk
+    ]
+    return clock.now - start
+
+
+_APP_END = "WARN: (KindlingBootstrap) App 'streaming-pipes-test-app' completed successfully"
+
+
+def test_stream_keeps_reading_after_completion_until_the_app_end_arrives(monkeypatch):
+    """On Fabric Runtime 2.0 the streaming-pipes app's last 10 s of stdout
+    arrived after the job was COMPLETED, and the single final read missed it."""
+    chunks = [
+        ["INFO: (streaming-pipes-test-app) TEST_ID=t1 test=executor_streaming status=PASSED"],
+        [],
+        ["INFO: (streaming-pipes-test-app) TEST_ID=t1 test=bronze_data status=PASSED"],
+        [_APP_END],
+    ]
+
+    assert _stream_after_completion(monkeypatch, chunks) == 30.0
+
+
+def test_stream_stops_at_once_when_the_app_end_is_already_there(monkeypatch):
+    assert _stream_after_completion(monkeypatch, [["TEST_ID=t1 status=COMPLETED", _APP_END]]) == 0
+
+
+def test_stream_gives_up_after_the_grace_period(monkeypatch):
+    seconds = _stream_after_completion(monkeypatch, [["TEST_ID=t1 status=STARTED"]])
+
+    assert seconds == FabricAPI.TERMINAL_LOG_GRACE_SECONDS
+
+
+def test_stream_skips_the_grace_period_without_a_livy_session(monkeypatch):
+    """A job that finishes during the stdout warmup has no cached session,
+    and none can be found once it's done: both reads need one."""
+    seconds = _stream_after_completion(monkeypatch, [["never read"]], session=None)
+
+    assert seconds == 0

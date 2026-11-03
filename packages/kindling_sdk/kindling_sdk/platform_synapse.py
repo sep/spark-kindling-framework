@@ -17,6 +17,7 @@ from .platform_provider import (
     azure_storage_account_url,
     azure_synapse_dev_endpoint_suffix,
     azure_token_scope,
+    bootstrap_reported_app_end,
     create_azure_credential,
 )
 
@@ -1502,17 +1503,11 @@ class SynapseAPI(PlatformAPI):
                             # otherwise sit out the whole grace period after it finished. Only
                             # that logger's line: others (pip installs) also "complete
                             # successfully" before the app's output.
-                            recent = [line.upper() for line in all_logs[-200:]]
-                            upper = "\n".join(recent)
+                            recent = all_logs[-200:]
+                            upper = "\n".join(recent).upper()
                             if "TEST_ID=" in upper or "BOOTSTRAP SCRIPT" in upper:
                                 seen_useful = True
-                            elif any(
-                                "(KINDLINGBOOTSTRAP) APP '" in line
-                                and "' COMPLETED SUCCESSFULLY" in line
-                                or "(KINDLINGBOOTSTRAP) APP EXECUTION FAILED" in line
-                                or "(KINDLINGBOOTSTRAP) FRAMEWORK INITIALIZATION FAILED" in line
-                                for line in recent
-                            ):
+                            elif bootstrap_reported_app_end(recent):
                                 seen_useful = True
 
                         # If we've seen useful output, allow an early exit once logs have stopped changing.

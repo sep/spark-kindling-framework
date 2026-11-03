@@ -40,25 +40,14 @@ dependencies = [
     "pyyaml>=6.0",
     "packaging>=23.0",
     "blinker>=1.6.0",
-    # Azure SDKs used by every Azure-backed platform.
-    # `azure-core` needs a per-platform ceiling: Fabric's managed runtime ships
-    # azure-core 1.30.2, so the [fabric] extra adds the tight <1.31.0 upper
-    # bound for managed-runtime compatibility. Every other install path (bare,
-    # [databricks], [synapse], [all], ...) must NOT carry that ceiling: Azure
-    # Databricks' runtime pre-ships azure-mgmt-core==1.5.0, which itself requires
-    # azure-core>=1.31.0, so an unconditional <1.31.0 ceiling makes pip hold/
-    # downgrade azure-core to 1.30.2 on Databricks and collide with the
-    # preinstalled azure-mgmt-core (see the "azure-mgmt-core ... incompatible"
-    # warning that used to show up on every Databricks CI job).
-    #
-    # This is expressed as two additive constraints: an unconditional base
-    # entry here plus a second `azure-core` entry in the `fabric` extra below.
-    # The wheel METADATA carries both as separate `Requires-Dist: azure-core`
-    # lines (the second with `extra == "fabric"`), and pip intersects them to
-    # `>=1.30.0,<1.31.0` whenever the fabric extra is requested. Do not try a
-    # mutually exclusive `extra != 'fabric'` marker pair instead: build
-    # backends drop or mis-evaluate negated extra markers. Verify with
-    # `unzip -p dist/spark_kindling-*.whl "*.dist-info/METADATA" | grep azure-core`.
+    # Azure SDKs used by every Azure-backed platform. No ceiling on
+    # `azure-core`: the system-tested runtimes ship 1.34-1.39 (Databricks 17.3
+    # 1.34.0, Synapse 3.5 1.35.0, Fabric Runtime 2.0 1.39.0), and the cluster
+    # bootstrap keeps a runtime's installed azure-core rather than upgrading
+    # it. (Fabric Runtime 1.3 shipped 1.30.2 and needed a <1.31.0 ceiling in
+    # the `fabric` extra; 1.3 is no longer supported.)
+    # uv.lock holds azure-core at 1.34.0, the oldest a tested runtime ships,
+    # so CI doesn't come to rely on a newer API than a cluster has.
     #
     # `azure-identity` and `azure-storage-file-datalake` are intentionally kept
     # loose so pip accepts the cluster's pre-installed versions without
@@ -77,21 +66,24 @@ Issues = "https://github.com/sep/spark-kindling-framework/issues"
 [project.optional-dependencies]
 synapse = ["azure-synapse-artifacts>=0.17.0"]
 databricks = ["databricks-sdk>=0.12.0"]
-fabric = ["azure-core>=1.30.0,<1.31.0"]
+# Empty, kept so `spark-kindling[fabric]` installs keep working.
+fabric = []
+# pandas/pyarrow floors: pyspark 4.1's own minimums (its `sql` extra). Asking
+# for pyspark[sql] instead would bring in pyspark 3.5's numpy<2 too.
 standalone = [
-    "pyspark>=3.4.0,<4.0.0",
-    "delta-spark>=2.4.0,<4.0.0",
-    "pandas>=2.0.0",
-    "pyarrow>=12.0.0",
+    "pyspark>=3.4.0,<5.0.0",
+    "delta-spark>=2.4.0,<5.0.0",
+    "pandas>=2.2.0",
+    "pyarrow>=15.0.0",
 ]
 adx = ["azure-kusto-data>=4.0.0", "azure-kusto-ingest>=4.0.0"]
 all = [
     "azure-synapse-artifacts>=0.17.0",
     "databricks-sdk>=0.12.0",
-    "pyspark>=3.4.0,<4.0.0",
-    "delta-spark>=2.4.0,<4.0.0",
-    "pandas>=2.0.0",
-    "pyarrow>=12.0.0",
+    "pyspark>=3.4.0,<5.0.0",
+    "delta-spark>=2.4.0,<5.0.0",
+    "pandas>=2.2.0",
+    "pyarrow>=15.0.0",
     "azure-kusto-data>=4.0.0",
     "azure-kusto-ingest>=4.0.0",
 ]
@@ -144,6 +136,9 @@ dev = [
     # modules that do `from pyspark import ...` at module scope. Managed cloud
     # runtimes provide these via non-pip mechanisms (hence [standalone] extra
     # for local/CI consumers), but dev env has to pip-install them directly.
+    # Held at Spark 3.5 (<4.0.0), unlike the [standalone] extra's <5.0.0: the
+    # default test lanes cover the Spark 3.5 runtimes (Synapse), and the
+    # separate Spark 4 lane (poe test-spark4, .venv-spark4) covers Spark 4.
     "pyspark>=3.4.0,<4.0.0",
     "delta-spark>=2.4.0,<4.0.0",
     "pandas>=2.0.0",
@@ -180,7 +175,7 @@ test = { shell = "PYTHONPATH=\"packages:packages/kindling_cli:packages/kindling_
 test-unit = { shell = "PYTHONPATH=\"packages:packages/kindling_cli:packages/kindling_sdk${PYTHONPATH:+:$PYTHONPATH}\" python -m kindling_cli.test_runner run --suite unit --path tests/unit ${workers:+--workers \"$workers\"}", args = [{name = "workers", default = "", positional = false, help = "Optional pytest-xdist worker count. If omitted, runs serial"}] }
 test-unit-ci = { shell = "PYTHONPATH=\"packages:packages/kindling_cli:packages/kindling_sdk${PYTHONPATH:+:$PYTHONPATH}\" python -m kindling_cli.test_runner run --suite unit --path tests/unit --ci --coverage packages/kindling --coverage packages/extensions/kindling_ext_sdp --coverage packages/extensions/kindling_ext_databricks --pytest-arg=--cov-report=xml ${workers:+--workers \"$workers\"}", args = [{name = "workers", default = "", positional = false, help = "Optional pytest-xdist worker count. If omitted, runs serial"}] }
 test-integration = { shell = "PYTHONPATH=\"packages:packages/kindling_cli:packages/kindling_sdk${PYTHONPATH:+:$PYTHONPATH}\" python -m kindling_cli.test_runner run --suite integration --path tests/integration ${workers:+--workers \"$workers\"}", args = [{name = "workers", default = "", positional = false, help = "Optional pytest-xdist worker count. If omitted, runs serial"}] }
-check-extension-runtimes = { cmd = "python scripts/check_extension_runtime_packages.py", help = "Check that each extension installs on Databricks 17.3, Fabric 1.3 and Synapse 3.5 without replacing their key packages (resolves against the package index)" }
+check-extension-runtimes = { cmd = "python scripts/check_extension_runtime_packages.py", help = "Check that each extension installs on Databricks 17.3, Fabric 2.0 and Synapse 3.5 without replacing their key packages (resolves against the package index)" }
 sdp-runtime = { cmd = "python scripts/ensure_sdp_runtime.py", help = "Provision the isolated pyspark 4.1 venv (.venv-sdp41) for spark-pipelines dry-runs" }
 test-sdp-dryrun = ["sdp-runtime", "_test-sdp-dryrun"]
 _test-sdp-dryrun = { shell = "PYTHONPATH=\"packages:packages/kindling_cli:packages/kindling_sdk${PYTHONPATH:+:$PYTHONPATH}\" python -m kindling_cli.test_runner run --suite integration --path tests/integration/test_sdp_dry_run_real.py" }

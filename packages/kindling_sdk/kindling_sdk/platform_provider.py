@@ -267,6 +267,25 @@ class PlatformAPIRegistry:
         return sorted(set(cls._registry.keys()) | known)
 
 
+def bootstrap_reported_app_end(lines: List[str]) -> bool:
+    """Whether the cluster bootstrap's logger reported the app's end (it
+    completed, or the app or framework initialization failed) in ``lines``.
+
+    Only that logger's lines count: others (pip installs) also "complete
+    successfully" before the app's output.
+    """
+    for line in lines:
+        upper = line.upper()
+        if (
+            "(KINDLINGBOOTSTRAP) APP '" in upper
+            and "' COMPLETED SUCCESSFULLY" in upper
+            or "(KINDLINGBOOTSTRAP) APP EXECUTION FAILED" in upper
+            or "(KINDLINGBOOTSTRAP) FRAMEWORK INITIALIZATION FAILED" in upper
+        ):
+            return True
+    return False
+
+
 def create_platform_api_from_env(platform: str):
     platform_name = (platform or "").strip().lower()
     api_class = PlatformAPIRegistry.get(platform_name)

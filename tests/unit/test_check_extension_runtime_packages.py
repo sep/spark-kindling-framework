@@ -86,7 +86,7 @@ def test_resolve_pins_the_runtime_key_packages(monkeypatch):
 
 def test_main_fails_when_a_runtime_needs_a_key_package_replaced(monkeypatch, capsys):
     def resolve(requirements, python_version, pins):
-        if pins.get("azure-monitor-opentelemetry") == "1.8.2":
+        if pins.get("azure-monitor-opentelemetry") == "1.7.0":
             return SimpleNamespace(returncode=1, stdout="", stderr="No solution found")
         return SimpleNamespace(
             returncode=0,

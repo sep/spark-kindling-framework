@@ -17,7 +17,7 @@ file path.
 import re
 import sys
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Mapping, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,10 @@ class SupportedRuntime:
     runtime_version: Optional[str]
     python: str
     packages: Mapping[str, str]
+    # Shipped packages an install may upgrade on this runtime: nothing the
+    # runtime itself runs needs the shipped version. The bootstrap doesn't
+    # pin them there, and the CI extension check doesn't either.
+    replaceable: FrozenSet[str] = frozenset()
 
 
 SUPPORTED_RUNTIMES: Tuple[SupportedRuntime, ...] = (
@@ -56,56 +60,78 @@ SUPPORTED_RUNTIMES: Tuple[SupportedRuntime, ...] = (
             "typing-extensions": "4.12.2",
         },
     ),
-    # Fabric Runtime 1.3 (Spark 3.5, Python 3.11). azure-identity and msal
-    # ship as conda builds versioned 2023.12.01; the pip releases of that
-    # date stand in for them.
+    # Fabric Runtime 2.0 (Spark 4.1, Python 3.13). Fabric ships no
+    # azure-monitor-opentelemetry, and OpenTelemetry 1.16, which is older than
+    # the OpenTelemetry Azure extension supports (>=1.20). Only mlflow-skinny
+    # depends on it there (opentelemetry-api/-sdk >=1.9.0,<3), so it may be
+    # upgraded.
     SupportedRuntime(
-        name="fabric1.3",
+        name="fabric2.0",
         platform="fabric",
         runtime_version=None,
-        python="3.11",
+        python="3.13",
         packages={
-            "azure-core": "1.30.2",
-            "azure-identity": "1.15.0",
-            "msal": "1.26.0",
-            "numpy": "1.26.4",
-            "pandas": "2.1.4",
-            "protobuf": "3.20.3",
-            "py4j": "0.10.9.7",
-            "pyarrow": "14.0.2",
-            # The runtime ships a vendor build (3.5.1.5.4.20240407, not on PyPI);
+            "azure-core": "1.39.0",
+            "azure-identity": "1.25.3",
+            "msal": "1.37.0",
+            "numpy": "2.4.1",
+            "opentelemetry-api": "1.16.0",
+            "opentelemetry-sdk": "1.16.0",
+            "opentelemetry-semantic-conventions": "0.37b0",
+            "pandas": "2.3.3",
+            "protobuf": "5.29.6",
+            "py4j": "0.10.9.9",
+            "pyarrow": "24.0.0",
+            # The runtime ships a vendor build (4.1.1.5.5.20260428.5, not on PyPI);
             # its public base release stands in for it.
-            "pyspark": "3.5.1",
-            "typing-extensions": "4.9.0",
+            "pyspark": "4.1.1",
+            "typing-extensions": "4.16.0",
         },
+        replaceable=frozenset(
+            {"opentelemetry-api", "opentelemetry-sdk", "opentelemetry-semantic-conventions"}
+        ),
     ),
-    # Azure Synapse Runtime for Apache Spark 3.5 (Python 3.11). msal ships
-    # as a conda build versioned 2026.06.01; 1.34.0 stands in for it.
+    # Azure Synapse Runtime for Apache Spark 3.5 (Python 3.11). azure-identity
+    # and msal ship as conda builds versioned 2025.03.01; the versions they
+    # report at runtime stand in for them.
     SupportedRuntime(
         name="synapse3.5",
         platform="synapse",
         runtime_version=None,
         python="3.11",
         packages={
-            "azure-core": "1.38.2",
-            "azure-identity": "1.17.0",
-            "azure-monitor-opentelemetry": "1.8.2",
-            "msal": "1.34.0",
+            "azure-core": "1.35.0",
+            "azure-identity": "1.20.0",
+            "azure-monitor-opentelemetry": "1.7.0",
+            "msal": "1.31.1",
             "numpy": "1.26.4",
-            "opentelemetry-api": "1.44.0",
-            "opentelemetry-sdk": "1.44.0",
-            "opentelemetry-semantic-conventions": "0.65b0",
-            "pandas": "2.3.3",
-            "protobuf": "6.33.5",
+            "opentelemetry-api": "1.36.0",
+            "opentelemetry-sdk": "1.36.0",
+            "opentelemetry-semantic-conventions": "0.57b0",
+            "pandas": "2.2.3",
+            "protobuf": "4.25.3",
             "py4j": "0.10.9.7",
-            "pyarrow": "23.0.1",
+            "pyarrow": "19.0.0",
             # The runtime ships a vendor build (3.5.1.5.4.20240407, not on PyPI);
             # its public base release stands in for it.
             "pyspark": "3.5.1",
-            "typing-extensions": "4.16.0",
+            "typing-extensions": "4.12.2",
         },
     ),
 )
+
+
+def replaceable_packages(platform: Optional[str]) -> FrozenSet[str]:
+    """The shipped packages an install may upgrade on any tested runtime of
+    ``platform``."""
+    name = str(platform or "").strip().lower()
+    return frozenset(
+        package
+        for runtime in SUPPORTED_RUNTIMES
+        if runtime.platform == name
+        for package in runtime.replaceable
+    )
+
 
 # Local development: recorded, never called untested.
 _UNCHECKED_PLATFORMS = frozenset({"standalone"})
@@ -185,7 +211,9 @@ def match_runtime(
     compared, and a package that isn't installed is skipped. Versions are
     normalized: a vendor build compares by its base release
     (``3.5.1.5.4.20240407`` is ``3.5.1``), and a conda build versioned by date
-    (``2023.12.01``) is skipped.
+    (``2023.12.01``) is skipped. A difference in one of a runtime's
+    ``replaceable`` packages is recorded but never counts as major.minor: an
+    install is allowed to upgrade it.
     """
     platform = (platform or "").strip().lower()
     if not platform or platform in _UNCHECKED_PLATFORMS:
@@ -227,7 +255,8 @@ def _differences(runtime: SupportedRuntime, installed: Mapping[str, str], python
                 name,
                 tested,
                 version,
-                major_minor=_release(version)[:2] != _release(tested)[:2],
+                major_minor=name not in runtime.replaceable
+                and _release(version)[:2] != _release(tested)[:2],
             )
         )
     return differences
