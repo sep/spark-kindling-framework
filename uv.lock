@@ -3424,8 +3424,8 @@ requires-dist = [
     { name = "blinker", specifier = ">=1.6.0" },
     { name = "databricks-sdk", marker = "extra == 'all'", specifier = ">=0.12.0" },
     { name = "databricks-sdk", marker = "extra == 'databricks'", specifier = ">=0.12.0" },
-    { name = "delta-spark", marker = "extra == 'all'", specifier = ">=2.4.0,<4.0.0" },
-    { name = "delta-spark", marker = "extra == 'standalone'", specifier = ">=2.4.0,<4.0.0" },
+    { name = "delta-spark", marker = "extra == 'all'", specifier = ">=2.4.0,<5.0.0" },
+    { name = "delta-spark", marker = "extra == 'standalone'", specifier = ">=2.4.0,<5.0.0" },
     { name = "dynaconf", specifier = ">=3.1.0,!=3.3.4,<3.3.6" },
     { name = "injector", specifier = ">=0.20.1" },
     { name = "packaging", specifier = ">=23.0" },
@@ -3433,8 +3433,8 @@ requires-dist = [
     { name = "pandas", marker = "extra == 'standalone'", specifier = ">=2.0.0" },
     { name = "pyarrow", marker = "extra == 'all'", specifier = ">=12.0.0" },
     { name = "pyarrow", marker = "extra == 'standalone'", specifier = ">=12.0.0" },
-    { name = "pyspark", marker = "extra == 'all'", specifier = ">=3.4.0,<4.0.0" },
-    { name = "pyspark", marker = "extra == 'standalone'", specifier = ">=3.4.0,<4.0.0" },
+    { name = "pyspark", marker = "extra == 'all'", specifier = ">=3.4.0,<5.0.0" },
+    { name = "pyspark", marker = "extra == 'standalone'", specifier = ">=3.4.0,<5.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
 provides-extras = ["synapse", "databricks", "fabric", "standalone", "adx", "all"]

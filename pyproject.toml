@@ -69,8 +69,8 @@ databricks = ["databricks-sdk>=0.12.0"]
 # Empty, kept so `spark-kindling[fabric]` installs keep working.
 fabric = []
 standalone = [
-    "pyspark>=3.4.0,<4.0.0",
-    "delta-spark>=2.4.0,<4.0.0",
+    "pyspark>=3.4.0,<5.0.0",
+    "delta-spark>=2.4.0,<5.0.0",
     "pandas>=2.0.0",
     "pyarrow>=12.0.0",
 ]
@@ -78,8 +78,8 @@ adx = ["azure-kusto-data>=4.0.0", "azure-kusto-ingest>=4.0.0"]
 all = [
     "azure-synapse-artifacts>=0.17.0",
     "databricks-sdk>=0.12.0",
-    "pyspark>=3.4.0,<4.0.0",
-    "delta-spark>=2.4.0,<4.0.0",
+    "pyspark>=3.4.0,<5.0.0",
+    "delta-spark>=2.4.0,<5.0.0",
     "pandas>=2.0.0",
     "pyarrow>=12.0.0",
     "azure-kusto-data>=4.0.0",
@@ -134,6 +134,9 @@ dev = [
     # modules that do `from pyspark import ...` at module scope. Managed cloud
     # runtimes provide these via non-pip mechanisms (hence [standalone] extra
     # for local/CI consumers), but dev env has to pip-install them directly.
+    # Held at Spark 3.5 (<4.0.0), unlike the [standalone] extra's <5.0.0: the
+    # default test lanes cover the Spark 3.5 runtimes (Synapse), and the
+    # separate Spark 4 lane (poe test-spark4, .venv-spark4) covers Spark 4.
     "pyspark>=3.4.0,<4.0.0",
     "delta-spark>=2.4.0,<4.0.0",
     "pandas>=2.0.0",

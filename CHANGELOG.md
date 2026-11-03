@@ -45,6 +45,11 @@ All notable changes to spark-kindling are documented here.
   1.31 (Runtime 1.3 shipped 1.30.2; Runtime 2.0 ships 1.39.0, which the cap
   would have tried to downgrade), and neither does `spark-kindling-sdk`. The
   extra is kept, empty, so `spark-kindling[fabric]` installs keep working.
+- **Spark 4 in the `standalone` and `all` extras.** `pyspark` and
+  `delta-spark` are allowed up to `<5.0.0` (was `<4.0.0`), so a local
+  install can use Spark 3.4-3.5 or 4.x, matching the runtimes Kindling
+  runs on (Synapse on Spark 3.5; Fabric and Databricks on Spark 4). New
+  `kindling new` packages get the same range in their `dev` group.
 - **Watermarks record the executor run id.** The watermark aspect saves the
   executor's run id (the provenance stamps' `execution_id`) as
   `last_execution_id`, instead of a fresh uuid that linked to nothing. A

@@ -28,8 +28,8 @@ _BUILTIN_TEMPLATES = Path(__file__).parent / "templates"
 # `spark-kindling`. Mirrors spark-kindling's `standalone` extra (root
 # pyproject.toml); a unit test keeps the two in step.
 _LOCAL_SPARK_REQUIREMENTS = (
-    "pyspark>=3.4.0,<4.0.0",
-    "delta-spark>=2.4.0,<4.0.0",
+    "pyspark>=3.4.0,<5.0.0",
+    "delta-spark>=2.4.0,<5.0.0",
     "pandas>=2.0.0",
     "pyarrow>=12.0.0",
 )
