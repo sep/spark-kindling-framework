@@ -1,7 +1,6 @@
 import base64
 import json
 import os
-import shlex
 import subprocess
 import sys
 import time
@@ -46,6 +45,27 @@ def _emit_stream_progress(message: str) -> None:
 
     with open(heartbeat_path, "a", encoding="utf-8") as heartbeat_file:
         heartbeat_file.write(message + "\n")
+
+
+def _without_whitespace(value: str) -> str:
+    """A config:key=value argument value that survives Fabric's argument split.
+
+    Fabric splits a Spark job definition's commandLineArguments on whitespace
+    and keeps quote characters literally, so a value with a space arrives as
+    broken pieces the bootstrap ignores. Such a value goes as JSON with its
+    spaces escaped (\\u0020), which the bootstrap decodes: a JSON object or
+    array as itself, anything else as a quoted JSON string.
+    """
+    if not any(char.isspace() for char in value):
+        return value
+    stripped = value.strip()
+    if stripped[:1] in ("{", "["):
+        try:
+            compact = json.dumps(json.loads(stripped), separators=(",", ":"))
+            return compact.replace(" ", "\\u0020")
+        except ValueError:
+            pass
+    return json.dumps(value).replace(" ", "\\u0020")
 
 
 @PlatformAPIRegistry.register("fabric")
@@ -575,7 +595,9 @@ class FabricAPI(PlatformAPI):
                 items = []
                 for k, v in d.items():
                     new_key = f"{parent_key}.{k}" if parent_key else k
-                    if isinstance(v, dict):
+                    # spark_configs keys are Spark conf names with dots in
+                    # them: flattened, spark.x.y would nest as spark -> x -> y.
+                    if isinstance(v, dict) and new_key != "spark_configs":
                         items.extend(flatten_dict(v, new_key).items())
                     else:
                         items.append((new_key, serialize_config_value(v)))
@@ -583,10 +605,11 @@ class FabricAPI(PlatformAPI):
 
             bootstrap_params.update(flatten_dict(overrides))
 
-        # Build command line args using config:key=value convention.
-        # Quote each arg so values with spaces (e.g. "@secret my-secret") survive transport.
+        # Build command line args using config:key=value convention. Fabric
+        # splits on whitespace and does no shell unquoting, so arguments are
+        # not shell-quoted; _without_whitespace keeps each one in one piece.
         config_args = " ".join(
-            [shlex.quote(f"config:{k}={v}") for k, v in bootstrap_params.items()]
+            [f"config:{k}={_without_whitespace(str(v))}" for k, v in bootstrap_params.items()]
         )
 
         # Combine with any additional command line args

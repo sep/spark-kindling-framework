@@ -671,6 +671,50 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "AZURE_BASE_PATH: \`${{ steps.base-path.outputs.azure_base_path }}\`" >> $GITHUB_STEP_SUMMARY
 
+  # The Databricks system-test cluster auto-terminates after 2 idle hours, and
+  # its cold start takes 7-10 minutes. Requesting the start here, as soon as
+  # system tests are known to run, overlaps it with the build and test jobs
+  # (about 20 minutes) instead of the preflight waiting it out.
+  start-databricks-cluster:
+    name: Start Databricks Cluster
+    runs-on: ubuntu-latest
+    # Best effort: the system-test preflight starts the cluster anyway.
+    continue-on-error: true
+    needs: [classify-changes, build-ci-image]
+    container:
+      image: ${{ needs.build-ci-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    if: |
+      needs.classify-changes.outputs.needs_system_tests == 'true' &&
+      (
+        startsWith(github.ref, 'refs/tags/v') ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          (
+            github.event.inputs.system_test_platform == 'all' ||
+            github.event.inputs.system_test_platform == 'databricks'
+          )
+        )
+      )
+    environment: testing
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install project in editable mode
+        run: pip install -e .
+
+      - name: Request the cluster start
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_CLUSTER_ID: ${{ secrets.DATABRICKS_CLUSTER_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: python scripts/databricks_uc_preflight.py --start-cluster
+
   system-tests:
     name: System Tests (${{ matrix.label }})
     runs-on: ubuntu-latest

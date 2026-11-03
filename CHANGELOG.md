@@ -67,6 +67,19 @@ All notable changes to spark-kindling are documented here.
   full 600 seconds, even with the bootstrap's completion line already read.
   The bootstrap's "App '...' completed successfully" line and its failure
   lines now end the wait too.
+- **Fabric jobs no longer drop settings whose values contain spaces.** Fabric
+  splits a Spark job definition's command line on whitespace and passes quote
+  characters through literally, so a `config_overrides` value with a space
+  (a list or JSON value, `@secret my-secret`) arrived at the bootstrap in
+  pieces and was silently ignored. The SDK now sends such a value as JSON with
+  its spaces escaped, which the bootstrap already decodes; values without
+  whitespace are sent as before.
+- **`spark_configs` passed in a Fabric job's `config_overrides` now reach
+  Spark.** The SDK flattened nested overrides into dotted keys, so
+  `{"spark_configs": {"spark.sql.x": "1"}}` arrived as
+  `spark_configs.spark.sql.x` and nested back as `spark -> sql -> x`: the
+  bootstrap then set one bogus `spark` conf instead of `spark.sql.x`.
+  `spark_configs` is now sent whole.
 - **`kindling migrate` no longer plans removing framework-owned columns.**
   It compared tables with the declared schema only, so on an existing table
   it planned a destructive removal of the SCD2 temporal columns

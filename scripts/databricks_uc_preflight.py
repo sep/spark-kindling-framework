@@ -240,9 +240,31 @@ def _get_task_run_output(client: WorkspaceClient, run: dict, default_run_id: int
     )
 
 
+def start_cluster(client: WorkspaceClient, cluster_id: str) -> None:
+    """Ask a terminated cluster to start, without waiting for it.
+
+    CI runs this as soon as it knows system tests will run, so the cluster's
+    cold start (7-10 minutes after its idle auto-termination) overlaps the
+    build and test jobs instead of delaying the preflight. Never fails the
+    caller: the preflight starts the cluster anyway if this didn't.
+    """
+    try:
+        state = str(client.clusters.get(cluster_id).state.value)
+        if state == "TERMINATED":
+            client.clusters.start(cluster_id)
+            print(f"Requested start of Databricks cluster {cluster_id}")
+        else:
+            print(f"Databricks cluster {cluster_id} is {state}; not starting it")
+    except Exception as exc:
+        print(f"Could not start Databricks cluster {cluster_id}: {exc}")
+
+
 def main() -> int:
     cluster_id = _require_env("DATABRICKS_CLUSTER_ID")
     client = _workspace_client()
+    if "--start-cluster" in sys.argv[1:]:
+        start_cluster(client, cluster_id)
+        return 0
     catalog, schema, volume, volume_path = _volume_bits()
     remote_script = _upload_remote_script(REMOTE_SCRIPT_TEMPLATE)
 

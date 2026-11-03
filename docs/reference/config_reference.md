@@ -58,6 +58,16 @@ These are read from the bootstrap config dict and/or job parameters passed to th
 - `allow_standalone_fallback`: Boolean; when `true`, platform detection falls back to `standalone` if no cloud platform (Databricks, Fabric, Synapse) is detected. Default `false`.
 - `job_name`: Optional job name (mostly used by system test harness).
 - `spark_app_name`: Optional Spark application name.
+- `spark_configs`: Dict of Spark configuration keys and values. The bootstrap sets each one on the live Spark session after initialization (`spark.conf.set`), so it suits session-level settings, not ones Spark reads only at startup. Also accepted under the YAML key `spark_configs`.
+
+  On Fabric, reading a file the same job just wrote can stall about 55 seconds per read in Fabric's [intelligent cache](https://learn.microsoft.com/en-us/fabric/data-engineering/intelligent-cache) (the driver log shows `Pipe has no content; awaitReadable() returned false`) before a retry succeeds. A job that writes files and reads them back (for example a CSV entity a later pipe reads) can turn the cache off for its session:
+
+  ```yaml
+  spark_configs:
+    spark.synapse.vegas.useCache: "false"
+  ```
+
+  The cache speeds up repeated reads of the same files, so leave it on for jobs that don't hit the stall.
 
 Job-deployment (system-test / deployment API) keys:
 
