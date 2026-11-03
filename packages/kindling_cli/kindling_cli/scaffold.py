@@ -30,8 +30,8 @@ _BUILTIN_TEMPLATES = Path(__file__).parent / "templates"
 _LOCAL_SPARK_REQUIREMENTS = (
     "pyspark>=3.4.0,<5.0.0",
     "delta-spark>=2.4.0,<5.0.0",
-    "pandas>=2.0.0",
-    "pyarrow>=12.0.0",
+    "pandas>=2.2.0",
+    "pyarrow>=15.0.0",
 )
 
 

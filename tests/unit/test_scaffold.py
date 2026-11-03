@@ -444,6 +444,26 @@ def test_local_spark_requirements_match_standalone_extra():
     assert list(_LOCAL_SPARK_REQUIREMENTS) == standalone
 
 
+@pytest.mark.parametrize("extra", ["standalone", "all"])
+def test_spark_extras_require_the_pandas_and_arrow_spark_4_1_needs(extra):
+    """The extras allow pyspark 4.1, which needs pandas>=2.2 and
+    pyarrow>=15: older ones install, then fail at the first pandas/Arrow
+    operation with UNSUPPORTED_PACKAGE_VERSION."""
+    from packaging.requirements import Requirement
+
+    root_pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    requirements = {
+        r.name: r.specifier
+        for r in map(
+            Requirement,
+            _load_pyproject_toml(root_pyproject)["project"]["optional-dependencies"][extra],
+        )
+    }
+    assert "4.1.1" in requirements["pyspark"]
+    assert "2.1.4" not in requirements["pandas"] and "2.2.0" in requirements["pandas"]
+    assert "14.0.2" not in requirements["pyarrow"] and "15.0.0" in requirements["pyarrow"]
+
+
 def test_env_example_medallion_has_bronze_and_silver_paths(tmp_path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
