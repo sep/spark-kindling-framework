@@ -88,7 +88,7 @@ the `spark_kindling.platforms` entry-point group.
 
 - Every `pyproject.toml` (root, `packages/kindling_cli`, `packages/kindling_sdk`,
   `packages/extensions/*`) is a PEP 621 `[project]` table built by `uv_build`
-  (`requires = ["uv_build>=0.12.20,<0.13"]`), with `[tool.uv.build-backend]`
+  (`requires = ["uv_build>=0.12.20,<0.14"]`), with `[tool.uv.build-backend]`
   naming the module and its root.
 - `[project.optional-dependencies]` holds the platform extras;
   `[project.entry-points."spark_kindling.platforms"]` the platform modules.

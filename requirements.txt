@@ -18,11 +18,11 @@ pytest>=7.0.0
 pytest-cov>=4.0.0
 
 # Development tools
-pre-commit>=4.6.0
+pre-commit>=4.6.2
 black>=23.0.0
-isort>=8.0.1
-flake8>=7.3.0
+isort>=9.0.2
+flake8>=7.4.1
 
 # Optional: For development
-notebook>=6.5.0
-jupyterlab>=4.5.7
+notebook>=7.6.3
+jupyterlab>=4.6.5

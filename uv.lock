@@ -226,21 +226,6 @@ wheels = [
 ]
 
 [[package]]
-name = "azure-mgmt-storage"
-version = "22.1.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "azure-common" },
-    { name = "azure-mgmt-core" },
-    { name = "isodate" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ca/d2/f06af604fe54231f049c861dd1556495c95ad95620ed3b14337c3e164913/azure_mgmt_storage-22.1.0.tar.gz", hash = "sha256:727b8c8be4aca4551a9b921cdf76bb92b1e988d009de3b983ce72b7343b749e9", size = 370185, upload-time = "2025-02-19T06:11:15.368Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b1/c1/7f45c428d6c5508277d939b2a2b0fb27042738d7df5554635ee4d339e96e/azure_mgmt_storage-22.1.0-py3-none-any.whl", hash = "sha256:fb5dd4ab8c09f5d0a9e631110d4089aad0c7135f7de8d5b3ebe1ad505b8643cd", size = 569441, upload-time = "2025-02-19T06:11:20.366Z" },
-]
-
-[[package]]
 name = "azure-storage-blob"
 version = "12.28.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3406,7 +3391,6 @@ synapse = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "azure-mgmt-storage" },
     { name = "azure-synapse-artifacts" },
     { name = "black" },
     { name = "databricks-sdk" },
@@ -3461,7 +3445,6 @@ provides-extras = ["synapse", "databricks", "fabric", "standalone", "adx", "all"
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "azure-mgmt-storage", specifier = "==22.1.0" },
     { name = "azure-synapse-artifacts", specifier = ">=0.17.0" },
     { name = "black", specifier = ">=23.0.0" },
     { name = "databricks-sdk", specifier = ">=0.12.0" },
