@@ -68,10 +68,10 @@ The runtime wheel is installed with the extra for its environment:
 |---|---|
 | `synapse` | `azure-synapse-artifacts` |
 | `databricks` | `databricks-sdk` |
-| `fabric` | the `azure-core` ceiling for Fabric's runtime |
+| `fabric` | nothing (kept so `spark-kindling[fabric]` installs keep working) |
 | `standalone` | `pyspark`, `delta-spark`, `pandas`, `pyarrow` |
 | `adx` | Azure Data Explorer clients |
-| `all` | everything above except the Fabric ceiling |
+| `all` | everything above |
 
 A released version installs from PyPI (`pip install 'spark-kindling[synapse]'`).
 To install a local build, put the extra on a direct wheel reference:
@@ -113,7 +113,3 @@ uvx twine check dist/*                # the README renders as the PyPI project p
 `[project]` metadata (description, `readme`, classifiers, keywords,
 `[project.urls]`) is what PyPI shows, and READMEs use absolute GitHub links so
 they resolve on pypi.org.
-
-The Fabric `azure-core` ceiling is expressed as two `Requires-Dist: azure-core`
-lines, the second scoped to `extra == "fabric"`; see the comment above
-`dependencies` in the root `pyproject.toml` before changing it.
