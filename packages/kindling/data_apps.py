@@ -1095,7 +1095,9 @@ class DataAppManager(DataAppRunner):
             _key_distribution_constraints,
         )
 
-        constraints = _key_distribution_constraints(_installed_distribution_versions())
+        constraints = _key_distribution_constraints(
+            _installed_distribution_versions(), self._get_config_platform_name()
+        )
         if not constraints:
             return []
         work_dir = work_dir or tempfile.mkdtemp(prefix="app_pins_")

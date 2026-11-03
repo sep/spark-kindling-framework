@@ -19,7 +19,7 @@ All notable changes to spark-kindling are documented here.
   optional `version`.
 - **Untested-runtime warning (runtime manifest phase 2).** The runtimes
   Kindling is system-tested on (Databricks Runtime 17.3 LTS, Fabric Runtime
-  1.3, Azure Synapse Spark 3.5) and the key packages each ships now live in
+  2.0, Azure Synapse Spark 3.5) and the key packages each ships now live in
   the wheel as `kindling.supported_runtimes`; the CI extension check reads the
   same list. At startup the runtime manifest records how the running runtime
   compares (`runtime_match`: `tested`, `partial`, `untested` or `unchecked`),
@@ -50,6 +50,19 @@ All notable changes to spark-kindling are documented here.
   install can use Spark 3.4-3.5 or 4.x, matching the runtimes Kindling
   runs on (Synapse on Spark 3.5; Fabric and Databricks on Spark 4). New
   `kindling new` packages get the same range in their `dev` group.
+- **Supported-runtime manifest updated.** `fabric2.0` (Fabric Runtime 2.0:
+  Spark 4.1, Python 3.13, azure-core 1.39.0, OpenTelemetry 1.16.0) replaces
+  `fabric1.3`. The `synapse3.5` entry now lists what the runtime actually
+  ships (azure-core 1.35.0, OpenTelemetry 1.36.0, protobuf 4.25.3, pyarrow
+  19.0.0, ...); it listed newer versions than the pools run, so every Synapse
+  run warned that its runtime differed.
+- **The OpenTelemetry Azure extension installs on Fabric Runtime 2.0.** The
+  runtime ships OpenTelemetry 1.16, older than the extension supports
+  (>=1.20), and the bootstrap pinned it, so the install failed and was
+  retried without pins. A tested runtime can now list shipped packages an
+  install may upgrade (`SupportedRuntime.replaceable`); on Fabric the bootstrap
+  leaves OpenTelemetry unpinned (only `mlflow-skinny` depends on it there,
+  `>=1.9.0,<3`), and the CI extension check does the same.
 - **Watermarks record the executor run id.** The watermark aspect saves the
   executor's run id (the provenance stamps' `execution_id`) as
   `last_execution_id`, instead of a fresh uuid that linked to nothing. A

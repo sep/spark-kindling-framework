@@ -23,17 +23,17 @@ def test_a_listed_runtime_is_tested():
 
 
 def test_patch_differences_are_recorded_but_still_tested():
-    match = match_runtime("synapse", None, {**SYNAPSE, "azure-core": "1.38.9"}, "3.11.2")
+    match = match_runtime("synapse", None, {**SYNAPSE, "azure-core": "1.35.9"}, "3.11.2")
     assert match.status == "tested"
     ((name, tested, installed, major_minor),) = [tuple(vars(d).values()) for d in match.differences]
-    assert (name, tested, installed, major_minor) == ("azure-core", "1.38.2", "1.38.9", False)
+    assert (name, tested, installed, major_minor) == ("azure-core", "1.35.0", "1.35.9", False)
 
 
 def test_a_major_minor_difference_is_partial_and_named():
     match = match_runtime("synapse", None, {**SYNAPSE, "pyarrow": "24.0.0"}, "3.11.2")
     assert match.status == "partial" and match.should_warn
     message = match.describe("synapse", None)
-    assert "synapse3.5" in message and "pyarrow 24.0.0 (tested 23.0.1)" in message
+    assert "synapse3.5" in message and "pyarrow 24.0.0 (tested 19.0.0)" in message
 
 
 def test_python_counts_at_major_minor():
@@ -90,4 +90,15 @@ def test_the_ci_check_uses_this_list():
     spec = importlib.util.spec_from_file_location("check_runtimes_for_list_test", script)
     check = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(check)
-    assert check.RUNTIMES == {r.name: (r.python, dict(r.packages)) for r in SUPPORTED_RUNTIMES}
+    assert check.RUNTIMES == {
+        r.name: (r.python, {n: v for n, v in r.packages.items() if n not in r.replaceable})
+        for r in SUPPORTED_RUNTIMES
+    }
+
+
+def test_replaceable_packages_are_per_platform():
+    from kindling.supported_runtimes import replaceable_packages
+
+    assert "opentelemetry-sdk" in replaceable_packages("Fabric")
+    assert replaceable_packages("synapse") == frozenset()
+    assert replaceable_packages(None) == frozenset()

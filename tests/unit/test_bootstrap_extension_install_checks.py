@@ -662,6 +662,27 @@ def test_key_distribution_constraints_pin_installed_key_packages_only():
     assert constraints == ["azure-core==1.30.2", "opentelemetry-api==1.32.1"]
 
 
+def test_key_distribution_constraints_leave_a_platforms_replaceable_packages_unpinned():
+    """Fabric Runtime 2.0 ships OpenTelemetry 1.16, older than the OpenTelemetry
+    Azure extension supports; it is replaceable there, so it isn't pinned."""
+    from kindling.bootstrap import _key_distribution_constraints
+
+    installed = {
+        "azure-core": "1.39.0",
+        "opentelemetry-api": "1.16.0",
+        "opentelemetry-sdk": "1.16.0",
+        "opentelemetry-semantic-conventions": "0.37b0",
+    }
+
+    assert _key_distribution_constraints(installed, "fabric") == ["azure-core==1.39.0"]
+    assert _key_distribution_constraints(installed, "synapse") == [
+        "azure-core==1.39.0",
+        "opentelemetry-api==1.16.0",
+        "opentelemetry-sdk==1.16.0",
+        "opentelemetry-semantic-conventions==0.37b0",
+    ]
+
+
 def _completed(returncode=0, stdout="", stderr=""):
     return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 

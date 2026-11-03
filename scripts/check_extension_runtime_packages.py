@@ -46,8 +46,14 @@ def _load_supported_runtimes():
     return module.SUPPORTED_RUNTIMES
 
 
+# Each runtime's Python and the shipped packages an install must keep (the
+# runtime's `replaceable` ones may be upgraded, so they aren't pinned).
 RUNTIMES = {
-    runtime.name: (runtime.python, dict(runtime.packages)) for runtime in _load_supported_runtimes()
+    runtime.name: (
+        runtime.python,
+        {n: v for n, v in runtime.packages.items() if n not in runtime.replaceable},
+    )
+    for runtime in _load_supported_runtimes()
 }
 
 

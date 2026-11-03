@@ -1600,13 +1600,17 @@ def _distribution_version(entry) -> Optional[str]:
     return entry[0] if isinstance(entry, tuple) else entry
 
 
-def _key_distribution_constraints(versions: Mapping[str, Any]) -> List[str]:
+def _key_distribution_constraints(
+    versions: Mapping[str, Any], platform: Optional[str] = None
+) -> List[str]:
     """pip constraints pinning each installed key distribution at its
-    installed version."""
+    installed version, except those a tested runtime of ``platform`` lets an
+    install upgrade (``SupportedRuntime.replaceable``)."""
+    from kindling.supported_runtimes import replaceable_packages
     from packaging.version import InvalidVersion, Version
 
     constraints = []
-    for name in sorted(_RUNTIME_KEY_DISTRIBUTIONS):
+    for name in sorted(_RUNTIME_KEY_DISTRIBUTIONS - replaceable_packages(platform)):
         version = _distribution_version(versions.get(name))
         if not version:
             continue
@@ -1618,7 +1622,7 @@ def _key_distribution_constraints(versions: Mapping[str, Any]) -> List[str]:
     return constraints
 
 
-def _pip_install_keeping_installed(logger, args: List[str]):
+def _pip_install_keeping_installed(logger, args: List[str], platform: Optional[str] = None):
     """Run `pip install <args>`, keeping what the runtime has installed.
 
     pip keeps every installed version that satisfies the requirements (no
@@ -1633,7 +1637,7 @@ def _pip_install_keeping_installed(logger, args: List[str]):
       what was replaced. Any other failure is returned unchanged.
     """
     pip_install = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
-    constraints = _key_distribution_constraints(_installed_distribution_versions())
+    constraints = _key_distribution_constraints(_installed_distribution_versions(), platform)
     ignore_installed = False
     with tempfile.TemporaryDirectory(prefix="kindling_pip_") as work_dir:
         constraints_file = os.path.join(work_dir, "runtime-constraints.txt")
@@ -1868,13 +1872,16 @@ def _report_replaced_distributions(logger, before: Mapping[str, Any], package_sp
             )
 
 
-def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_path=None):
+def install_bootstrap_dependencies(
+    logger, bootstrap_config, artifacts_storage_path=None, platform=None
+):
     """Install packages needed for framework bootstrap
 
     Args:
         logger: Logger instance
         bootstrap_config: Bootstrap configuration dict
         artifacts_storage_path: Path to artifacts storage (for loading extension wheels)
+        platform: The platform name, for which key packages stay pinned
     """
 
     def get_package_name(package_spec: str) -> str:
@@ -2190,9 +2197,11 @@ def install_bootstrap_dependencies(logger, bootstrap_config, artifacts_storage_p
                 result = None
                 if other_requirements:
                     logger.debug(f"Installing extension dependencies: {other_requirements}")
-                    result = _pip_install_keeping_installed(logger, other_requirements)
+                    result = _pip_install_keeping_installed(logger, other_requirements, platform)
                 if result is None or result.returncode == 0:
-                    result = _pip_install_keeping_installed(logger, ["--no-deps", local_path])
+                    result = _pip_install_keeping_installed(
+                        logger, ["--no-deps", local_path], platform
+                    )
 
                 if result.returncode == 0:
                     # Mirror load_if_needed(): make the freshly installed user/venv packages
@@ -3000,6 +3009,7 @@ def initialize_framework(config: Dict[str, Any], app_name: Optional[str] = None)
                     logger,
                     bootstrap_deps_config,
                     artifacts_storage_path=artifacts_storage_path,
+                    platform=platform,
                 )
             else:
                 logger.info("Skipping bootstrap dependency installation")

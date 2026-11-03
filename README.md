@@ -221,7 +221,7 @@ executer.run_datapipes(["customers.transform"])
 - Apache Spark 3.4+
 - Microsoft Fabric, Azure Synapse Analytics, Databricks — or local/standalone Spark for development
 
-System-tested runtimes: Databricks Runtime 17.3 LTS, Fabric Runtime 1.3 and
+System-tested runtimes: Databricks Runtime 17.3 LTS, Fabric Runtime 2.0 and
 Azure Synapse Runtime for Apache Spark 3.5 (`kindling.supported_runtimes`).
 At startup, Kindling records in the runtime manifest whether it is running on
 one of them, and warns when the runtime isn't one of them or a key package
