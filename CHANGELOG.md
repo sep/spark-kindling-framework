@@ -71,6 +71,12 @@ All notable changes to spark-kindling are documented here.
 
 ### Fixed
 
+- **The Fabric SDK's log stream waits for an app's last output.** When a job
+  reached a terminal state, `stream_stdout_logs` read stdout once and
+  stopped, but on Fabric Runtime 2.0 the last seconds of output can arrive
+  tens of seconds later, so a passing app's final markers were missed. It
+  now keeps reading until the bootstrap reports the app's end, for up to 180
+  seconds.
 - **Databricks apps no longer stall about 80 seconds per missing optional
   file.** When `dbutils` couldn't read an `abfss://` file, the Databricks
   platform fell back to the ADLS SDK, even when the file simply didn't exist.

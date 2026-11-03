@@ -18,6 +18,7 @@ from .platform_provider import (
     azure_abfss_uri,
     azure_storage_account_url,
     azure_token_scope,
+    bootstrap_reported_app_end,
     create_azure_credential,
     fabric_api_base_url,
 )
@@ -94,6 +95,11 @@ class FabricAPI(PlatformAPI):
         >>> run_id = api.run_job(job["job_id"])
         >>> status = api.get_job_status(run_id)
     """
+
+    # How long stream_stdout_logs keeps reading after a job's terminal state
+    # for the bootstrap's end-of-app line: the last stdout can arrive tens of
+    # seconds late.
+    TERMINAL_LOG_GRACE_SECONDS = 180.0
 
     def __init__(
         self,
@@ -1494,18 +1500,33 @@ class FabricAPI(PlatformAPI):
                     )
                     last_status = status
 
-                # If job completed, do final read and exit
+                # If job completed, read the rest and exit
                 if status in ["COMPLETED", "SUCCEEDED", "FAILED", "CANCELLED"]:
                     _emit_stream_progress(f"✅ Job {status.lower()} - doing final log read")
-                    # Read any remaining logs
-                    new_logs, last_byte_offset = self._read_stdout_chunk(
-                        job_id, run_id, session_info, last_byte_offset
-                    )
-                    if new_logs:
-                        all_logs.extend(new_logs)
-                        for log_line in new_logs:
-                            if callback:
-                                callback(log_line)
+                    if not session_info:
+                        session_info = self.get_livy_session_info(job_id, run_id)
+                    # stdout can lag the terminal state by tens of seconds: keep
+                    # reading until the bootstrap reports the app's end, or the
+                    # grace period runs out.
+                    grace_deadline = time.time() + self.TERMINAL_LOG_GRACE_SECONDS
+                    while True:
+                        new_logs, last_byte_offset = self._read_stdout_chunk(
+                            job_id, run_id, session_info, last_byte_offset
+                        )
+                        if new_logs:
+                            all_logs.extend(new_logs)
+                            for log_line in new_logs:
+                                if callback:
+                                    callback(log_line)
+                        if bootstrap_reported_app_end(all_logs[-200:]):
+                            break
+                        if time.time() >= grace_deadline:
+                            _emit_stream_progress(
+                                "⏱️  Fabric stdout never showed the app's end "
+                                f"({self.TERMINAL_LOG_GRACE_SECONDS:.0f}s grace)"
+                            )
+                            break
+                        time.sleep(poll_interval)
                     break
 
                 # If job not started yet, wait
