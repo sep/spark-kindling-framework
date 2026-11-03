@@ -48,8 +48,10 @@ All notable changes to spark-kindling are documented here.
 - **Spark 4 in the `standalone` and `all` extras.** `pyspark` and
   `delta-spark` are allowed up to `<5.0.0` (was `<4.0.0`), so a local
   install can use Spark 3.4-3.5 or 4.x, matching the runtimes Kindling
-  runs on (Synapse on Spark 3.5; Fabric and Databricks on Spark 4). New
-  `kindling new` packages get the same range in their `dev` group.
+  runs on (Synapse on Spark 3.5; Fabric and Databricks on Spark 4). Their
+  `pandas` and `pyarrow` floors rise to `>=2.2.0` and `>=15.0.0`, what
+  `pyspark` 4.1 needs. New `kindling new` packages get the same
+  requirements in their `dev` group.
 - **Supported-runtime manifest updated.** `fabric2.0` (Fabric Runtime 2.0:
   Spark 4.1, Python 3.13, azure-core 1.39.0, OpenTelemetry 1.16.0) replaces
   `fabric1.3`. The `synapse3.5` entry now lists what the runtime actually
@@ -76,7 +78,7 @@ All notable changes to spark-kindling are documented here.
   stopped, but on Fabric Runtime 2.0 the last seconds of output can arrive
   tens of seconds later, so a passing app's final markers were missed. It
   now keeps reading until the bootstrap reports the app's end, for up to 180
-  seconds.
+  seconds. A job with no Livy session to read from skips the wait.
 - **Databricks apps no longer stall about 80 seconds per missing optional
   file.** When `dbutils` couldn't read an `abfss://` file, the Databricks
   platform fell back to the ADLS SDK, even when the file simply didn't exist.
