@@ -132,7 +132,6 @@ dev = [
     "jupyter>=1.0.0",
     "poethepoet>=0.24.0",
     "requests>=2.31.0",
-    "azure-mgmt-storage==22.1.0",
     "spark-kindling-cli",
     "spark-kindling-sdk",
     # Platform SDKs needed by dev/CI tooling — they're also runtime deps under
