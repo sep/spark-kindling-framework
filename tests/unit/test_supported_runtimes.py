@@ -96,6 +96,22 @@ def test_the_ci_check_uses_this_list():
     }
 
 
+def test_an_upgraded_replaceable_package_is_recorded_without_a_warning():
+    """The OpenTelemetry Azure extension upgrades Fabric 2.0's OpenTelemetry 1.16."""
+    (fabric,) = [r for r in SUPPORTED_RUNTIMES if r.name == "fabric2.0"]
+    installed = {**fabric.packages, "opentelemetry-api": "1.45.2", "pyarrow": "25.0.0"}
+
+    match = match_runtime("fabric", None, installed, "3.13.11")
+
+    assert match.status == "partial"  # pyarrow, not OpenTelemetry
+    flags = {d.name: d.major_minor for d in match.differences}
+    assert flags == {"opentelemetry-api": False, "pyarrow": True}
+    assert "opentelemetry" not in match.describe("fabric", None)
+
+    upgraded_only = {**fabric.packages, "opentelemetry-api": "1.45.2"}
+    assert match_runtime("fabric", None, upgraded_only, "3.13.11").status == "tested"
+
+
 def test_replaceable_packages_are_per_platform():
     from kindling.supported_runtimes import replaceable_packages
 

@@ -211,7 +211,9 @@ def match_runtime(
     compared, and a package that isn't installed is skipped. Versions are
     normalized: a vendor build compares by its base release
     (``3.5.1.5.4.20240407`` is ``3.5.1``), and a conda build versioned by date
-    (``2023.12.01``) is skipped.
+    (``2023.12.01``) is skipped. A difference in one of a runtime's
+    ``replaceable`` packages is recorded but never counts as major.minor: an
+    install is allowed to upgrade it.
     """
     platform = (platform or "").strip().lower()
     if not platform or platform in _UNCHECKED_PLATFORMS:
@@ -253,7 +255,8 @@ def _differences(runtime: SupportedRuntime, installed: Mapping[str, str], python
                 name,
                 tested,
                 version,
-                major_minor=_release(version)[:2] != _release(tested)[:2],
+                major_minor=name not in runtime.replaceable
+                and _release(version)[:2] != _release(tested)[:2],
             )
         )
     return differences

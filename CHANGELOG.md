@@ -62,7 +62,8 @@ All notable changes to spark-kindling are documented here.
   retried without pins. A tested runtime can now list shipped packages an
   install may upgrade (`SupportedRuntime.replaceable`); on Fabric the bootstrap
   leaves OpenTelemetry unpinned (only `mlflow-skinny` depends on it there,
-  `>=1.9.0,<3`), and the CI extension check does the same.
+  `>=1.9.0,<3`), and the CI extension check does the same. The runtime
+  manifest records such an upgrade without calling the runtime untested.
 - **Watermarks record the executor run id.** The watermark aspect saves the
   executor's run id (the provenance stamps' `execution_id`) as
   `last_execution_id`, instead of a fresh uuid that linked to nothing. A
