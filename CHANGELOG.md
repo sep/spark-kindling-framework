@@ -39,7 +39,7 @@ All notable changes to spark-kindling are documented here.
 
 ### Changed
 
-- **Fabric Runtime 2.0 replaces Runtime 1.3 (breaking).** Kindling is
+- **Fabric Runtime 2.0 replaces Runtime 1.3.** Kindling is
   system-tested on Fabric Runtime 2.0 (Spark 4.1, Python 3.13) and no longer
   supports Runtime 1.3. The `fabric` extra no longer caps `azure-core` below
   1.31 (Runtime 1.3 shipped 1.30.2; Runtime 2.0 ships 1.39.0, which the cap
