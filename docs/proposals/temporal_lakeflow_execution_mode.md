@@ -211,10 +211,9 @@ Neither `spark.kindling.lakeflow.temporal_mode` nor the bare
 here; that is a property of the selector's probe list, not of the transport.
 
 The implementation must therefore add both spellings to the selector's default
-`lookup_keys`. There is direct precedent:
-`spark.kindling.bootstrap.config_files` sits in that tuple as
-`CANONICAL_CONFIG_FILES_CONFIG_KEY` for exactly this reason. With that change
-the canonical key above needs no extra declaration on any runtime.
+`lookup_keys`. There is direct precedent: `kindling.lakeflow.settings_json`
+sits in that tuple as `SETTINGS_JSON_CONFIG_KEY` for exactly this reason. With
+that change the canonical key above needs no extra declaration on any runtime.
 
 `kindling.lakeflow.config_keys` remains the general escape hatch for any key
 not in the default probe list, and a deployment may still name the mode key
@@ -362,7 +361,7 @@ The implementation belongs entirely in `kindling_ext_databricks`:
 2. Add `spark.kindling.lakeflow.temporal_mode` and
    `kindling.lakeflow.temporal_mode` to the selector's default `lookup_keys` in
    `lakeflow_app_selector.py`, alongside the existing
-   `CANONICAL_CONFIG_FILES_CONFIG_KEY` entry, so the canonical key survives
+   `SETTINGS_JSON_CONFIG_KEY` entry, so the canonical key survives
    get-only runtimes. This is the one change outside the temporal lowering
    itself; it is still inside `kindling_ext_databricks`.
 3. Preserve the default streaming branch's emitted objects, flow names, and
