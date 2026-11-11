@@ -52,7 +52,6 @@ ENV_PREFIX = "KINDLING_BUNDLE_"
 SELECTOR_DEFAULT_LOOKUP_KEYS = frozenset(
     {
         "kindling.data_app",
-        "kindling.lakeflow.allowed_apps",
         "kindling.lakeflow.config_keys",
         "kindling.lakeflow.settings_json",
         "kindling.lakeflow.pipes",

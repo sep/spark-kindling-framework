@@ -10,7 +10,7 @@ Deploys lakeflow-engine-test-app (bronze.orders -> silver.orders, both
 materialized views, SDP inferring the dependency from input_entity_ids)
 into a real serverless pipeline, configured with:
 
-  - kindling.data_app / kindling.lakeflow.allowed_apps (app selection)
+  - kindling.data_app (app selection)
   - datapipes.lakeflow.silver_orders.engine.sdp.table_properties.* (the
     portable common-engine config block)
   - datapipes.lakeflow.silver_orders.engine.databricks_sdp.expectations.* /
@@ -135,7 +135,6 @@ class TestLakeflowEnginePlatform:
         )
         configuration = {
             "kindling.data_app": "lakeflow_engine",
-            "kindling.lakeflow.allowed_apps": "lakeflow_engine",
             "kindling.lakeflow.config_keys": config_keys,
             "datapipes.lakeflow.silver_orders.engine.sdp.table_properties.test_layer": "silver",
             "datapipes.lakeflow.silver_orders.engine.databricks_sdp.expectations.valid_order_id": (

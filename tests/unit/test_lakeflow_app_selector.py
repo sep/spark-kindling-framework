@@ -179,14 +179,6 @@ def test_two_app_names_select_their_declaration_graphs(monkeypatch):
             selector.LakeflowAppNotFoundError,
             "Discovered apps: orders",
         ),
-        (
-            {
-                "kindling.data_app": "orders",
-                "kindling.lakeflow.allowed_apps": "customers",
-            },
-            selector.LakeflowAppNotAuthorizedError,
-            "kindling.lakeflow.allowed_apps",
-        ),
     ],
 )
 def test_selection_errors_are_distinct_and_actionable(monkeypatch, values, error, message):
@@ -239,7 +231,6 @@ def test_pipeline_configuration_is_bridged_to_kindling(monkeypatch):
     spark = FakeSpark(
         {
             "kindling.data_app": "orders",
-            "kindling.lakeflow.allowed_apps": "orders",
             "datapipes.silver.orders.engine": '{"dataset_type": "materialized_view"}',
             "spark.kindling.bootstrap.load_lake": "false",
             "spark.sql.shuffle.partitions": "10",
@@ -263,7 +254,6 @@ def test_pipeline_configuration_is_bridged_to_kindling(monkeypatch):
     assert captured["engine"] == "databricks_sdp"
     assert captured["app_name"] == "orders"
     assert captured["config"]["kindling.data_app"] == "orders"
-    assert captured["config"]["kindling.lakeflow.allowed_apps"] == "orders"
     assert captured["config"]["use_lake_packages"] is False
     assert "config_files" not in captured["config"]
     assert captured["config"]["declaration_only"] is True
@@ -276,7 +266,6 @@ def test_pipeline_configuration_falls_back_to_spark_context_conf(monkeypatch):
     spark = FakeSpark3(
         {
             "kindling.data_app": "orders",
-            "kindling.lakeflow.allowed_apps": "orders",
             "datapipes.silver.orders.engine": '{"dataset_type": "materialized_view"}',
             "spark.sql.shuffle.partitions": "10",
         }
@@ -297,7 +286,6 @@ def test_pipeline_configuration_falls_back_to_spark_context_conf(monkeypatch):
 
     assert selector.declare_from_pipeline_config(spark) == "plan"
     assert captured["config"]["kindling.data_app"] == "orders"
-    assert captured["config"]["kindling.lakeflow.allowed_apps"] == "orders"
     assert "datapipes.silver.orders.engine" in captured["config"]
     assert "spark.sql.shuffle.partitions" not in captured["config"]
 
@@ -571,8 +559,6 @@ _REAL_SELECTOR_REPRO = textwrap.dedent("""
     settings_yaml = (
             "kindling:\\n"
             "  data_app: yaml_app\\n"
-            "  lakeflow:\\n"
-            "    allowed_apps: yaml_app\\n"
             "  sdp:\\n"
             "    dataset_naming: leaf\\n"
             "dataentities-bytag:\\n"
@@ -665,7 +651,6 @@ _REAL_SELECTOR_REPRO = textwrap.dedent("""
     spark = FakeSpark(
             {
                 "kindling.data_app": "orders",
-                "kindling.lakeflow.allowed_apps": "orders",
                 "kindling.platform.environment": "standalone",
                 selector.SETTINGS_JSON_CONFIG_KEY: settings_json,
                 "kindling.sdp.dataset_naming": "normalized",
@@ -693,7 +678,6 @@ _REAL_SELECTOR_REPRO = textwrap.dedent("""
                 "same_config_service": first_config_service is second_config_service,
                 "config_files": config_service.initial_config.get("config_files"),
                 "data_app": config_service.get("kindling.data_app"),
-                "allowlist": config_service.get("kindling.lakeflow.allowed_apps"),
                 "dataset_naming": config_service.get("kindling.sdp.dataset_naming"),
                 "engine_dataset_type": config_service.get(
                     "datapipes.bronze.ingest_telemetry.engine.sdp.dataset_type"
@@ -720,7 +704,6 @@ def test_inline_settings_reach_real_initialize_registry_overlays_and_reentry(tmp
     # dataentities/bytag overlays asserted below only exist in settings_json.
     assert result["config_files"] is None
     assert result["data_app"] == "orders"
-    assert result["allowlist"] == "orders"
     assert result["dataset_naming"] == "normalized"
     assert result["engine_dataset_type"] == "streaming_table"
     assert result["import_time_tags"] == {
@@ -741,26 +724,30 @@ def test_inline_settings_reach_real_initialize_registry_overlays_and_reentry(tmp
     assert result["physical_name"] == "dev_bronze.cwmdp.device_telemetry"
 
 
-def test_structured_config_cannot_authorize_non_allowlisted_app(monkeypatch, tmp_path):
-    settings_json = json.dumps(
-        {"kindling": {"data_app": "customers", "lakeflow": {"allowed_apps": "orders"}}}
-    )
+def test_a_leftover_allowed_apps_key_no_longer_restricts_selection(monkeypatch):
+    """`kindling.lakeflow.allowed_apps` was removed: a pipeline that still sets
+    it to a different app declares the selected app instead of failing."""
+    captured = {}
     monkeypatch.setattr(
         selector,
         "_registered_data_app_entry_points",
         lambda: {"orders": FakeEntryPoint("orders", "orders_app")},
     )
+    monkeypatch.setattr(selector, "_registry_snapshot", lambda: {"entity": {}, "pipe": {}})
+    monkeypatch.setattr("kindling.initialize", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(
+        selector,
+        "importlib",
+        SimpleNamespace(import_module=lambda _: _module("orders_app", lambda: None)),
+    )
+    monkeypatch.setattr("kindling.declare_pipeline", lambda pipe_ids=None: "plan")
 
-    with pytest.raises(selector.LakeflowAppNotAuthorizedError, match="allowed_apps"):
-        selector.declare_from_pipeline_config(
-            FakeSpark(
-                {
-                    "kindling.data_app": "orders",
-                    "kindling.lakeflow.allowed_apps": "customers",
-                    selector.SETTINGS_JSON_CONFIG_KEY: settings_json,
-                }
-            )
-        )
+    spark = FakeSpark(
+        {"kindling.data_app": "orders", "kindling.lakeflow.allowed_apps": "customers"}
+    )
+
+    assert selector.declare_from_pipeline_config(spark) == "plan"
+    assert captured["app_name"] == "orders"
 
 
 def test_enumeration_falls_back_to_sql_set():
