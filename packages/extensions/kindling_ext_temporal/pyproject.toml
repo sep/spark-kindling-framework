@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "spark-kindling-ext-temporal"
-version = "0.14.0"
+version = "0.14.1"
 description = "Temporal event, condition, and episode primitives for Kindling"
 authors = [{name = "SEP Engineering", email = "engineering@sep.com"}]
 license = "MIT"

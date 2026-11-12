@@ -2,7 +2,7 @@
 
 All notable changes to spark-kindling are documented here.
 
-## Unreleased
+## [0.14.2] - 2026-11-12
 
 ### Added
 
@@ -146,7 +146,10 @@ All notable changes to spark-kindling are documented here.
   (`MAX_GENERATIONS_CONFIG_KEY`, `AUTOCOLLAPSE_CONFIG_KEY`,
   `TEMPORAL_LOWERING_*`, `ADAPTER_TIER_CONFIG_KEYS`) are deleted outright and
   spelled inline where used. Nothing in-tree imported any of these from a
-  package root.
+  package root. The Databricks extension 0.14.1 and earlier did import
+  `MAX_GENERATIONS_CONFIG_KEY` from `kindling_ext_temporal.chain`, so it
+  can't declare a temporal chain on Lakeflow with Temporal extension 0.14.1:
+  upgrade the Databricks extension to 0.14.2 along with it.
 
 ## [0.14.1] - 2026-10-27
 
