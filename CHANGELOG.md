@@ -2,6 +2,17 @@
 
 All notable changes to spark-kindling are documented here.
 
+## [0.14.3] - 2026-11-13
+
+### Fixed
+
+- **0.14.2 reaches PyPI.** 0.14.2 was released on GitHub but not published
+  to PyPI: the Cosmos DB and OpenTelemetry Azure extensions kept version
+  0.14.0 although their packaging changed (the `uv_build` build requirement
+  allows `<0.14`, was `<0.13`), so their rebuilt 0.14.0 files differed from
+  the ones on PyPI and the publish was refused. They are now 0.14.1, and
+  0.14.3 carries everything in 0.14.2 to PyPI. No code changed.
+
 ## [0.14.2] - 2026-11-12
 
 ### Added
